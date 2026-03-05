@@ -23,8 +23,6 @@ services:
         sync: false
       - key: SHEETS_STATE_COL
         sync: false
-      - key: SHEETS_CASES_COL
-        sync: false
 
   # React frontend (static site)
   - type: web

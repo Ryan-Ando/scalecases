@@ -7,8 +7,7 @@ function getSheetConfig() {
   return {
     sheetId: process.env.SHEETS_ID,
     tabName: process.env.SHEETS_TAB_NAME || 'Sheet1',
-    stateCol: process.env.SHEETS_STATE_COL || 'A',
-    casesCol: process.env.SHEETS_CASES_COL || 'B',
+    stateCol: process.env.SHEETS_STATE_COL || 'D',
   };
 }
 
@@ -24,28 +23,31 @@ async function getAuthClient() {
 }
 
 // GET /api/sheets/cases
-// Returns [{ state, cases }] — state is matched against campaign names by abbreviation
+// Reads every row, counts how many rows exist per state abbreviation in column D.
+// Returns [{ state: 'VA', cases: 4 }, ...]
 router.get('/cases', async (req, res) => {
   try {
-    const { sheetId, tabName, stateCol, casesCol } = getSheetConfig();
+    const { sheetId, tabName, stateCol } = getSheetConfig();
     const auth = await getAuthClient();
     const sheets = google.sheets({ version: 'v4', auth });
 
-    // Read both columns from row 2 onward (skip header row)
-    const range = `${tabName}!${stateCol}2:${casesCol}`;
+    // Read only the state column, skipping the header row
+    const range = `${tabName}!${stateCol}2:${stateCol}`;
     const response = await sheets.spreadsheets.values.get({
       spreadsheetId: sheetId,
       range,
     });
 
     const rows = response.data.values || [];
-    const data = rows
-      .filter(row => row[0])
-      .map(row => ({
-        state: row[0].trim().toUpperCase(),
-        cases: parseInt(row[1], 10) || 0,
-      }));
 
+    // Count rows per state
+    const counts = {};
+    for (const row of rows) {
+      const state = (row[0] || '').trim().toUpperCase();
+      if (state) counts[state] = (counts[state] || 0) + 1;
+    }
+
+    const data = Object.entries(counts).map(([state, cases]) => ({ state, cases }));
     res.json(data);
   } catch (err) {
     console.error('Sheets cases error:', err.message);
@@ -55,8 +57,8 @@ router.get('/cases', async (req, res) => {
 
 // GET /api/sheets/config
 router.get('/config', (_req, res) => {
-  const { tabName, stateCol, casesCol } = getSheetConfig();
-  res.json({ tabName, stateCol, casesCol });
+  const { tabName, stateCol } = getSheetConfig();
+  res.json({ tabName, stateCol });
 });
 
 export default router;
