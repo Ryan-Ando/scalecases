@@ -9,8 +9,6 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
-      - key: PORT
-        value: 3001
       - key: CLIENT_URL
         sync: false  # Set this to your frontend Render URL after first deploy
       - key: FB_ACCESS_TOKEN
