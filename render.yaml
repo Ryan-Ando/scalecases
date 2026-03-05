@@ -1,0 +1,40 @@
+services:
+  # Express API server
+  - type: web
+    name: scalecases-server
+    runtime: node
+    rootDir: server
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3001
+      - key: CLIENT_URL
+        sync: false  # Set this to your frontend Render URL after first deploy
+      - key: FB_ACCESS_TOKEN
+        sync: false
+      - key: FB_AD_ACCOUNT
+        sync: false
+      - key: GOOGLE_SERVICE_ACCOUNT_JSON
+        sync: false
+      - key: SHEETS_ID
+        sync: false
+      - key: SHEETS_TAB_NAME
+        sync: false
+      - key: SHEETS_CAMPAIGN_COL
+        sync: false
+      - key: SHEETS_CASES_COL
+        sync: false
+
+  # React frontend (static site)
+  - type: web
+    name: scalecases-client
+    runtime: static
+    rootDir: client
+    buildCommand: npm install && npm run build
+    staticPublishPath: dist
+    envVars:
+      - key: VITE_API_URL
+        sync: false  # Set this to your backend Render URL after first deploy
