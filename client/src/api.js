@@ -48,4 +48,21 @@ const api = {
   },
 };
 
+// Merge cases data into campaigns by matching state abbreviation in campaign name.
+// casesData: [{ state: 'VA', cases: 3 }, ...]
+// campaigns: FB campaign objects with a `name` field
+export function mergeCases(campaigns, casesData) {
+  return campaigns.map(c => {
+    const match = casesData.find(({ state }) =>
+      new RegExp(`\\b${state}\\b`, 'i').test(c.name)
+    );
+    const cases = match ? match.cases : 0;
+    return {
+      ...c,
+      cases,
+      costPerCase: cases > 0 ? (parseFloat(c.spend) || 0) / cases : null,
+    };
+  });
+}
+
 export default api;

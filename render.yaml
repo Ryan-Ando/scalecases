@@ -13,7 +13,7 @@ services:
         sync: false  # Set this to your frontend Render URL after first deploy
       - key: FB_ACCESS_TOKEN
         sync: false
-      - key: FB_AD_ACCOUNT
+      - key: FB_AD_ACCOUNTS
         sync: false
       - key: GOOGLE_SERVICE_ACCOUNT_JSON
         sync: false
@@ -21,7 +21,7 @@ services:
         sync: false
       - key: SHEETS_TAB_NAME
         sync: false
-      - key: SHEETS_CAMPAIGN_COL
+      - key: SHEETS_STATE_COL
         sync: false
       - key: SHEETS_CASES_COL
         sync: false

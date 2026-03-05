@@ -24,12 +24,16 @@ function token() {
   return process.env.FB_ACCESS_TOKEN;
 }
 
-function adAccount() {
-  return process.env.FB_AD_ACCOUNT;
+// Support multiple ad accounts: FB_AD_ACCOUNTS=act_111,act_222
+function adAccounts() {
+  return (process.env.FB_AD_ACCOUNTS || '')
+    .split(',')
+    .map(a => a.trim())
+    .filter(Boolean);
 }
 
-// Fetch account-level insights grouped by a given level (campaign/adset/ad)
-async function fetchInsights(level, datePreset, filters = {}) {
+// Fetch insights for one account
+async function fetchInsightsForAccount(account, level, datePreset, filters = {}) {
   const params = new URLSearchParams({
     level,
     fields: `${level}_id,${level}_name,${INSIGHTS_FIELDS}`,
@@ -41,10 +45,30 @@ async function fetchInsights(level, datePreset, filters = {}) {
   if (filters.campaign_id) params.set('filtering', JSON.stringify([{ field: 'campaign.id', operator: 'EQUAL', value: filters.campaign_id }]));
   if (filters.adset_id) params.set('filtering', JSON.stringify([{ field: 'adset.id', operator: 'EQUAL', value: filters.adset_id }]));
 
-  const res = await fetch(`${FB_API}/${adAccount()}/insights?${params}`);
+  const res = await fetch(`${FB_API}/${account}/insights?${params}`);
   const json = await res.json();
-  if (json.error) throw new Error(json.error.message);
+  if (json.error) throw new Error(`[${account}] ${json.error.message}`);
   return json.data || [];
+}
+
+// Fetch insights from all accounts and merge
+async function fetchInsights(level, datePreset, filters = {}) {
+  const accounts = adAccounts();
+  const results = await Promise.all(accounts.map(a => fetchInsightsForAccount(a, level, datePreset, filters)));
+  return results.flat();
+}
+
+// Fetch a list endpoint (campaigns/adsets/ads) from all accounts and merge
+async function fetchFromAllAccounts(path, queryParams) {
+  const accounts = adAccounts();
+  const results = await Promise.all(accounts.map(async account => {
+    const params = new URLSearchParams({ ...queryParams, access_token: token(), limit: 500 });
+    const res = await fetch(`${FB_API}/${account}/${path}?${params}`);
+    const json = await res.json();
+    if (json.error) throw new Error(`[${account}] ${json.error.message}`);
+    return json.data || [];
+  }));
+  return results.flat();
 }
 
 // GET /api/facebook/campaigns
@@ -52,19 +76,13 @@ router.get('/campaigns', async (req, res) => {
   try {
     const { date_preset } = req.query;
 
-    // Fetch campaign list
-    const campaignParams = new URLSearchParams({
-      fields: 'id,name,status,objective,created_time,daily_budget,lifetime_budget',
-      access_token: token(),
-      limit: 500,
-    });
-    const campaignRes = await fetch(`${FB_API}/${adAccount()}/campaigns?${campaignParams}`);
-    const campaignJson = await campaignRes.json();
-    if (campaignJson.error) throw new Error(campaignJson.error.message);
-    const campaigns = campaignJson.data || [];
+    const [campaigns, insights] = await Promise.all([
+      fetchFromAllAccounts('campaigns', {
+        fields: 'id,name,status,objective,created_time,daily_budget,lifetime_budget',
+      }),
+      fetchInsights('campaign', date_preset),
+    ]);
 
-    // Fetch insights
-    const insights = await fetchInsights('campaign', date_preset);
     const insightsMap = Object.fromEntries(insights.map(i => [i.campaign_id, i]));
 
     const merged = campaigns.map(c => ({
@@ -90,19 +108,14 @@ router.get('/adsets', async (req, res) => {
   try {
     const { date_preset, campaign_id } = req.query;
 
-    const params = new URLSearchParams({
-      fields: 'id,name,status,campaign_id,targeting,created_time,daily_budget,lifetime_budget,optimization_goal',
-      access_token: token(),
-      limit: 500,
-    });
-    if (campaign_id) params.set('campaign_id', campaign_id);
+    const listParams = { fields: 'id,name,status,campaign_id,created_time,daily_budget,lifetime_budget,optimization_goal' };
+    if (campaign_id) listParams.campaign_id = campaign_id;
 
-    const adsetRes = await fetch(`${FB_API}/${adAccount()}/adsets?${params}`);
-    const adsetJson = await adsetRes.json();
-    if (adsetJson.error) throw new Error(adsetJson.error.message);
-    const adsets = adsetJson.data || [];
+    const [adsets, insights] = await Promise.all([
+      fetchFromAllAccounts('adsets', listParams),
+      fetchInsights('adset', date_preset, campaign_id ? { campaign_id } : {}),
+    ]);
 
-    const insights = await fetchInsights('adset', date_preset, campaign_id ? { campaign_id } : {});
     const insightsMap = Object.fromEntries(insights.map(i => [i.adset_id, i]));
 
     const merged = adsets.map(a => ({
@@ -129,19 +142,14 @@ router.get('/ads', async (req, res) => {
   try {
     const { date_preset, adset_id } = req.query;
 
-    const params = new URLSearchParams({
-      fields: 'id,name,status,adset_id,campaign_id,creative{id,name,thumbnail_url},created_time',
-      access_token: token(),
-      limit: 500,
-    });
-    if (adset_id) params.set('adset_id', adset_id);
+    const listParams = { fields: 'id,name,status,adset_id,campaign_id,creative{id,name,thumbnail_url},created_time' };
+    if (adset_id) listParams.adset_id = adset_id;
 
-    const adRes = await fetch(`${FB_API}/${adAccount()}/ads?${params}`);
-    const adJson = await adRes.json();
-    if (adJson.error) throw new Error(adJson.error.message);
-    const ads = adJson.data || [];
+    const [ads, insights] = await Promise.all([
+      fetchFromAllAccounts('ads', listParams),
+      fetchInsights('ad', date_preset, adset_id ? { adset_id } : {}),
+    ]);
 
-    const insights = await fetchInsights('ad', date_preset, adset_id ? { adset_id } : {});
     const insightsMap = Object.fromEntries(insights.map(i => [i.ad_id, i]));
 
     const merged = ads.map(a => ({

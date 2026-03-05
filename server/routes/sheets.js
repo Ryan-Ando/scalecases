@@ -7,7 +7,7 @@ function getSheetConfig() {
   return {
     sheetId: process.env.SHEETS_ID,
     tabName: process.env.SHEETS_TAB_NAME || 'Sheet1',
-    campaignCol: process.env.SHEETS_CAMPAIGN_COL || 'A',
+    stateCol: process.env.SHEETS_STATE_COL || 'A',
     casesCol: process.env.SHEETS_CASES_COL || 'B',
   };
 }
@@ -24,25 +24,25 @@ async function getAuthClient() {
 }
 
 // GET /api/sheets/cases
-// Returns [{ campaignName, cases }]
+// Returns [{ state, cases }] — state is matched against campaign names by abbreviation
 router.get('/cases', async (req, res) => {
   try {
-    const { sheetId, tabName, campaignCol, casesCol } = getSheetConfig();
+    const { sheetId, tabName, stateCol, casesCol } = getSheetConfig();
     const auth = await getAuthClient();
     const sheets = google.sheets({ version: 'v4', auth });
 
-    // Determine range — read both columns from row 2 onward (skip header)
-    const colRange = `${tabName}!${campaignCol}2:${casesCol}`;
+    // Read both columns from row 2 onward (skip header row)
+    const range = `${tabName}!${stateCol}2:${casesCol}`;
     const response = await sheets.spreadsheets.values.get({
       spreadsheetId: sheetId,
-      range: colRange,
+      range,
     });
 
     const rows = response.data.values || [];
     const data = rows
-      .filter(row => row[0]) // skip empty campaign name rows
+      .filter(row => row[0])
       .map(row => ({
-        campaignName: row[0].trim(),
+        state: row[0].trim().toUpperCase(),
         cases: parseInt(row[1], 10) || 0,
       }));
 
@@ -54,10 +54,9 @@ router.get('/cases', async (req, res) => {
 });
 
 // GET /api/sheets/config
-// Returns current column mapping config (safe to expose — no secrets)
 router.get('/config', (_req, res) => {
-  const { tabName, campaignCol, casesCol } = getSheetConfig();
-  res.json({ tabName, campaignCol, casesCol });
+  const { tabName, stateCol, casesCol } = getSheetConfig();
+  res.json({ tabName, stateCol, casesCol });
 });
 
 export default router;
