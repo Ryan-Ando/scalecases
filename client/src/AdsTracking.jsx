@@ -295,11 +295,11 @@ export default function AdsTracking() {
       if (!adName || !c.dateAdded) continue;
       if (!map[adName] || c.dateAdded < map[adName]) map[adName] = c.dateAdded;
     }
-    // Fall back to sheet date (MMDD format → infer year) for ads with no GHL data
+    // Compare sheet launch date with earliest GHL date — keep whichever is earlier
     for (const row of sheetImport) {
-      if (map[row.adName]) continue; // GHL date takes precedence
       const iso = parseSheetDate(row.date);
-      if (iso) map[row.adName] = iso;
+      if (!iso) continue;
+      if (!map[row.adName] || iso < map[row.adName]) map[row.adName] = iso;
     }
     return map;
   }, [allContacts, sheetImport]);
