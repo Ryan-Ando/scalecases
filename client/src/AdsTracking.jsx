@@ -505,6 +505,9 @@ export default function AdsTracking() {
                 <th className="tracking-th-state tracking-th-sortable" onClick={() => handleSort('date')}>
                   First Used {sortKey === 'date' && <SortArrow dir={sortDir} />}
                 </th>
+                <th className="tracking-th-state tracking-th-sortable" onClick={() => handleSort('total')}>
+                  Total {sortKey === 'total' && <SortArrow dir={sortDir} />}
+                </th>
                 {orderedStates.map((state, i) => (
                   <th
                     key={state}
@@ -515,7 +518,7 @@ export default function AdsTracking() {
                     onDrop={() => onColDrop(i)}
                     onDragEnd={() => { dragColRef.current = null; setDragOverCol(null); }}
                   >
-                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
+                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1 }}>
                       {editingState === state ? (
                         <form style={{ margin: 0 }} onSubmit={e => { e.preventDefault(); saveAccountName(state, editValue); }}>
                           <input
@@ -531,11 +534,12 @@ export default function AdsTracking() {
                         <button
                           className="tracking-acct-name"
                           title="Click to rename"
-                          onClick={e => { e.stopPropagation(); setEditingState(state); setEditValue(accountNames[state] || state); }}
+                          onClick={e => { e.stopPropagation(); setEditingState(state); setEditValue(accountNames[state] || accountLabel(state)); }}
                         >
                           {accountLabel(state)}
                         </button>
                       )}
+                      <span className="tracking-state-key">{state}</span>
                       <button
                         className={`tracking-sort-btn${sortKey === state ? ' tracking-sort-btn--active' : ''}`}
                         onClick={e => { e.stopPropagation(); handleSort(state); }}
@@ -546,9 +550,6 @@ export default function AdsTracking() {
                     </div>
                   </th>
                 ))}
-                <th className="tracking-th-state tracking-th-sortable" onClick={() => handleSort('total')}>
-                  Total {sortKey === 'total' && <SortArrow dir={sortDir} />}
-                </th>
               </tr>
             </thead>
             <tbody>
@@ -562,20 +563,20 @@ export default function AdsTracking() {
                       <span className="tracking-ad-name">{adName}</span>
                     </td>
                     <td className="tracking-td-date">{fmtDate(firstUsed[adName])}</td>
+                    <td className="tracking-td-total">{total > 0 ? total : '—'}</td>
                     {orderedStates.map(state => {
                       const leads      = row[state] || [];
                       const imported   = sheetByName[adName]?.leads?.[state] || 0;
-                      const total      = leads.length + imported;
+                      const cellTotal  = leads.length + imported;
                       return (
                         <td key={state} className="tracking-td-cell">
-                          {total > 0
-                            ? <button className="tracking-cell-btn" onClick={() => setCellDetail({ adName, state, leads, imported })}>{total}</button>
+                          {cellTotal > 0
+                            ? <button className="tracking-cell-btn" onClick={() => setCellDetail({ adName, state, leads, imported })}>{cellTotal}</button>
                             : <span className="tracking-cell-empty">—</span>
                           }
                         </td>
                       );
                     })}
-                    <td className="tracking-td-total">{total > 0 ? total : '—'}</td>
                   </tr>
                 );
               })}
@@ -584,15 +585,15 @@ export default function AdsTracking() {
               <tr>
                 <td className="tracking-td-ad tracking-tfoot-label">Total</td>
                 <td className="tracking-td-date tracking-tfoot-label" />
+                <td className="tracking-td-total tracking-tfoot-label">
+                  {adNames.reduce((s, a) => s + orderedStates.reduce((s2, st) =>
+                    s2 + (grid[a]?.[st]?.length || 0) + (sheetByName[a]?.leads?.[st] || 0), 0), 0) || '—'}
+                </td>
                 {orderedStates.map(state => {
                   const total = adNames.reduce((s, a) =>
                     s + (grid[a]?.[state]?.length || 0) + (sheetByName[a]?.leads?.[state] || 0), 0);
                   return <td key={state} className="tracking-td-total tracking-tfoot-label">{total > 0 ? total : '—'}</td>;
                 })}
-                <td className="tracking-td-total tracking-tfoot-label">
-                  {adNames.reduce((s, a) => s + orderedStates.reduce((s2, st) =>
-                    s2 + (grid[a]?.[st]?.length || 0) + (sheetByName[a]?.leads?.[st] || 0), 0), 0) || '—'}
-                </td>
               </tr>
             </tfoot>
           </table>

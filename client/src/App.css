@@ -841,6 +841,15 @@ tfoot .td-name { font-family: var(--sans); font-weight: 700; font-size: 13px; }
 .tracking-sort-btn:hover { background: rgba(0,0,0,0.06); color: var(--text); }
 .tracking-sort-btn--active { color: var(--green-dark); font-weight: 700; }
 
+.tracking-state-key {
+  font-size: 9px;
+  font-weight: 700;
+  color: var(--text-muted);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  opacity: 0.7;
+}
+
 .tracking-grid tbody tr:hover .tracking-td-ad,
 .tracking-grid tbody tr:hover .tracking-td-cell,
 .tracking-grid tbody tr:hover .tracking-td-total {
