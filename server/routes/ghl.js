@@ -2,37 +2,43 @@ import { Router } from 'express';
 import fetch from 'node-fetch';
 
 const router = Router();
-const GHL_API = 'https://rest.gohighlevel.com/v1';
+const GHL_API = 'https://services.leadconnectorhq.com';
 
 function token() {
   return process.env.GHL_API_KEY;
 }
 
-// Paginate through all GHL contacts
+function locationId() {
+  return process.env.GHL_LOCATION_ID;
+}
+
+const GHL_HEADERS = () => ({
+  Authorization: `Bearer ${token()}`,
+  Version: '2021-07-28',
+  'Content-Type': 'application/json',
+});
+
+// Paginate through all GHL contacts for the sub-account
 async function fetchAllContacts() {
   const all = [];
-  let startAfter = null;
-  let startAfterId = null;
+  let page = 1;
 
   while (true) {
-    const params = new URLSearchParams({ limit: 100 });
-    if (startAfter)   params.set('startAfter', startAfter);
-    if (startAfterId) params.set('startAfterId', startAfterId);
+    const params = new URLSearchParams({ locationId: locationId(), limit: 100, page });
 
     const res = await fetch(`${GHL_API}/contacts/?${params}`, {
-      headers: { Authorization: `Bearer ${token()}` },
+      headers: GHL_HEADERS(),
     });
-    const json = await res.json();
-    if (!res.ok) throw new Error(json.message || `GHL API error ${res.status}`);
+    const text = await res.text();
+    console.error('GHL raw response:', res.status, text.slice(0, 500));
+    if (!res.ok) throw new Error(`GHL API error ${res.status}: ${text.slice(0, 200)}`);
+    const json = JSON.parse(text);
 
     const batch = json.contacts || [];
     all.push(...batch);
 
     if (batch.length < 100) break;
-
-    const last = batch[batch.length - 1];
-    startAfter   = last.dateAdded ? new Date(last.dateAdded).getTime() : null;
-    startAfterId = last.id;
+    page++;
   }
 
   return all;
@@ -42,7 +48,7 @@ async function fetchAllContacts() {
 // Returns contacts with UTM attribution fields for adset/ad level case matching
 router.get('/contacts', async (req, res) => {
   try {
-    if (!token()) return res.status(503).json({ error: 'GHL_API_KEY not configured' });
+    if (!token() || !locationId()) return res.status(503).json({ error: 'GHL_API_KEY or GHL_LOCATION_ID not configured' });
 
     const raw = await fetchAllContacts();
 
