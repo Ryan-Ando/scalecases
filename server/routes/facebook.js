@@ -16,9 +16,40 @@ const INSIGHTS_FIELDS = [
   'frequency',
   'cost_per_unique_click',
   'cost_per_result',
+  'actions',
   'video_avg_time_watched_actions',
   'video_play_actions',
 ].join(',');
+
+// Extract lead/result count from the actions array.
+// Facebook returns actions as [{ action_type, value }, ...].
+// For law firm lead gen campaigns the relevant types are checked in priority order.
+function extractResults(insightRow) {
+  const actions = insightRow.actions || [];
+
+  const leadTypes = [
+    'lead',
+    'onsite_conversion.lead_grouped',
+    'offsite_conversion.fb_pixel_lead',
+    'contact',
+    'schedule',
+    'submit_application',
+  ];
+
+  for (const type of leadTypes) {
+    const action = actions.find(a => a.action_type === type);
+    if (action) return { results: parseInt(action.value, 10) || 0, resultType: 'Leads' };
+  }
+
+  // Fall back to computing from spend ÷ cost_per_result if available
+  const cpr = parseFloat(insightRow.cost_per_result);
+  const spend = parseFloat(insightRow.spend);
+  if (cpr > 0 && spend > 0) {
+    return { results: Math.round(spend / cpr), resultType: 'Results' };
+  }
+
+  return { results: 0, resultType: 'Leads' };
+}
 
 function token() {
   return process.env.FB_ACCESS_TOKEN;
@@ -88,16 +119,20 @@ router.get('/campaigns', async (req, res) => {
 
     const insightsMap = Object.fromEntries(insights.map(i => [i.campaign_id, i]));
 
-    const merged = campaigns.map(c => ({
-      id: c.id,
-      name: c.name,
-      status: c.status,
-      objective: c.objective,
-      createdTime: c.created_time,
-      dailyBudget: c.daily_budget,
-      lifetimeBudget: c.lifetime_budget,
-      ...(insightsMap[c.id] || {}),
-    }));
+    const merged = campaigns.map(c => {
+      const ins = insightsMap[c.id] || {};
+      return {
+        id: c.id,
+        name: c.name,
+        status: c.status,
+        objective: c.objective,
+        createdTime: c.created_time,
+        dailyBudget: c.daily_budget,
+        lifetimeBudget: c.lifetime_budget,
+        ...ins,
+        ...extractResults(ins),
+      };
+    });
 
     res.json(merged);
   } catch (err) {
@@ -121,17 +156,21 @@ router.get('/adsets', async (req, res) => {
 
     const insightsMap = Object.fromEntries(insights.map(i => [i.adset_id, i]));
 
-    const merged = adsets.map(a => ({
-      id: a.id,
-      name: a.name,
-      status: a.status,
-      campaignId: a.campaign_id,
-      createdTime: a.created_time,
-      dailyBudget: a.daily_budget,
-      lifetimeBudget: a.lifetime_budget,
-      optimizationGoal: a.optimization_goal,
-      ...(insightsMap[a.id] || {}),
-    }));
+    const merged = adsets.map(a => {
+      const ins = insightsMap[a.id] || {};
+      return {
+        id: a.id,
+        name: a.name,
+        status: a.status,
+        campaignId: a.campaign_id,
+        createdTime: a.created_time,
+        dailyBudget: a.daily_budget,
+        lifetimeBudget: a.lifetime_budget,
+        optimizationGoal: a.optimization_goal,
+        ...ins,
+        ...extractResults(ins),
+      };
+    });
 
     res.json(merged);
   } catch (err) {
@@ -155,16 +194,20 @@ router.get('/ads', async (req, res) => {
 
     const insightsMap = Object.fromEntries(insights.map(i => [i.ad_id, i]));
 
-    const merged = ads.map(a => ({
-      id: a.id,
-      name: a.name,
-      status: a.status,
-      adsetId: a.adset_id,
-      campaignId: a.campaign_id,
-      creative: a.creative,
-      createdTime: a.created_time,
-      ...(insightsMap[a.id] || {}),
-    }));
+    const merged = ads.map(a => {
+      const ins = insightsMap[a.id] || {};
+      return {
+        id: a.id,
+        name: a.name,
+        status: a.status,
+        adsetId: a.adset_id,
+        campaignId: a.campaign_id,
+        creative: a.creative,
+        createdTime: a.created_time,
+        ...ins,
+        ...extractResults(ins),
+      };
+    });
 
     res.json(merged);
   } catch (err) {
