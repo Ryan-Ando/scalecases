@@ -861,13 +861,15 @@ export default function App() {
     return applyStatus(campaigns).map(c => {
       const caseList = matchCases('utmCampaign', c.name);
       const leadList = matchLeadsByCampaign(c.name);
+      const spend = parseFloat(c.spend) || 0;
       return {
         ...c,
         cases: caseList.length,
-        costPerCase: caseList.length > 0 ? (parseFloat(c.spend) || 0) / caseList.length : null,
+        costPerCase: caseList.length > 0 ? spend / caseList.length : null,
         caseList,
         leads: leadList.length,
         leadList,
+        cost_per_result: leadList.length > 0 ? spend / leadList.length : null,
       };
     });
   }, [campaigns, statusFilter, attributedCases]);
@@ -879,13 +881,15 @@ export default function App() {
     return data.map(a => {
       const caseList = matchCasesByAdset(a.campaignName, a.name);
       const leadList = matchLeadsByAdset(a.campaignName, a.name);
+      const spend = parseFloat(a.spend) || 0;
       return {
         ...a,
         cases: caseList.length,
-        costPerCase: caseList.length > 0 ? (parseFloat(a.spend) || 0) / caseList.length : null,
+        costPerCase: caseList.length > 0 ? spend / caseList.length : null,
         caseList,
         leads: leadList.length,
         leadList,
+        cost_per_result: leadList.length > 0 ? spend / leadList.length : null,
       };
     });
   }, [adsets, campaignCtx, statusFilter, attributedCases]);
@@ -897,13 +901,15 @@ export default function App() {
     return data.map(a => {
       const caseList = matchCasesByAd(a.campaignName, a.name);
       const leadList = matchLeadsByAd(a.campaignName, a.name);
+      const spend = parseFloat(a.spend) || 0;
       return {
         ...a,
         cases: caseList.length,
-        costPerCase: caseList.length > 0 ? (parseFloat(a.spend) || 0) / caseList.length : null,
+        costPerCase: caseList.length > 0 ? spend / caseList.length : null,
         caseList,
         leads: leadList.length,
         leadList,
+        cost_per_result: leadList.length > 0 ? spend / leadList.length : null,
       };
     });
   }, [ads, adsetCtx, statusFilter, attributedCases]);
