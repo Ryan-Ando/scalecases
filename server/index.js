@@ -3,6 +3,7 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import facebookRoutes from './routes/facebook.js';
 import sheetsRoutes from './routes/sheets.js';
+import ghlRoutes from './routes/ghl.js';
 
 dotenv.config();
 
@@ -16,6 +17,7 @@ app.use(express.json());
 
 app.use('/api/facebook', facebookRoutes);
 app.use('/api/sheets', sheetsRoutes);
+app.use('/api/ghl', ghlRoutes);
 
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 

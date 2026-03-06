@@ -15,6 +15,8 @@ services:
         sync: false
       - key: FB_AD_ACCOUNTS
         sync: false
+      - key: GHL_API_KEY
+        sync: false
       - key: GOOGLE_SERVICE_ACCOUNT_JSON
         sync: false
       - key: SHEETS_ID

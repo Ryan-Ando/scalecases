@@ -38,6 +38,8 @@ const ADSET_COLS = [
   { key: 'audience',              label: 'Audience',         src: null, type: 'text',     vis: true  },
   { key: 'placement',             label: 'Placement',        src: null, type: 'text',     vis: false },
   { key: 'createdTime',           label: 'Date Created',     src: 'f',  type: 'date',     vis: false },
+  { key: 'cases',                 label: 'Cases',            src: '⟳',  type: 'cases',    vis: true  },
+  { key: 'costPerCase',           label: 'Cost per Case',    src: '⟳',  type: 'currency', vis: true  },
 ];
 
 const AD_COLS = [
@@ -56,6 +58,8 @@ const AD_COLS = [
   { key: 'video_avg_time',        label: 'Video Play Time',  src: 'f',  type: 'time',     vis: false },
   { key: 'hookRate',              label: 'Hook Rate',        src: '÷',  type: 'percent',  vis: false },
   { key: 'createdTime',           label: 'Date Created',     src: 'f',  type: 'date',     vis: false },
+  { key: 'cases',                 label: 'Cases',            src: '⟳',  type: 'cases',    vis: true  },
+  { key: 'costPerCase',           label: 'Cost per Case',    src: '⟳',  type: 'currency', vis: true  },
 ];
 
 const TIMEFRAMES = [
@@ -266,8 +270,49 @@ function SelectionBar({ count, noun, actionLabel, onAction, onClear }) {
   );
 }
 
+// ─── Case Panel ───────────────────────────────────────────────────────────────
+function CasePanel({ title, cases, onClose }) {
+  function fmtPhone(p) {
+    const d = (p || '').replace(/\D/g, '');
+    if (d.length === 11 && d[0] === '1') return `(${d.slice(1,4)}) ${d.slice(4,7)}-${d.slice(7)}`;
+    if (d.length === 10) return `(${d.slice(0,3)}) ${d.slice(3,6)}-${d.slice(6)}`;
+    return p;
+  }
+
+  return (
+    <div className="col-mgr-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className="col-mgr-panel">
+        <div className="col-mgr-head">
+          <div>
+            <div className="col-mgr-title">{title}</div>
+            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>{cases.length} attributed case{cases.length !== 1 ? 's' : ''}</div>
+          </div>
+          <button className="col-mgr-x" onClick={onClose}>×</button>
+        </div>
+        <div style={{ overflowY: 'auto', flex: 1 }}>
+          {cases.length === 0 ? (
+            <div className="empty" style={{ padding: 40 }}>
+              <div className="empty-icon">📋</div>
+              <div className="empty-title">No attributed cases</div>
+              <div className="empty-desc">Cases show here when UTM data matches this row.</div>
+            </div>
+          ) : cases.map(c => (
+            <div key={c.id} className="case-item">
+              <div className="case-item-name">{c.name}</div>
+              <div className="case-item-meta">
+                <span>{fmtPhone(c.phone)}</span>
+                {c.dateAdded && <span>{new Date(c.dateAdded).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}</span>}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Data Table ────────────────────────────────────────────────────────────────
-function DataTable({ data, colDef, showCases, onNameClick, checkedIds, onCheckedChange }) {
+function DataTable({ data, colDef, showCases, onNameClick, checkedIds, onCheckedChange, onCasesClick }) {
   const [cols, setCols] = useState(() => colDef.filter(c => showCases || (c.key !== 'cases' && c.key !== 'costPerCase')));
   const [sortKey, setSortKey] = useState('spend');
   const [sortDir, setSortDir] = useState('desc');
@@ -353,6 +398,15 @@ function DataTable({ data, colDef, showCases, onNameClick, checkedIds, onChecked
           <td key={col.key} className="td-mono">
             <div>{fmt(v, 'number')}</div>
             {row.resultType && <div className="td-sub">{row.resultType}</div>}
+          </td>
+        );
+      case 'cases':
+        return (
+          <td key={col.key} className="td-mono">
+            {onCasesClick && (v > 0)
+              ? <button className="cases-btn" onClick={() => onCasesClick(row)}>{fmt(v, 'number')}</button>
+              : fmt(v, 'number')
+            }
           </td>
         );
       default:
@@ -619,11 +673,15 @@ export default function App() {
   const [statusFilter, setStatusFilter] = useState('ALL');
 
   // Data
-  const [campaigns, setCampaigns] = useState([]);
-  const [adsets, setAdsets]       = useState([]);
-  const [ads, setAds]             = useState([]);
-  const [loading, setLoading]     = useState(false);
-  const [error, setError]         = useState(null);
+  const [campaigns, setCampaigns]     = useState([]);
+  const [adsets, setAdsets]           = useState([]);
+  const [ads, setAds]                 = useState([]);
+  const [ghlContacts, setGhlContacts] = useState([]);
+  const [loading, setLoading]         = useState(false);
+  const [error, setError]             = useState(null);
+
+  // Case detail panel
+  const [casePanel, setCasePanel] = useState(null); // { title, cases }
 
   // Drill-down context: { ids: Set, label: string } or null
   const [campaignCtx, setCampaignCtx] = useState(null);
@@ -631,6 +689,13 @@ export default function App() {
 
   // Checkbox selection (IDs of checked rows, per current tab view)
   const [checkedIds, setCheckedIds] = useState(new Set());
+
+  // Fetch GHL contacts once on mount
+  useEffect(() => {
+    api.ghlContacts()
+      .then(setGhlContacts)
+      .catch(err => console.warn('GHL contacts unavailable:', err.message));
+  }, []);
 
   // Fetch data whenever tab or timeframe changes
   useEffect(() => {
@@ -699,17 +764,42 @@ export default function App() {
 
   const displayCampaigns = useMemo(() => applyStatus(campaigns), [campaigns, statusFilter]);
 
+  // Match GHL contacts to a row by UTM field (case-insensitive)
+  function matchCases(utmField, rowName) {
+    if (!rowName) return [];
+    const name = rowName.toLowerCase().trim();
+    return ghlContacts.filter(c => (c[utmField] || '').toLowerCase().trim() === name);
+  }
+
   const displayAdsets = useMemo(() => {
     let data = adsets;
     if (campaignCtx) data = data.filter(a => campaignCtx.ids.has(a.campaignId));
-    return applyStatus(data);
-  }, [adsets, campaignCtx, statusFilter]);
+    data = applyStatus(data);
+    return data.map(a => {
+      const caseList = matchCases('utmMedium', a.name);
+      return {
+        ...a,
+        cases: caseList.length,
+        costPerCase: caseList.length > 0 ? (parseFloat(a.spend) || 0) / caseList.length : null,
+        caseList,
+      };
+    });
+  }, [adsets, campaignCtx, statusFilter, ghlContacts]);
 
   const displayAds = useMemo(() => {
     let data = ads;
     if (adsetCtx) data = data.filter(a => adsetCtx.ids.has(a.adsetId));
-    return applyStatus(data);
-  }, [ads, adsetCtx, statusFilter]);
+    data = applyStatus(data);
+    return data.map(a => {
+      const caseList = matchCases('utmContent', a.name);
+      return {
+        ...a,
+        cases: caseList.length,
+        costPerCase: caseList.length > 0 ? (parseFloat(a.spend) || 0) / caseList.length : null,
+        caseList,
+      };
+    });
+  }, [ads, adsetCtx, statusFilter, ghlContacts]);
 
   // Breadcrumb items
   const breadcrumbItems = useMemo(() => {
@@ -773,14 +863,18 @@ export default function App() {
         )}
 
         {!loading && tab === 'Ad Sets' && (
-          <DataTable data={displayAdsets} colDef={ADSET_COLS} showCases={false}
-            onNameClick={drillIntoAdset} checkedIds={checkedIds} onCheckedChange={setCheckedIds} />
+          <DataTable data={displayAdsets} colDef={ADSET_COLS} showCases={true}
+            onNameClick={drillIntoAdset} checkedIds={checkedIds} onCheckedChange={setCheckedIds}
+            onCasesClick={row => setCasePanel({ title: row.name, cases: row.caseList || [] })} />
         )}
 
         {!loading && tab === 'Ads' && (
-          <DataTable data={displayAds} colDef={AD_COLS} showCases={false}
-            checkedIds={checkedIds} onCheckedChange={setCheckedIds} />
+          <DataTable data={displayAds} colDef={AD_COLS} showCases={true}
+            checkedIds={checkedIds} onCheckedChange={setCheckedIds}
+            onCasesClick={row => setCasePanel({ title: row.name, cases: row.caseList || [] })} />
         )}
+
+        {casePanel && <CasePanel title={casePanel.title} cases={casePanel.cases} onClose={() => setCasePanel(null)} />}
 
         {tab === 'Reports'  && <ReportsTab />}
         {tab === 'Sources'  && <SourcesTab />}

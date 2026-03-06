@@ -46,6 +46,10 @@ const api = {
   sheetsConfig() {
     return get('/api/sheets/config');
   },
+
+  ghlContacts() {
+    return get('/api/ghl/contacts');
+  },
 };
 
 // Merge cases data into campaigns by matching state abbreviation in campaign name.
