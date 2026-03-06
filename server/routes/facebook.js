@@ -220,12 +220,13 @@ router.get('/ads', async (req, res) => {
 });
 
 // GET /api/facebook/daily?date_preset=&level=campaign
-// Returns per-day spend/impressions/CPM per campaign (or adset/ad)
+// Returns per-day spend/impressions/CPM — paginates through all cursor pages.
 router.get('/daily', async (req, res) => {
   try {
     const { date_preset, level = 'campaign' } = req.query;
     const accounts = adAccounts();
-    const results = await Promise.all(accounts.map(async account => {
+    const all = [];
+    await Promise.all(accounts.map(async account => {
       const params = new URLSearchParams({
         level,
         fields: `${level}_id,${level}_name,spend,impressions,cpm,date_start,date_stop`,
@@ -234,12 +235,16 @@ router.get('/daily', async (req, res) => {
         access_token: token(),
         limit: 500,
       });
-      const r = await fetch(`${FB_API}/${account}/insights?${params}`);
-      const json = await r.json();
-      if (json.error) throw new Error(`[${account}] ${json.error.message}`);
-      return json.data || [];
+      let url = `${FB_API}/${account}/insights?${params}`;
+      while (url) {
+        const r = await fetch(url);
+        const json = await r.json();
+        if (json.error) throw new Error(`[${account}] ${json.error.message}`);
+        all.push(...(json.data || []));
+        url = json.paging?.next || null;
+      }
     }));
-    res.json(results.flat());
+    res.json(all);
   } catch (err) {
     console.error('FB daily error:', err.message);
     res.status(500).json({ error: err.message });

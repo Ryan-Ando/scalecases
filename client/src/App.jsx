@@ -715,10 +715,9 @@ export default function App() {
   // Fetch data whenever tab or timeframe changes
   useEffect(() => {
     const fetchMap = {
-      'Campaigns':    () => api.campaigns(timeframe).then(setCampaigns),
-      'Ad Sets':      () => api.adsets(timeframe).then(setAdsets),
-      'Ads':          () => api.ads(timeframe).then(setAds),
-      'Ads Tracking': () => api.ads(timeframe).then(setAds),
+      'Campaigns': () => api.campaigns(timeframe).then(setCampaigns),
+      'Ad Sets':   () => api.adsets(timeframe).then(setAdsets),
+      'Ads':       () => api.ads(timeframe).then(setAds),
     };
     const fetcher = fetchMap[tab];
     if (!fetcher) return;
@@ -926,8 +925,8 @@ export default function App() {
     return items;
   }, [tab, campaignCtx, adsetCtx]);
 
-  const showTable = ['Campaigns', 'Ad Sets', 'Ads', 'Ads Tracking'].includes(tab);
-  const showBreadcrumb = showTable && (campaignCtx || adsetCtx) && tab !== 'Ads Tracking';
+  const showTable = ['Campaigns', 'Ad Sets', 'Ads'].includes(tab);
+  const showBreadcrumb = showTable && (campaignCtx || adsetCtx);
 
   return (
     <div className="app">
@@ -997,9 +996,7 @@ export default function App() {
         {casePanel && <CasePanel title={casePanel.title} cases={casePanel.cases} onClose={() => setCasePanel(null)} />}
         {leadPanel && <CasePanel title={leadPanel.title} cases={leadPanel.leads} onClose={() => setLeadPanel(null)} />}
 
-        {tab === 'Ads Tracking' && (
-          <AdsTracking ads={ads} ghlContacts={ghlContacts} timeframe={timeframe} />
-        )}
+        {tab === 'Ads Tracking' && <AdsTracking />}
 
         {tab === 'Reports'  && <ReportsTab />}
         {tab === 'Sources'  && <SourcesTab />}
