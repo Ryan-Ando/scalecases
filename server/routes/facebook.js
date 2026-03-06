@@ -24,12 +24,15 @@ function token() {
   return process.env.FB_ACCESS_TOKEN;
 }
 
-// Support multiple ad accounts: FB_AD_ACCOUNTS=act_111,act_222
+// Support multiple ad accounts: FB_AD_ACCOUNTS=act_111,act_222 (act_ prefix optional)
 function adAccounts() {
   return (process.env.FB_AD_ACCOUNTS || '')
     .split(',')
-    .map(a => a.trim())
-    .filter(Boolean);
+    .map(a => {
+      const id = a.trim();
+      return id.startsWith('act_') ? id : `act_${id}`;
+    })
+    .filter(id => id !== 'act_');
 }
 
 // Fetch insights for one account
