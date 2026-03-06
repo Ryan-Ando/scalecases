@@ -22,33 +22,40 @@ async function getAuthClient() {
   return auth.getClient();
 }
 
-// GET /api/sheets/cases
-// Reads every row, counts how many rows exist per state abbreviation in column D.
-// Returns [{ state: 'VA', cases: 4 }, ...]
+// GET /api/sheets/cases?start=ISO&end=ISO
+// Reads name (col A), phone (col B), date (col F) from the sheet.
+// Optionally filters by date range. Returns [{ name, phone, date }].
 router.get('/cases', async (req, res) => {
   try {
-    const { sheetId, tabName, stateCol } = getSheetConfig();
+    const { sheetId, tabName } = getSheetConfig();
     const auth = await getAuthClient();
     const sheets = google.sheets({ version: 'v4', auth });
 
-    // Read only the state column, skipping the header row
-    const range = `${tabName}!${stateCol}2:${stateCol}`;
     const response = await sheets.spreadsheets.values.get({
       spreadsheetId: sheetId,
-      range,
+      range: `${tabName}!A2:F`,
     });
 
     const rows = response.data.values || [];
 
-    // Count rows per state
-    const counts = {};
+    const start = req.query.start ? new Date(req.query.start) : null;
+    const end   = req.query.end   ? new Date(req.query.end)   : null;
+
+    const cases = [];
     for (const row of rows) {
-      const state = (row[0] || '').trim().toUpperCase();
-      if (state) counts[state] = (counts[state] || 0) + 1;
+      const name  = (row[0] || '').trim();
+      const phone = (row[1] || '').trim();
+      const date  = row[5] ? new Date(row[5]) : null;
+
+      if (!phone) continue;
+
+      if (start && date && date < start) continue;
+      if (end   && date && date > end)   continue;
+
+      cases.push({ name, phone, date: date ? date.toISOString() : null });
     }
 
-    const data = Object.entries(counts).map(([state, cases]) => ({ state, cases }));
-    res.json(data);
+    res.json(cases);
   } catch (err) {
     console.error('Sheets cases error:', err.message);
     res.status(500).json({ error: err.message });

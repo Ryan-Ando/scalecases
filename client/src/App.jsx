@@ -677,6 +677,7 @@ export default function App() {
   const [adsets, setAdsets]           = useState([]);
   const [ads, setAds]                 = useState([]);
   const [ghlContacts, setGhlContacts] = useState([]);
+  const [sheetCases, setSheetCases]   = useState([]);
   const [loading, setLoading]         = useState(false);
   const [error, setError]             = useState(null);
 
@@ -690,11 +691,14 @@ export default function App() {
   // Checkbox selection (IDs of checked rows, per current tab view)
   const [checkedIds, setCheckedIds] = useState(new Set());
 
-  // Fetch GHL contacts whenever timeframe changes
+  // Fetch GHL contacts and sheet cases whenever timeframe changes
   useEffect(() => {
     api.ghlContacts(timeframe, customStart, customEnd)
       .then(setGhlContacts)
       .catch(err => console.warn('GHL contacts unavailable:', err.message));
+    api.cases(timeframe, customStart, customEnd)
+      .then(setSheetCases)
+      .catch(err => console.warn('Sheet cases unavailable:', err.message));
   }, [timeframe, customStart, customEnd]);
 
   // Fetch data whenever tab or timeframe changes
@@ -771,13 +775,40 @@ export default function App() {
         caseList,
       };
     });
-  }, [campaigns, statusFilter, ghlContacts]);
+  }, [campaigns, statusFilter, attributedCases]);
 
-  // Match GHL contacts to a row by UTM field (case-insensitive)
+  // Normalize phone to last 10 digits for matching
+  function normalizePhone(p) {
+    const digits = (p || '').replace(/\D/g, '');
+    return digits.slice(-10);
+  }
+
+  // Build a map of normalized phone → GHL contact (with UTM) for fast lookup
+  const ghlByPhone = useMemo(() => {
+    const map = {};
+    for (const c of ghlContacts) {
+      const key = normalizePhone(c.phone);
+      if (key) map[key] = c;
+    }
+    return map;
+  }, [ghlContacts]);
+
+  // For each sheet case, look up its GHL contact by phone to get UTM attribution.
+  // Returns attributed cases: sheet case rows enriched with utmCampaign/utmMedium/utmContent.
+  const attributedCases = useMemo(() => {
+    return sheetCases
+      .map(sc => {
+        const contact = ghlByPhone[normalizePhone(sc.phone)];
+        return contact ? { ...sc, utmCampaign: contact.utmCampaign, utmMedium: contact.utmMedium, utmContent: contact.utmContent } : null;
+      })
+      .filter(Boolean);
+  }, [sheetCases, ghlByPhone]);
+
+  // Match attributed cases to a row by UTM field (case-insensitive exact match)
   function matchCases(utmField, rowName) {
     if (!rowName) return [];
     const name = rowName.toLowerCase().trim();
-    return ghlContacts.filter(c => (c[utmField] || '').toLowerCase().trim() === name);
+    return attributedCases.filter(c => (c[utmField] || '').toLowerCase().trim() === name);
   }
 
   const displayAdsets = useMemo(() => {
@@ -793,7 +824,7 @@ export default function App() {
         caseList,
       };
     });
-  }, [adsets, campaignCtx, statusFilter, ghlContacts]);
+  }, [adsets, campaignCtx, statusFilter, attributedCases]);
 
   const displayAds = useMemo(() => {
     let data = ads;
@@ -808,7 +839,7 @@ export default function App() {
         caseList,
       };
     });
-  }, [ads, adsetCtx, statusFilter, ghlContacts]);
+  }, [ads, adsetCtx, statusFilter, attributedCases]);
 
   // Breadcrumb items
   const breadcrumbItems = useMemo(() => {

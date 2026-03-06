@@ -60,8 +60,12 @@ const api = {
     return get(adsetId ? `${base}&adset_id=${adsetId}` : base);
   },
 
-  cases() {
-    return get('/api/sheets/cases');
+  cases(timeframe, customStart, customEnd) {
+    const { start, end } = timeframeToRange(timeframe, customStart, customEnd);
+    const params = new URLSearchParams();
+    if (start) params.set('start', start.toISOString());
+    if (end)   params.set('end',   end.toISOString());
+    return get(`/api/sheets/cases?${params}`);
   },
 
   sheetsConfig() {
