@@ -859,7 +859,11 @@ export default function App() {
 
   const displayCampaigns = useMemo(() => {
     return applyStatus(campaigns).map(c => {
-      const caseList = matchCases('utmCampaign', c.name);
+      // Campaign cases: match directly from sheet by state abbreviation in campaign name
+      // This ensures no cases are lost due to missing GHL attribution
+      const caseList = sheetCases.filter(sc =>
+        sc.state && new RegExp(`\\b${sc.state}\\b`, 'i').test(c.name)
+      );
       const leadList = matchLeadsByCampaign(c.name);
       const spend = parseFloat(c.spend) || 0;
       return {
@@ -872,7 +876,7 @@ export default function App() {
         cost_per_result: leadList.length > 0 ? spend / leadList.length : null,
       };
     });
-  }, [campaigns, statusFilter, attributedCases]);
+  }, [campaigns, statusFilter, sheetCases, attributedCases, ghlContacts]);
 
   const displayAdsets = useMemo(() => {
     let data = adsets;

@@ -52,7 +52,8 @@ router.get('/cases', async (req, res) => {
       if (start && date && date < start) continue;
       if (end   && date && date > end)   continue;
 
-      cases.push({ name, phone, date: date ? date.toISOString() : null });
+      const state = (row[3] || '').trim().toUpperCase();
+      cases.push({ name, phone, state, date: date ? date.toISOString() : null });
     }
 
     res.json(cases);
