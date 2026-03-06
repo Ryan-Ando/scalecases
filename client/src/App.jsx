@@ -1,140 +1,7 @@
-import { useState, useMemo, useRef } from 'react';
+import { useState, useMemo, useRef, useEffect } from 'react';
 import './App.css';
+import api, { mergeCases } from './api.js';
 
-// ─── Mock Data ─────────────────────────────────────────────────────────────────
-const ALL_CAMPAIGNS = [
-  {
-    id: '1', name: 'Personal Injury — Georgia', status: 'ACTIVE',
-    budget: 5000, spend: 4218, impressions: 98400, reach: 72100,
-    unique_clicks: 2830, cpm: 42.87, unique_ctr: 2.88, frequency: 1.36,
-    cost_per_unique_click: 1.49, results: 48, resultType: 'Leads',
-    cost_per_result: 87.88, video_avg_time: 12.4, hookRate: 38.2,
-    createdTime: '2024-11-01', cases: 6, costPerCase: 703,
-  },
-  {
-    id: '2', name: 'Auto Accident — Florida', status: 'ACTIVE',
-    budget: 3000, spend: 2945, impressions: 67200, reach: 51000,
-    unique_clicks: 1890, cpm: 43.83, unique_ctr: 2.81, frequency: 1.32,
-    cost_per_unique_click: 1.56, results: 31, resultType: 'Leads',
-    cost_per_result: 95.00, video_avg_time: 10.1, hookRate: 33.5,
-    createdTime: '2024-12-01', cases: 4, costPerCase: 736,
-  },
-  {
-    id: '3', name: 'Workers Comp — National', status: 'PAUSED',
-    budget: 2000, spend: 1102, impressions: 29800, reach: 23400,
-    unique_clicks: 810, cpm: 36.98, unique_ctr: 2.72, frequency: 1.27,
-    cost_per_unique_click: 1.36, results: 12, resultType: 'Leads',
-    cost_per_result: 91.83, video_avg_time: 8.7, hookRate: 29.1,
-    createdTime: '2025-01-15', cases: 1, costPerCase: 1102,
-  },
-  {
-    id: '4', name: 'Slip & Fall — Texas', status: 'ACTIVE',
-    budget: 4000, spend: 3670, impressions: 84100, reach: 63200,
-    unique_clicks: 2400, cpm: 43.64, unique_ctr: 2.85, frequency: 1.33,
-    cost_per_unique_click: 1.53, results: 41, resultType: 'Leads',
-    cost_per_result: 89.51, video_avg_time: 11.8, hookRate: 36.7,
-    createdTime: '2025-01-20', cases: 5, costPerCase: 734,
-  },
-  {
-    id: '5', name: 'Medical Malpractice — NY', status: 'PAUSED',
-    budget: 6000, spend: 1890, impressions: 41000, reach: 33500,
-    unique_clicks: 1100, cpm: 46.10, unique_ctr: 2.68, frequency: 1.22,
-    cost_per_unique_click: 1.72, results: 18, resultType: 'Leads',
-    cost_per_result: 105.00, video_avg_time: 9.2, hookRate: 27.8,
-    createdTime: '2025-02-01', cases: 2, costPerCase: 945,
-  },
-];
-
-const ALL_ADSETS = [
-  {
-    id: 'a1', name: 'Broad 25–54', campaignName: 'Personal Injury — Georgia',
-    status: 'ACTIVE', budget: 2500, spend: 2100, impressions: 49000, reach: 36000,
-    unique_clicks: 1410, cpm: 42.86, unique_ctr: 2.88, frequency: 1.36,
-    cost_per_unique_click: 1.49, results: 24, resultType: 'Leads',
-    cost_per_result: 87.50, audience: 'Broad', placement: 'Feed + Stories',
-    createdTime: '2024-11-01',
-  },
-  {
-    id: 'a2', name: 'Retargeting', campaignName: 'Personal Injury — Georgia',
-    status: 'ACTIVE', budget: 2500, spend: 2118, impressions: 49400, reach: 36100,
-    unique_clicks: 1420, cpm: 42.88, unique_ctr: 2.88, frequency: 1.37,
-    cost_per_unique_click: 1.49, results: 24, resultType: 'Leads',
-    cost_per_result: 88.25, audience: 'Website Visitors', placement: 'Feed',
-    createdTime: '2024-11-05',
-  },
-  {
-    id: 'a3', name: 'Lookalike 1%', campaignName: 'Auto Accident — Florida',
-    status: 'ACTIVE', budget: 3000, spend: 2945, impressions: 67200, reach: 51000,
-    unique_clicks: 1890, cpm: 43.83, unique_ctr: 2.81, frequency: 1.32,
-    cost_per_unique_click: 1.56, results: 31, resultType: 'Leads',
-    cost_per_result: 95.00, audience: 'Lookalike (1%)', placement: 'Feed + Reels',
-    createdTime: '2024-12-01',
-  },
-  {
-    id: 'a4', name: 'Interest Targeting', campaignName: 'Slip & Fall — Texas',
-    status: 'ACTIVE', budget: 4000, spend: 3670, impressions: 84100, reach: 63200,
-    unique_clicks: 2400, cpm: 43.64, unique_ctr: 2.85, frequency: 1.33,
-    cost_per_unique_click: 1.53, results: 41, resultType: 'Leads',
-    cost_per_result: 89.51, audience: 'Legal + Accident Interest', placement: 'Feed',
-    createdTime: '2025-01-20',
-  },
-  {
-    id: 'a5', name: 'Age 45–64', campaignName: 'Workers Comp — National',
-    status: 'PAUSED', budget: 2000, spend: 1102, impressions: 29800, reach: 23400,
-    unique_clicks: 810, cpm: 36.98, unique_ctr: 2.72, frequency: 1.27,
-    cost_per_unique_click: 1.36, results: 12, resultType: 'Leads',
-    cost_per_result: 91.83, audience: 'Age 45–64', placement: 'Feed',
-    createdTime: '2025-01-15',
-  },
-];
-
-const ALL_ADS = [
-  {
-    id: 'ad1', name: 'Testimonial — Maria V.', campaignName: 'Personal Injury — Georgia',
-    adsetName: 'Broad 25–54', status: 'ACTIVE', format: 'Video',
-    spend: 1050, impressions: 24500, reach: 18000,
-    unique_clicks: 705, cpm: 42.86, unique_ctr: 2.88, frequency: 1.36,
-    cost_per_unique_click: 1.49, results: 12, resultType: 'Leads',
-    cost_per_result: 87.50, video_avg_time: 14.2, hookRate: 41.3,
-    createdTime: '2024-11-01',
-  },
-  {
-    id: 'ad2', name: 'Case Result — $400k Settlement', campaignName: 'Personal Injury — Georgia',
-    adsetName: 'Broad 25–54', status: 'ACTIVE', format: 'Image',
-    spend: 1050, impressions: 24500, reach: 18000,
-    unique_clicks: 705, cpm: 42.86, unique_ctr: 2.88, frequency: 1.36,
-    cost_per_unique_click: 1.49, results: 12, resultType: 'Leads',
-    cost_per_result: 87.50, video_avg_time: null, hookRate: null,
-    createdTime: '2024-11-03',
-  },
-  {
-    id: 'ad3', name: 'FAQ — What to Do After Accident', campaignName: 'Auto Accident — Florida',
-    adsetName: 'Lookalike 1%', status: 'ACTIVE', format: 'Video',
-    spend: 1472, impressions: 33600, reach: 25500,
-    unique_clicks: 945, cpm: 43.81, unique_ctr: 2.81, frequency: 1.32,
-    cost_per_unique_click: 1.56, results: 15, resultType: 'Leads',
-    cost_per_result: 98.13, video_avg_time: 11.8, hookRate: 35.2,
-    createdTime: '2024-12-01',
-  },
-  {
-    id: 'ad4', name: 'Client Story — John D.', campaignName: 'Auto Accident — Florida',
-    adsetName: 'Lookalike 1%', status: 'PAUSED', format: 'Carousel',
-    spend: 1473, impressions: 33600, reach: 25500,
-    unique_clicks: 945, cpm: 43.85, unique_ctr: 2.81, frequency: 1.32,
-    cost_per_unique_click: 1.56, results: 16, resultType: 'Leads',
-    cost_per_result: 92.06, video_avg_time: null, hookRate: null,
-    createdTime: '2024-12-05',
-  },
-  {
-    id: 'ad5', name: 'Animated Explainer — Slip & Fall', campaignName: 'Slip & Fall — Texas',
-    adsetName: 'Interest Targeting', status: 'ACTIVE', format: 'Video',
-    spend: 3670, impressions: 84100, reach: 63200,
-    unique_clicks: 2400, cpm: 43.64, unique_ctr: 2.85, frequency: 1.33,
-    cost_per_unique_click: 1.53, results: 41, resultType: 'Leads',
-    cost_per_result: 89.51, video_avg_time: 13.1, hookRate: 38.9,
-    createdTime: '2025-01-20',
-  },
-];
 
 // ─── Column Definitions ────────────────────────────────────────────────────────
 const CAMPAIGN_COLS = [
@@ -867,20 +734,44 @@ export default function App() {
   const [customEnd, setCustomEnd] = useState(null);
   const [statusFilter, setStatusFilter] = useState('ALL');
 
+  const [campaigns, setCampaigns] = useState([]);
+  const [adsets, setAdsets] = useState([]);
+  const [ads, setAds] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    const tableTab = tab === 'Campaigns' || tab === 'Ad Sets' || tab === 'Ads';
+    if (!tableTab) return;
+
+    setLoading(true);
+    setError(null);
+
+    const fetches = {
+      'Campaigns': () =>
+        Promise.all([api.campaigns(timeframe), api.cases()])
+          .then(([data, casesData]) => setCampaigns(mergeCases(data, casesData))),
+      'Ad Sets': () =>
+        api.adsets(timeframe).then(setAdsets),
+      'Ads': () =>
+        api.ads(timeframe).then(setAds),
+    };
+
+    fetches[tab]()
+      .catch(err => setError(err.message))
+      .finally(() => setLoading(false));
+  }, [tab, timeframe]);
+
   function applyCustom(s, e) {
     setCustomStart(s);
     setCustomEnd(e);
     setTimeframe('Custom Range');
   }
 
-  function filteredData(data) {
+  function filter(data) {
     if (statusFilter === 'ALL') return data;
     return data.filter(r => r.status === statusFilter);
   }
-
-  const campaigns = filteredData(ALL_CAMPAIGNS);
-  const adsets    = filteredData(ALL_ADSETS);
-  const ads       = filteredData(ALL_ADS);
 
   const showTable = tab === 'Campaigns' || tab === 'Ad Sets' || tab === 'Ads';
 
@@ -924,19 +815,31 @@ export default function App() {
           </div>
         )}
 
-        {tab === 'Campaigns' && (
+        {error && (
+          <div style={{ background: '#fee2e2', border: '1px solid #fca5a5', borderRadius: 8, padding: '12px 16px', marginBottom: 16, color: '#991b1b', fontSize: 13 }}>
+            Error: {error}
+          </div>
+        )}
+
+        {loading && (
+          <div style={{ textAlign: 'center', padding: '60px 0', color: 'var(--text-muted)', fontSize: 13 }}>
+            Loading…
+          </div>
+        )}
+
+        {!loading && tab === 'Campaigns' && (
           <>
-            <KPIStrip data={campaigns} />
-            <DataTable data={campaigns} colDef={CAMPAIGN_COLS} showCases={true} />
+            <KPIStrip data={filter(campaigns)} />
+            <DataTable data={filter(campaigns)} colDef={CAMPAIGN_COLS} showCases={true} />
           </>
         )}
 
-        {tab === 'Ad Sets' && (
-          <DataTable data={adsets} colDef={ADSET_COLS} showCases={false} />
+        {!loading && tab === 'Ad Sets' && (
+          <DataTable data={filter(adsets)} colDef={ADSET_COLS} showCases={false} />
         )}
 
-        {tab === 'Ads' && (
-          <DataTable data={ads} colDef={AD_COLS} showCases={false} />
+        {!loading && tab === 'Ads' && (
+          <DataTable data={filter(ads)} colDef={AD_COLS} showCases={false} />
         )}
 
         {tab === 'Reports'  && <ReportsTab />}
