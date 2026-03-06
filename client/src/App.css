@@ -674,6 +674,144 @@ tfoot .td-name { font-family: var(--sans); font-weight: 700; font-size: 13px; }
 .empty-title { font-weight: 600; font-size: 15px; color: var(--text); margin-bottom: 6px; }
 .empty-desc { font-size: 13px; }
 
+/* ── Ads Tracking Tab ───────────────────────────────────────────────────────── */
+.tracking-grid-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.tracking-grid {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 12px;
+}
+
+.tracking-th-ad {
+  text-align: left;
+  padding: 10px 14px;
+  background: var(--bg);
+  border-bottom: 2px solid var(--border);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  min-width: 240px;
+  position: sticky;
+  left: 0;
+  z-index: 1;
+}
+
+.tracking-th-state {
+  text-align: center;
+  padding: 8px 12px;
+  background: var(--bg);
+  border-bottom: 2px solid var(--border);
+  border-left: 1px solid var(--border);
+  min-width: 80px;
+  white-space: nowrap;
+}
+
+.tracking-acct-name {
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 2px 4px;
+  border-radius: 4px;
+}
+.tracking-acct-name:hover { background: var(--green-light); color: var(--green-dark); }
+
+.tracking-name-input {
+  width: 64px;
+  padding: 2px 6px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  border: 1px solid var(--green);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--text);
+  outline: none;
+}
+
+.tracking-td-ad {
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  position: sticky;
+  left: 0;
+  z-index: 1;
+}
+
+.tracking-ad-name {
+  display: block;
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.tracking-td-cell {
+  text-align: center;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  border-left: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.tracking-cell-btn {
+  border: none;
+  background: var(--green-light);
+  color: var(--green-dark);
+  font-weight: 700;
+  font-size: 12px;
+  font-family: var(--mono);
+  padding: 3px 10px;
+  border-radius: 12px;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+.tracking-cell-btn:hover { background: #b6dfc7; }
+
+.tracking-cell-empty {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.tracking-td-total {
+  text-align: center;
+  padding: 9px 10px;
+  border-bottom: 1px solid var(--border);
+  border-left: 1px solid var(--border);
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  background: var(--bg);
+  min-width: 64px;
+}
+
+.tracking-tfoot-label {
+  font-weight: 700;
+  color: var(--text);
+  border-top: 2px solid var(--border);
+  background: #f8f9fa;
+}
+
+.tracking-grid tbody tr:hover .tracking-td-ad,
+.tracking-grid tbody tr:hover .tracking-td-cell,
+.tracking-grid tbody tr:hover .tracking-td-total {
+  background: #f5faf7;
+}
+
 @media (max-width: 900px) {
   .settings-layout { grid-template-columns: 1fr; }
   .kpi-strip { gap: 8px; }

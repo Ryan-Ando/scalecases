@@ -79,6 +79,10 @@ const api = {
     if (end)   params.set('end',   end.toISOString());
     return get(`/api/ghl/contacts?${params}`);
   },
+
+  dailyInsights(timeframe) {
+    return get(`/api/facebook/daily?date_preset=${toPreset(timeframe)}`);
+  },
 };
 
 // Merge cases data into campaigns by matching state abbreviation in campaign name.

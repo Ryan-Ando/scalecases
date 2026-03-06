@@ -185,7 +185,7 @@ router.get('/ads', async (req, res) => {
   try {
     const { date_preset, adset_id } = req.query;
 
-    const listParams = { fields: 'id,name,status,adset_id,campaign_id,campaign{name},creative{id,name,thumbnail_url},created_time' };
+    const listParams = { fields: 'id,name,status,adset_id,adset{name},campaign_id,campaign{name},creative{id,name,thumbnail_url},created_time' };
     if (adset_id) listParams.adset_id = adset_id;
 
     const [ads, insights] = await Promise.all([
@@ -202,6 +202,7 @@ router.get('/ads', async (req, res) => {
         name: a.name,
         status: a.status,
         adsetId: a.adset_id,
+        adsetName: a.adset?.name || '',
         campaignId: a.campaign_id,
         campaignName: a.campaign?.name || '',
         creative: a.creative,
@@ -214,6 +215,33 @@ router.get('/ads', async (req, res) => {
     res.json(merged);
   } catch (err) {
     console.error('FB ads error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/facebook/daily?date_preset=&level=campaign
+// Returns per-day spend/impressions/CPM per campaign (or adset/ad)
+router.get('/daily', async (req, res) => {
+  try {
+    const { date_preset, level = 'campaign' } = req.query;
+    const accounts = adAccounts();
+    const results = await Promise.all(accounts.map(async account => {
+      const params = new URLSearchParams({
+        level,
+        fields: `${level}_id,${level}_name,spend,impressions,cpm,date_start,date_stop`,
+        date_preset: date_preset || 'last_30d',
+        time_increment: 1,
+        access_token: token(),
+        limit: 500,
+      });
+      const r = await fetch(`${FB_API}/${account}/insights?${params}`);
+      const json = await r.json();
+      if (json.error) throw new Error(`[${account}] ${json.error.message}`);
+      return json.data || [];
+    }));
+    res.json(results.flat());
+  } catch (err) {
+    console.error('FB daily error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
