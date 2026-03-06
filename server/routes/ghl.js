@@ -18,18 +18,6 @@ const GHL_HEADERS = () => ({
   'Content-Type': 'application/json',
 });
 
-// Fetch custom field definitions and return a map of { fieldName -> fieldId }
-async function fetchCustomFieldMap() {
-  const res = await fetch(`${GHL_API}/locations/${locationId()}/customFields`, {
-    headers: GHL_HEADERS(),
-  });
-  const text = await res.text();
-  if (!res.ok) throw new Error(`GHL custom fields error ${res.status}: ${text.slice(0, 200)}`);
-  const json = JSON.parse(text);
-  const fields = json.customFields || [];
-  // Map lowercase field name → id
-  return Object.fromEntries(fields.map(f => [f.name.toLowerCase(), f.id]));
-}
 
 // Paginate through all GHL contacts for the sub-account, optionally filtered by date range
 async function fetchAllContacts(startMs, endMs) {
@@ -75,22 +63,11 @@ router.get('/contacts', async (req, res) => {
     const startMs = start ? new Date(start).getTime() : thisMonthRange().startMs;
     const endMs   = end   ? new Date(end).getTime()   : thisMonthRange().endMs;
 
-    const [raw, fieldMap] = await Promise.all([fetchAllContacts(startMs, endMs), fetchCustomFieldMap()]);
+    const raw = await fetchAllContacts(startMs, endMs);
 
-    // Find IDs for UTM custom fields (match common naming variations)
-    function findFieldId(map, ...names) {
-      for (const name of names) {
-        const key = Object.keys(map).find(k => k.includes(name.toLowerCase()));
-        if (key) return map[key];
-      }
-      return null;
-    }
-
-    const campaignFieldId = findFieldId(fieldMap, 'utm_campaign', 'utm campaign', 'utmcampaign');
-    const mediumFieldId   = findFieldId(fieldMap, 'utm_medium',   'utm medium',   'utmmedium');
-    const contentFieldId  = findFieldId(fieldMap, 'utm_content',  'utm content',  'utmcontent');
-
-    console.log('UTM field IDs:', { campaignFieldId, mediumFieldId, contentFieldId });
+    const campaignFieldId = process.env.GHL_FIELD_UTM_CAMPAIGN;
+    const mediumFieldId   = process.env.GHL_FIELD_UTM_MEDIUM;
+    const contentFieldId  = process.env.GHL_FIELD_UTM_CONTENT;
 
     function getCustomField(c, fieldId) {
       if (!fieldId) return '';
