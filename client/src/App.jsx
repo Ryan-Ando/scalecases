@@ -1,6 +1,6 @@
 import { useState, useMemo, useRef, useEffect } from 'react';
 import './App.css';
-import api, { mergeCases } from './api.js';
+import api from './api.js';
 
 // ─── Column Definitions ────────────────────────────────────────────────────────
 const CAMPAIGN_COLS = [
@@ -705,10 +705,9 @@ export default function App() {
     setError(null);
 
     const fetches = {
-      'Campaigns': () => Promise.all([api.campaigns(timeframe), api.cases()])
-        .then(([data, casesData]) => setCampaigns(mergeCases(data, casesData))),
-      'Ad Sets': () => api.adsets(timeframe).then(setAdsets),
-      'Ads':     () => api.ads(timeframe).then(setAds),
+      'Campaigns': () => api.campaigns(timeframe).then(setCampaigns),
+      'Ad Sets':   () => api.adsets(timeframe).then(setAdsets),
+      'Ads':       () => api.ads(timeframe).then(setAds),
     };
 
     fetches[tab]()
@@ -762,7 +761,17 @@ export default function App() {
     return data.filter(r => r.status === statusFilter);
   }
 
-  const displayCampaigns = useMemo(() => applyStatus(campaigns), [campaigns, statusFilter]);
+  const displayCampaigns = useMemo(() => {
+    return applyStatus(campaigns).map(c => {
+      const caseList = matchCases('utmCampaign', c.name);
+      return {
+        ...c,
+        cases: caseList.length,
+        costPerCase: caseList.length > 0 ? (parseFloat(c.spend) || 0) / caseList.length : null,
+        caseList,
+      };
+    });
+  }, [campaigns, statusFilter, ghlContacts]);
 
   // Match GHL contacts to a row by UTM field (case-insensitive)
   function matchCases(utmField, rowName) {
