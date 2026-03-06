@@ -71,9 +71,9 @@ router.get('/config', (_req, res) => {
 
 // GET /api/sheets/tracking-import
 // Reads the manual tracking sheet (TRACKING_SHEET_ID env var).
-// Returns [{ id, adName, date, leads: { SC: N, GA: M, ... } }]
-// Columns: A=date(MMDD), B=adName, C-L=SC,GA,VA,MD,DC,FL,AZ,WA,OH,TX
-const TRACKING_STATES = ['SC', 'GA', 'VA', 'MD', 'DC', 'FL', 'AZ', 'WA', 'OH', 'TX'];
+// Row 1 = headers: date, ad name, SC, GA, ...
+// Row 2 = full campaign names: <blank>, Account, LSS SC, LSS GA, ...
+// Returns { columns: [{ key, fullName }], rows: [{ id, adName, leads }] }
 const SKIP_LABELS = new Set(['date', 'account', 'none', 'ad name', 'ad', '']);
 
 router.get('/tracking-import', async (req, res) => {
@@ -86,7 +86,6 @@ router.get('/tracking-import', async (req, res) => {
     const auth = await getAuthClient();
     const sheets = google.sheets({ version: 'v4', auth });
 
-    // Resolve tab name from gid
     const meta = await sheets.spreadsheets.get({ spreadsheetId: sheetId });
     const sheetMeta = meta.data.sheets.find(s => s.properties.sheetId === gid);
     if (!sheetMeta) return res.status(404).json({ error: `Tab with gid ${gid} not found in spreadsheet` });
@@ -94,29 +93,44 @@ router.get('/tracking-import', async (req, res) => {
 
     const response = await sheets.spreadsheets.values.get({
       spreadsheetId: sheetId,
-      range: `${tabName}!A:L`,
+      range: `${tabName}!A:ZZ`, // read all columns dynamically
     });
 
     const rows = response.data.values || [];
+    if (rows.length < 2) return res.json({ columns: [], rows: [] });
 
-    // Merge rows by adName (in case same ad appears twice), summing lead counts
+    // Row 0: short header keys (SC, GA, VA, ...)
+    const headerRow = rows[0] || [];
+    // Row 1: full campaign names (LSS SC, LSS GA, ...)
+    const campaignRow = rows[1] || [];
+
+    // Build column definitions from col index 2 onward
+    const columns = [];
+    for (let j = 2; j < headerRow.length; j++) {
+      const key      = (headerRow[j]   || '').trim();
+      const fullName = (campaignRow[j] || '').trim();
+      if (key) columns.push({ key, fullName: fullName || key });
+    }
+
+    // Parse ad rows (rows 2+), skip header/label rows
     const byName = {};
-    for (const row of rows) {
+    for (let i = 2; i < rows.length; i++) {
+      const row    = rows[i];
       const date   = (row[0] || '').trim();
       const adName = (row[1] || '').trim();
       if (!adName || SKIP_LABELS.has(date.toLowerCase()) || SKIP_LABELS.has(adName.toLowerCase())) continue;
 
       if (!byName[adName]) {
-        byName[adName] = { id: adName, adName, date, leads: {} };
+        byName[adName] = { id: adName, adName, leads: {} };
       }
 
-      TRACKING_STATES.forEach((state, j) => {
+      columns.forEach((col, j) => {
         const val = parseInt(row[j + 2] || '0') || 0;
-        if (val > 0) byName[adName].leads[state] = (byName[adName].leads[state] || 0) + val;
+        if (val > 0) byName[adName].leads[col.key] = (byName[adName].leads[col.key] || 0) + val;
       });
     }
 
-    res.json(Object.values(byName));
+    res.json({ columns, rows: Object.values(byName) });
   } catch (err) {
     console.error('Tracking import error:', err.message);
     res.status(500).json({ error: err.message });

@@ -15,8 +15,9 @@ async function apiFetch(path) {
   return res.json();
 }
 
+// Match 2-letter state at end of campaign name after a dash, em-dash, or space
 function extractState(campaignName) {
-  const m = (campaignName || '').match(/[-–]\s*([A-Z]{2})\s*$/i);
+  const m = (campaignName || '').match(/[-–\s]([A-Z]{2})\s*$/i);
   return m ? m[1].toUpperCase() : null;
 }
 
@@ -90,7 +91,8 @@ export default function AdsTracking() {
   const [allContacts, setAllContacts]           = useState([]);
   const [allDailyInsights, setAllDailyInsights] = useState([]);
   const [allAds, setAllAds]                     = useState([]);
-  const [sheetImport, setSheetImport]           = useState([]); // manual sheet import
+  const [sheetImport, setSheetImport]           = useState([]);
+  const [sheetColumns, setSheetColumns]         = useState([]); // [{ key, fullName }]
   const [lastSync, setLastSync]                 = useState(null);
   const [importing, setImporting]               = useState(false);
   const [importNote, setImportNote]             = useState('');
@@ -119,17 +121,19 @@ export default function AdsTracking() {
 
   // ── Load from IndexedDB ────────────────────────────────────────────────────
   async function loadFromDB() {
-    const [contacts, insights, ads, imported, syncTime] = await Promise.all([
+    const [contacts, insights, ads, imported, cols, syncTime] = await Promise.all([
       dbGetAll('ghlContacts'),
       dbGetAll('fbDailyInsights'),
       dbGetAll('fbAds'),
       dbGetAll('sheetImport'),
+      dbGetMeta('trackingColumns'),
       dbGetMeta('lastSync'),
     ]);
     setAllContacts(contacts);
     setAllDailyInsights(insights);
     setAllAds(ads);
     setSheetImport(imported);
+    setSheetColumns(cols || []);
     setLastSync(syncTime);
   }
 
@@ -138,12 +142,19 @@ export default function AdsTracking() {
     setImporting(true);
     setImportNote('');
     try {
-      const data = await apiFetch('/api/sheets/tracking-import');
-      await dbUpsert('sheetImport', data);
-      const all = await dbGetAll('sheetImport');
+      const { columns, rows } = await apiFetch('/api/sheets/tracking-import');
+      await Promise.all([
+        dbUpsert('sheetImport', rows),
+        dbSetMeta('trackingColumns', columns),
+      ]);
+      const [all, cols] = await Promise.all([
+        dbGetAll('sheetImport'),
+        dbGetMeta('trackingColumns'),
+      ]);
       setSheetImport(all);
-      const totalLeads = data.reduce((s, r) => s + Object.values(r.leads).reduce((a, b) => a + b, 0), 0);
-      setImportNote(`Imported ${data.length} ads · ${totalLeads} historical leads`);
+      setSheetColumns(cols || []);
+      const totalLeads = rows.reduce((s, r) => s + Object.values(r.leads).reduce((a, b) => a + b, 0), 0);
+      setImportNote(`Imported ${rows.length} ads · ${columns.length} accounts · ${totalLeads} historical leads`);
     } catch (err) {
       setImportNote(`Import failed: ${err.message.slice(0, 80)}`);
     } finally {
@@ -228,14 +239,16 @@ export default function AdsTracking() {
 
   // ── Derived data ──────────────────────────────────────────────────────────
 
+  // Column keys in sheet order; fall back to GHL-derived states if no import yet
   const states = useMemo(() => {
+    if (sheetColumns.length > 0) return sheetColumns.map(c => c.key);
     const set = new Set();
     for (const c of allContacts) {
       const s = extractState(c.utmCampaign);
       if (s) set.add(s);
     }
     return [...set].sort();
-  }, [allContacts]);
+  }, [sheetColumns, allContacts]);
 
   const orderedStates = useMemo(() => {
     if (!colOrder) return states;
@@ -376,7 +389,11 @@ export default function AdsTracking() {
     setEditingState(null);
   }
 
-  function accountLabel(state) { return accountNames[state] || state; }
+  function accountLabel(state) {
+    if (accountNames[state]) return accountNames[state];
+    const col = sheetColumns.find(c => c.key === state);
+    return col?.fullName || state;
+  }
 
   const activeMetric = CHART_METRICS.find(m => m.key === chartMetric);
 
