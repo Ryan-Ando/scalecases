@@ -84,6 +84,7 @@ router.get('/contacts', async (req, res) => {
       utmCampaign: getCustomField(c, campaignFieldId) || (c.utmCampaign || '').trim(),
       utmMedium:   getCustomField(c, mediumFieldId)   || (c.utmMedium   || '').trim(),
       utmContent:  getCustomField(c, contentFieldId)  || (c.utmContent  || '').trim(),
+      utmTerm:     (c.utmTerm || '').trim(),
     }));
 
     res.json(contacts);

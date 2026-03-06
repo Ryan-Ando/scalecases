@@ -798,6 +798,22 @@ export default function App() {
     return attributedCases.filter(c => (c[utmField] || '').toLowerCase().trim() === name);
   }
 
+  // Match ad set cases by adset ID (utm_term) — unique, no name collision
+  function matchCasesByAdsetId(adsetId) {
+    if (!adsetId) return [];
+    return attributedCases.filter(c => (c.utmTerm || '').trim() === String(adsetId));
+  }
+
+  // Match ad cases by ad name + parent adset ID — disambiguates same-named ads
+  function matchCasesByAd(adName, adsetId) {
+    if (!adName) return [];
+    const name = adName.toLowerCase().trim();
+    return attributedCases.filter(c =>
+      (c.utmContent || '').toLowerCase().trim() === name &&
+      (c.utmTerm    || '').trim() === String(adsetId)
+    );
+  }
+
   const displayCampaigns = useMemo(() => {
     return applyStatus(campaigns).map(c => {
       const caseList = matchCases('utmCampaign', c.name);
@@ -815,7 +831,7 @@ export default function App() {
     if (campaignCtx) data = data.filter(a => campaignCtx.ids.has(a.campaignId));
     data = applyStatus(data);
     return data.map(a => {
-      const caseList = matchCases('utmMedium', a.name);
+      const caseList = matchCasesByAdsetId(a.id);
       return {
         ...a,
         cases: caseList.length,
@@ -830,7 +846,7 @@ export default function App() {
     if (adsetCtx) data = data.filter(a => adsetCtx.ids.has(a.adsetId));
     data = applyStatus(data);
     return data.map(a => {
-      const caseList = matchCases('utmContent', a.name);
+      const caseList = matchCasesByAd(a.name, a.adsetId);
       return {
         ...a,
         cases: caseList.length,
