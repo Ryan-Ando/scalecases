@@ -8,7 +8,7 @@ const CAMPAIGN_COLS = [
   { key: 'status',                label: 'Delivery',         src: null, type: 'status',   vis: true  },
   { key: 'budget',                label: 'Budget',           src: null, type: 'currency', vis: true  },
   { key: 'spend',                 label: 'Amount Spent',     src: 'f',  type: 'currency', vis: true  },
-  { key: 'results',               label: 'Results',          src: 'f',  type: 'results',  vis: true  },
+  { key: 'leads',                 label: 'Results',          src: '⟳',  type: 'leads',    vis: true  },
   { key: 'cost_per_result',       label: 'Cost per Result',  src: '÷',  type: 'currency', vis: true  },
   { key: 'unique_clicks',         label: 'Unique Clicks',    src: 'f',  type: 'number',   vis: true  },
   { key: 'cost_per_unique_click', label: 'Cost / Click',     src: '÷',  type: 'currency', vis: true  },
@@ -18,7 +18,6 @@ const CAMPAIGN_COLS = [
   { key: 'video_avg_time',        label: 'Video Play Time',  src: 'f',  type: 'time',     vis: false },
   { key: 'hookRate',              label: 'Hook Rate',        src: '÷',  type: 'percent',  vis: false },
   { key: 'createdTime',           label: 'Date Created',     src: 'f',  type: 'date',     vis: false },
-  { key: 'leads',                 label: 'Leads',            src: '⟳',  type: 'leads',    vis: true  },
   { key: 'cases',                 label: 'Cases',            src: '⟳',  type: 'number',   vis: true  },
   { key: 'costPerCase',           label: 'Cost per Case',    src: '⟳',  type: 'currency', vis: true  },
 ];
@@ -29,7 +28,7 @@ const ADSET_COLS = [
   { key: 'status',                label: 'Delivery',         src: null, type: 'status',   vis: true  },
   { key: 'budget',                label: 'Budget',           src: null, type: 'currency', vis: true  },
   { key: 'spend',                 label: 'Amount Spent',     src: 'f',  type: 'currency', vis: true  },
-  { key: 'results',               label: 'Results',          src: 'f',  type: 'results',  vis: true  },
+  { key: 'leads',                 label: 'Results',          src: '⟳',  type: 'leads',    vis: true  },
   { key: 'cost_per_result',       label: 'Cost per Result',  src: '÷',  type: 'currency', vis: true  },
   { key: 'unique_clicks',         label: 'Unique Clicks',    src: 'f',  type: 'number',   vis: true  },
   { key: 'cost_per_unique_click', label: 'Cost / Click',     src: '÷',  type: 'currency', vis: true  },
@@ -39,7 +38,6 @@ const ADSET_COLS = [
   { key: 'audience',              label: 'Audience',         src: null, type: 'text',     vis: true  },
   { key: 'placement',             label: 'Placement',        src: null, type: 'text',     vis: false },
   { key: 'createdTime',           label: 'Date Created',     src: 'f',  type: 'date',     vis: false },
-  { key: 'leads',                 label: 'Leads',            src: '⟳',  type: 'leads',    vis: true  },
   { key: 'cases',                 label: 'Cases',            src: '⟳',  type: 'cases',    vis: true  },
   { key: 'costPerCase',           label: 'Cost per Case',    src: '⟳',  type: 'currency', vis: true  },
 ];
@@ -51,7 +49,7 @@ const AD_COLS = [
   { key: 'status',                label: 'Delivery',         src: null, type: 'status',   vis: true  },
   { key: 'format',                label: 'Format',           src: null, type: 'text',     vis: true  },
   { key: 'spend',                 label: 'Amount Spent',     src: 'f',  type: 'currency', vis: true  },
-  { key: 'results',               label: 'Results',          src: 'f',  type: 'results',  vis: true  },
+  { key: 'leads',                 label: 'Results',          src: '⟳',  type: 'leads',    vis: true  },
   { key: 'cost_per_result',       label: 'Cost per Result',  src: '÷',  type: 'currency', vis: true  },
   { key: 'unique_clicks',         label: 'Unique Clicks',    src: 'f',  type: 'number',   vis: true  },
   { key: 'cost_per_unique_click', label: 'Cost / Click',     src: '÷',  type: 'currency', vis: true  },
@@ -60,7 +58,6 @@ const AD_COLS = [
   { key: 'video_avg_time',        label: 'Video Play Time',  src: 'f',  type: 'time',     vis: false },
   { key: 'hookRate',              label: 'Hook Rate',        src: '÷',  type: 'percent',  vis: false },
   { key: 'createdTime',           label: 'Date Created',     src: 'f',  type: 'date',     vis: false },
-  { key: 'leads',                 label: 'Leads',            src: '⟳',  type: 'leads',    vis: true  },
   { key: 'cases',                 label: 'Cases',            src: '⟳',  type: 'cases',    vis: true  },
   { key: 'costPerCase',           label: 'Cost per Case',    src: '⟳',  type: 'currency', vis: true  },
 ];
@@ -436,7 +433,7 @@ function DataTable({ data, colDef, showCases, onNameClick, checkedIds, onChecked
 
     if (sumKeys.includes(col.key)) return <td key={col.key} className="td-mono">{fmt(sum(sorted, col.key), col.type)}</td>;
     if (col.key === 'cost_per_result') {
-      const cpr = sum(sorted, 'results') > 0 ? sum(sorted, 'spend') / sum(sorted, 'results') : null;
+      const cpr = sum(sorted, 'leads') > 0 ? sum(sorted, 'spend') / sum(sorted, 'leads') : null;
       return <td key={col.key} className="td-mono">{fmt(cpr, 'currency')}</td>;
     }
     if (col.key === 'costPerCase') {
@@ -512,7 +509,7 @@ function KPIStrip({ data }) {
   const spend       = sum(data, 'spend');
   const impressions = sum(data, 'impressions');
   const clicks      = sum(data, 'unique_clicks');
-  const leads       = sum(data, 'results');
+  const leads       = sum(data, 'leads');
   const cases       = sum(data, 'cases');
   const cpl         = leads > 0 ? spend / leads : null;
   const cpc         = cases > 0 ? spend / cases : null;
