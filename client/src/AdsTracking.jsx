@@ -32,14 +32,15 @@ function fmtDate(iso) {
   return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
-// Convert MMDD sheet date to ISO string, inferring year from context
-function parseSheetDate(mmdd) {
-  if (!mmdd || mmdd.length < 4) return null;
-  const mm = parseInt(mmdd.slice(0, 2));
-  const dd = parseInt(mmdd.slice(2, 4));
-  if (isNaN(mm) || isNaN(dd) || mm < 1 || mm > 12) return null;
-  const now   = new Date();
-  const year  = mm <= now.getMonth() + 1 ? now.getFullYear() : now.getFullYear() - 1;
+// Extract MMDD date from the start of an ad name (e.g. "0304-IG SC-2-img" → Mar 4)
+function parseAdNameDate(adName) {
+  const m = (adName || '').match(/^(\d{2})(\d{2})[-\s]/);
+  if (!m) return null;
+  const mm = parseInt(m[1]);
+  const dd = parseInt(m[2]);
+  if (mm < 1 || mm > 12 || dd < 1 || dd > 31) return null;
+  const now  = new Date();
+  const year = mm <= now.getMonth() + 1 ? now.getFullYear() : now.getFullYear() - 1;
   return new Date(year, mm - 1, dd).toISOString();
 }
 
@@ -287,22 +288,15 @@ export default function AdsTracking() {
     return map;
   }, [adNames, states, allContacts]);
 
+  // Date derived directly from MMDD prefix in the ad name — single source of truth
   const firstUsed = useMemo(() => {
     const map = {};
-    // From GHL contacts (full ISO dates)
-    for (const c of allContacts) {
-      const adName = (c.utmContent || '').trim();
-      if (!adName || !c.dateAdded) continue;
-      if (!map[adName] || c.dateAdded < map[adName]) map[adName] = c.dateAdded;
-    }
-    // Compare sheet launch date with earliest GHL date — keep whichever is earlier
-    for (const row of sheetImport) {
-      const iso = parseSheetDate(row.date);
-      if (!iso) continue;
-      if (!map[row.adName] || iso < map[row.adName]) map[row.adName] = iso;
+    for (const adName of adNames) {
+      const iso = parseAdNameDate(adName);
+      if (iso) map[adName] = iso;
     }
     return map;
-  }, [allContacts, sheetImport]);
+  }, [adNames]);
 
   const sortedAdNames = useMemo(() => {
     return [...adNames].sort((a, b) => {
