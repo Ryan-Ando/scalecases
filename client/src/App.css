@@ -600,6 +600,51 @@ tfoot .td-name { font-family: var(--sans); font-weight: 700; font-size: 13px; }
   color: var(--text-muted);
 }
 
+/* ── Breadcrumb ─────────────────────────────────────────────────────────────── */
+.breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 14px;
+  font-size: 13px;
+}
+.breadcrumb-item { display: flex; align-items: center; gap: 4px; }
+.breadcrumb-sep { color: var(--text-muted); font-size: 12px; }
+.breadcrumb-link {
+  border: none; background: none; cursor: pointer;
+  color: var(--green); font-size: 13px; padding: 0;
+  text-decoration: underline; text-underline-offset: 2px;
+}
+.breadcrumb-link:hover { color: var(--green-dark); }
+.breadcrumb-current { color: var(--text); font-weight: 600; }
+
+/* ── Selection Bar ──────────────────────────────────────────────────────────── */
+.selection-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--green-light);
+  border: 1px solid #b6dfc7;
+  border-radius: var(--radius);
+  padding: 10px 16px;
+  margin-bottom: 12px;
+}
+.selection-count { font-size: 13px; font-weight: 600; color: var(--green-dark); flex: 1; }
+
+/* ── Drill-down name link ───────────────────────────────────────────────────── */
+.drill-link {
+  border: none; background: none; cursor: pointer;
+  color: var(--text); font-weight: 600; font-size: 13px;
+  font-family: var(--sans); padding: 0; text-align: left;
+  max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  display: block;
+}
+.drill-link:hover { color: var(--green); text-decoration: underline; text-underline-offset: 2px; }
+
+/* ── Row checkbox ───────────────────────────────────────────────────────────── */
+.row-check { accent-color: var(--green); cursor: pointer; width: 14px; height: 14px; }
+.tr--checked { background: #f0faf4 !important; }
+
 /* ── Empty state ────────────────────────────────────────────────────────────── */
 .empty {
   text-align: center;
