@@ -765,18 +765,6 @@ export default function App() {
     return data.filter(r => r.status === statusFilter);
   }
 
-  const displayCampaigns = useMemo(() => {
-    return applyStatus(campaigns).map(c => {
-      const caseList = matchCases('utmCampaign', c.name);
-      return {
-        ...c,
-        cases: caseList.length,
-        costPerCase: caseList.length > 0 ? (parseFloat(c.spend) || 0) / caseList.length : null,
-        caseList,
-      };
-    });
-  }, [campaigns, statusFilter, attributedCases]);
-
   // Normalize phone to last 10 digits for matching
   function normalizePhone(p) {
     const digits = (p || '').replace(/\D/g, '');
@@ -794,7 +782,6 @@ export default function App() {
   }, [ghlContacts]);
 
   // For each sheet case, look up its GHL contact by phone to get UTM attribution.
-  // Returns attributed cases: sheet case rows enriched with utmCampaign/utmMedium/utmContent.
   const attributedCases = useMemo(() => {
     return sheetCases
       .map(sc => {
@@ -810,6 +797,18 @@ export default function App() {
     const name = rowName.toLowerCase().trim();
     return attributedCases.filter(c => (c[utmField] || '').toLowerCase().trim() === name);
   }
+
+  const displayCampaigns = useMemo(() => {
+    return applyStatus(campaigns).map(c => {
+      const caseList = matchCases('utmCampaign', c.name);
+      return {
+        ...c,
+        cases: caseList.length,
+        costPerCase: caseList.length > 0 ? (parseFloat(c.spend) || 0) / caseList.length : null,
+        caseList,
+      };
+    });
+  }, [campaigns, statusFilter, attributedCases]);
 
   const displayAdsets = useMemo(() => {
     let data = adsets;
