@@ -148,7 +148,7 @@ export default function AdsTracking() {
       //    First sync → last 365 days of history
       //    Incremental → last 14 days (covers FB's 3-day reporting delay)
       setSyncNote('Fetching daily insights…');
-      const preset = isFirstSync ? 'last_365d' : 'last_14d';
+      const preset = isFirstSync ? 'maximum' : 'last_14d';
       const dailyRaw = await apiFetch(`/api/facebook/daily?date_preset=${preset}`);
       // Synthetic key: date + campaign id to allow upsert/overwrite
       const dailyRecords = dailyRaw.map(r => ({
