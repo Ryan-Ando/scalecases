@@ -58,10 +58,10 @@ router.get('/contacts', async (req, res) => {
       phone:       c.phone  || '',
       email:       c.email  || '',
       dateAdded:   c.dateAdded,
-      // UTM fields — matched to FB ad names at adset/ad level
-      utmCampaign: (c.utmCampaign || '').trim(),  // campaign name
-      utmMedium:   (c.utmMedium   || '').trim(),  // adset name
-      utmContent:  (c.utmContent  || '').trim(),  // ad name
+      utmCampaign: (c.utmCampaign || '').trim(),
+      utmMedium:   (c.utmMedium   || '').trim(),
+      utmContent:  (c.utmContent  || '').trim(),
+      customFields: c.customFields || [],
     }));
 
     res.json(contacts);
