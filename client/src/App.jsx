@@ -18,6 +18,7 @@ const CAMPAIGN_COLS = [
   { key: 'video_avg_time',        label: 'Video Play Time',  src: 'f',  type: 'time',     vis: false },
   { key: 'hookRate',              label: 'Hook Rate',        src: '÷',  type: 'percent',  vis: false },
   { key: 'createdTime',           label: 'Date Created',     src: 'f',  type: 'date',     vis: false },
+  { key: 'leads',                 label: 'Leads',            src: '⟳',  type: 'leads',    vis: true  },
   { key: 'cases',                 label: 'Cases',            src: '⟳',  type: 'number',   vis: true  },
   { key: 'costPerCase',           label: 'Cost per Case',    src: '⟳',  type: 'currency', vis: true  },
 ];
@@ -38,6 +39,7 @@ const ADSET_COLS = [
   { key: 'audience',              label: 'Audience',         src: null, type: 'text',     vis: true  },
   { key: 'placement',             label: 'Placement',        src: null, type: 'text',     vis: false },
   { key: 'createdTime',           label: 'Date Created',     src: 'f',  type: 'date',     vis: false },
+  { key: 'leads',                 label: 'Leads',            src: '⟳',  type: 'leads',    vis: true  },
   { key: 'cases',                 label: 'Cases',            src: '⟳',  type: 'cases',    vis: true  },
   { key: 'costPerCase',           label: 'Cost per Case',    src: '⟳',  type: 'currency', vis: true  },
 ];
@@ -58,6 +60,7 @@ const AD_COLS = [
   { key: 'video_avg_time',        label: 'Video Play Time',  src: 'f',  type: 'time',     vis: false },
   { key: 'hookRate',              label: 'Hook Rate',        src: '÷',  type: 'percent',  vis: false },
   { key: 'createdTime',           label: 'Date Created',     src: 'f',  type: 'date',     vis: false },
+  { key: 'leads',                 label: 'Leads',            src: '⟳',  type: 'leads',    vis: true  },
   { key: 'cases',                 label: 'Cases',            src: '⟳',  type: 'cases',    vis: true  },
   { key: 'costPerCase',           label: 'Cost per Case',    src: '⟳',  type: 'currency', vis: true  },
 ];
@@ -312,8 +315,8 @@ function CasePanel({ title, cases, onClose }) {
 }
 
 // ─── Data Table ────────────────────────────────────────────────────────────────
-function DataTable({ data, colDef, showCases, onNameClick, checkedIds, onCheckedChange, onCasesClick }) {
-  const [cols, setCols] = useState(() => colDef.filter(c => showCases || (c.key !== 'cases' && c.key !== 'costPerCase')));
+function DataTable({ data, colDef, showCases, onNameClick, checkedIds, onCheckedChange, onCasesClick, onLeadsClick }) {
+  const [cols, setCols] = useState(() => colDef.filter(c => showCases || (c.key !== 'cases' && c.key !== 'costPerCase' && c.key !== 'leads')));
   const [sortKey, setSortKey] = useState('spend');
   const [sortDir, setSortDir] = useState('desc');
   const [toggles, setToggles] = useState({});
@@ -400,6 +403,15 @@ function DataTable({ data, colDef, showCases, onNameClick, checkedIds, onChecked
             {row.resultType && <div className="td-sub">{row.resultType}</div>}
           </td>
         );
+      case 'leads':
+        return (
+          <td key={col.key} className="td-mono">
+            {onLeadsClick && (v > 0)
+              ? <button className="cases-btn" onClick={() => onLeadsClick(row)}>{fmt(v, 'number')}</button>
+              : fmt(v, 'number')
+            }
+          </td>
+        );
       case 'cases':
         return (
           <td key={col.key} className="td-mono">
@@ -419,7 +431,7 @@ function DataTable({ data, colDef, showCases, onNameClick, checkedIds, onChecked
     if (col.type === 'status' || col.type === 'text') return <td key={col.key} />;
     if (col.type === 'results') return <td key={col.key} className="td-mono">{fmt(sum(sorted, col.key), 'number')}</td>;
 
-    const sumKeys = ['spend', 'budget', 'unique_clicks', 'cases'];
+    const sumKeys = ['spend', 'budget', 'unique_clicks', 'cases', 'leads'];
     const avgKeys = ['cpm', 'unique_ctr', 'frequency', 'cost_per_unique_click', 'hookRate'];
 
     if (sumKeys.includes(col.key)) return <td key={col.key} className="td-mono">{fmt(sum(sorted, col.key), col.type)}</td>;
@@ -681,8 +693,9 @@ export default function App() {
   const [loading, setLoading]         = useState(false);
   const [error, setError]             = useState(null);
 
-  // Case detail panel
-  const [casePanel, setCasePanel] = useState(null); // { title, cases }
+  // Case / Lead detail panels
+  const [casePanel, setCasePanel] = useState(null);
+  const [leadPanel, setLeadPanel] = useState(null);
 
   // Drill-down context: { ids: Set, label: string } or null
   const [campaignCtx, setCampaignCtx] = useState(null);
@@ -798,6 +811,33 @@ export default function App() {
     return attributedCases.filter(c => (c[utmField] || '').toLowerCase().trim() === name);
   }
 
+  // Match all GHL leads (not just cases) to a row
+  function matchLeadsByCampaign(campaignName) {
+    if (!campaignName) return [];
+    const cn = campaignName.toLowerCase().trim();
+    return ghlContacts.filter(c => (c.utmCampaign || '').toLowerCase().trim() === cn);
+  }
+
+  function matchLeadsByAdset(campaignName, adsetName) {
+    if (!adsetName) return [];
+    const cn = (campaignName || '').toLowerCase().trim();
+    const an = adsetName.toLowerCase().trim();
+    return ghlContacts.filter(c =>
+      (c.utmCampaign || '').toLowerCase().trim() === cn &&
+      (c.utmMedium   || '').toLowerCase().trim() === an
+    );
+  }
+
+  function matchLeadsByAd(campaignName, adName) {
+    if (!adName) return [];
+    const cn = (campaignName || '').toLowerCase().trim();
+    const an = adName.toLowerCase().trim();
+    return ghlContacts.filter(c =>
+      (c.utmCampaign || '').toLowerCase().trim() === cn &&
+      (c.utmContent  || '').toLowerCase().trim() === an
+    );
+  }
+
   // Match adset cases by campaign name + adset name — unique since campaign names are unique per client
   function matchCasesByAdset(campaignName, adsetName) {
     if (!adsetName) return [];
@@ -823,11 +863,14 @@ export default function App() {
   const displayCampaigns = useMemo(() => {
     return applyStatus(campaigns).map(c => {
       const caseList = matchCases('utmCampaign', c.name);
+      const leadList = matchLeadsByCampaign(c.name);
       return {
         ...c,
         cases: caseList.length,
         costPerCase: caseList.length > 0 ? (parseFloat(c.spend) || 0) / caseList.length : null,
         caseList,
+        leads: leadList.length,
+        leadList,
       };
     });
   }, [campaigns, statusFilter, attributedCases]);
@@ -838,11 +881,14 @@ export default function App() {
     data = applyStatus(data);
     return data.map(a => {
       const caseList = matchCasesByAdset(a.campaignName, a.name);
+      const leadList = matchLeadsByAdset(a.campaignName, a.name);
       return {
         ...a,
         cases: caseList.length,
         costPerCase: caseList.length > 0 ? (parseFloat(a.spend) || 0) / caseList.length : null,
         caseList,
+        leads: leadList.length,
+        leadList,
       };
     });
   }, [adsets, campaignCtx, statusFilter, attributedCases]);
@@ -853,11 +899,14 @@ export default function App() {
     data = applyStatus(data);
     return data.map(a => {
       const caseList = matchCasesByAd(a.campaignName, a.name);
+      const leadList = matchLeadsByAd(a.campaignName, a.name);
       return {
         ...a,
         cases: caseList.length,
         costPerCase: caseList.length > 0 ? (parseFloat(a.spend) || 0) / caseList.length : null,
         caseList,
+        leads: leadList.length,
+        leadList,
       };
     });
   }, [ads, adsetCtx, statusFilter, attributedCases]);
@@ -919,23 +968,27 @@ export default function App() {
           <>
             <KPIStrip data={displayCampaigns} />
             <DataTable data={displayCampaigns} colDef={CAMPAIGN_COLS} showCases={true}
-              onNameClick={drillIntoCampaign} checkedIds={checkedIds} onCheckedChange={setCheckedIds} />
+              onNameClick={drillIntoCampaign} checkedIds={checkedIds} onCheckedChange={setCheckedIds}
+              onLeadsClick={row => setLeadPanel({ title: row.name, leads: row.leadList || [] })} />
           </>
         )}
 
         {!loading && tab === 'Ad Sets' && (
           <DataTable data={displayAdsets} colDef={ADSET_COLS} showCases={true}
             onNameClick={drillIntoAdset} checkedIds={checkedIds} onCheckedChange={setCheckedIds}
-            onCasesClick={row => setCasePanel({ title: row.name, cases: row.caseList || [] })} />
+            onCasesClick={row => setCasePanel({ title: row.name, cases: row.caseList || [] })}
+            onLeadsClick={row => setLeadPanel({ title: row.name, leads: row.leadList || [] })} />
         )}
 
         {!loading && tab === 'Ads' && (
           <DataTable data={displayAds} colDef={AD_COLS} showCases={true}
             checkedIds={checkedIds} onCheckedChange={setCheckedIds}
-            onCasesClick={row => setCasePanel({ title: row.name, cases: row.caseList || [] })} />
+            onCasesClick={row => setCasePanel({ title: row.name, cases: row.caseList || [] })}
+            onLeadsClick={row => setLeadPanel({ title: row.name, leads: row.leadList || [] })} />
         )}
 
         {casePanel && <CasePanel title={casePanel.title} cases={casePanel.cases} onClose={() => setCasePanel(null)} />}
+        {leadPanel && <CasePanel title={leadPanel.title} cases={leadPanel.leads} onClose={() => setLeadPanel(null)} />}
 
         {tab === 'Reports'  && <ReportsTab />}
         {tab === 'Sources'  && <SourcesTab />}

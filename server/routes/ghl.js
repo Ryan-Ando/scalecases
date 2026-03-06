@@ -68,6 +68,7 @@ router.get('/contacts', async (req, res) => {
     const campaignFieldId = process.env.GHL_FIELD_UTM_CAMPAIGN;
     const mediumFieldId   = process.env.GHL_FIELD_UTM_MEDIUM;
     const contentFieldId  = process.env.GHL_FIELD_UTM_CONTENT;
+    const termFieldId     = process.env.GHL_FIELD_UTM_TERM;
 
     function getCustomField(c, fieldId) {
       if (!fieldId) return '';
@@ -84,7 +85,7 @@ router.get('/contacts', async (req, res) => {
       utmCampaign:  getCustomField(c, campaignFieldId) || (c.utmCampaign || '').trim(),
       utmMedium:    getCustomField(c, mediumFieldId)   || (c.utmMedium   || '').trim(),
       utmContent:   getCustomField(c, contentFieldId)  || (c.utmContent  || '').trim(),
-      utmTerm:      (c.utmTerm || '').trim(),
+      utmTerm:      getCustomField(c, termFieldId) || (c.utmTerm || '').trim(),
       customFields: c.customFields || [],
     }));
 
