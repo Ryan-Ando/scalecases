@@ -2,7 +2,7 @@
 // Stores GHL contacts, FB daily insights, and FB ads across sessions.
 
 const DB_NAME = 'scalecases_v1';
-const DB_VERSION = 1;
+const DB_VERSION = 2; // v2 adds sheetImport store
 let _db = null;
 
 async function openDB() {
@@ -22,6 +22,10 @@ async function openDB() {
       }
       if (!db.objectStoreNames.contains('meta')) {
         db.createObjectStore('meta');
+      }
+      // v2: manual sheet import store
+      if (!db.objectStoreNames.contains('sheetImport')) {
+        db.createObjectStore('sheetImport', { keyPath: 'id' });
       }
     };
     req.onsuccess = e => { _db = e.target.result; resolve(_db); };
@@ -71,13 +75,16 @@ export async function dbSetMeta(key, value) {
   });
 }
 
-export async function dbClearAll() {
-  _db = null; // force re-open after clear
+// Clears sync data (GHL contacts, FB data, meta) but preserves sheet import.
+// Pass clearImport=true to also wipe the sheet import.
+export async function dbClearAll(clearImport = false) {
+  _db = null;
   return new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
     req.onsuccess = e => {
       const db = e.target.result;
       const stores = ['ghlContacts', 'fbDailyInsights', 'fbAds', 'meta'];
+      if (clearImport) stores.push('sheetImport');
       const tx = db.transaction(stores, 'readwrite');
       for (const s of stores) tx.objectStore(s).clear();
       tx.oncomplete = () => { db.close(); resolve(); };

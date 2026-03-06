@@ -32,6 +32,17 @@ function fmtDate(iso) {
   return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
+// Convert MMDD sheet date to ISO string, inferring year from context
+function parseSheetDate(mmdd) {
+  if (!mmdd || mmdd.length < 4) return null;
+  const mm = parseInt(mmdd.slice(0, 2));
+  const dd = parseInt(mmdd.slice(2, 4));
+  if (isNaN(mm) || isNaN(dd) || mm < 1 || mm > 12) return null;
+  const now   = new Date();
+  const year  = mm <= now.getMonth() + 1 ? now.getFullYear() : now.getFullYear() - 1;
+  return new Date(year, mm - 1, dd).toISOString();
+}
+
 function timeAgo(iso) {
   if (!iso) return 'never';
   const diff = Date.now() - new Date(iso).getTime();
@@ -75,10 +86,13 @@ function SortArrow({ dir }) {
 
 export default function AdsTracking() {
   // Persistent data (from IndexedDB)
-  const [allContacts, setAllContacts]         = useState([]);
+  const [allContacts, setAllContacts]           = useState([]);
   const [allDailyInsights, setAllDailyInsights] = useState([]);
-  const [allAds, setAllAds]                   = useState([]);
-  const [lastSync, setLastSync]               = useState(null);
+  const [allAds, setAllAds]                     = useState([]);
+  const [sheetImport, setSheetImport]           = useState([]); // manual sheet import
+  const [lastSync, setLastSync]                 = useState(null);
+  const [importing, setImporting]               = useState(false);
+  const [importNote, setImportNote]             = useState('');
 
   // Sync state
   const [syncing, setSyncing]     = useState(false);
@@ -104,16 +118,36 @@ export default function AdsTracking() {
 
   // ── Load from IndexedDB ────────────────────────────────────────────────────
   async function loadFromDB() {
-    const [contacts, insights, ads, syncTime] = await Promise.all([
+    const [contacts, insights, ads, imported, syncTime] = await Promise.all([
       dbGetAll('ghlContacts'),
       dbGetAll('fbDailyInsights'),
       dbGetAll('fbAds'),
+      dbGetAll('sheetImport'),
       dbGetMeta('lastSync'),
     ]);
     setAllContacts(contacts);
     setAllDailyInsights(insights);
     setAllAds(ads);
+    setSheetImport(imported);
     setLastSync(syncTime);
+  }
+
+  // ── Import from Google Sheet ───────────────────────────────────────────────
+  async function importFromSheet() {
+    setImporting(true);
+    setImportNote('');
+    try {
+      const data = await apiFetch('/api/sheets/tracking-import');
+      await dbUpsert('sheetImport', data);
+      const all = await dbGetAll('sheetImport');
+      setSheetImport(all);
+      const totalLeads = data.reduce((s, r) => s + Object.values(r.leads).reduce((a, b) => a + b, 0), 0);
+      setImportNote(`Imported ${data.length} ads · ${totalLeads} historical leads`);
+    } catch (err) {
+      setImportNote(`Import failed: ${err.message.slice(0, 80)}`);
+    } finally {
+      setImporting(false);
+    }
   }
 
   // ── Incremental sync ──────────────────────────────────────────────────────
@@ -209,17 +243,33 @@ export default function AdsTracking() {
     return [...existing, ...newOnes];
   }, [states, colOrder]);
 
+  // Lookup map for sheet import: adName → { date, leads: { SC: N, ... } }
+  const sheetByName = useMemo(() => {
+    const map = {};
+    for (const row of sheetImport) map[row.adName] = row;
+    return map;
+  }, [sheetImport]);
+
+  // Ad names: union of FB ads AND sheet import (sheet gives us historical ads)
   const adNames = useMemo(() => {
     const seen  = new Set();
     const names = [];
+    // FB ads first
     for (const a of allAds) {
       if (a.name && !seen.has(a.name.trim())) {
         seen.add(a.name.trim());
         names.push(a.name.trim());
       }
     }
+    // Sheet import ads (may include ads no longer in FB)
+    for (const row of sheetImport) {
+      if (row.adName && !seen.has(row.adName)) {
+        seen.add(row.adName);
+        names.push(row.adName);
+      }
+    }
     return names;
-  }, [allAds]);
+  }, [allAds, sheetImport]);
 
   const grid = useMemo(() => {
     const map = {};
@@ -239,13 +289,20 @@ export default function AdsTracking() {
 
   const firstUsed = useMemo(() => {
     const map = {};
+    // From GHL contacts (full ISO dates)
     for (const c of allContacts) {
       const adName = (c.utmContent || '').trim();
       if (!adName || !c.dateAdded) continue;
       if (!map[adName] || c.dateAdded < map[adName]) map[adName] = c.dateAdded;
     }
+    // Fall back to sheet date (MMDD format → infer year) for ads with no GHL data
+    for (const row of sheetImport) {
+      if (map[row.adName]) continue; // GHL date takes precedence
+      const iso = parseSheetDate(row.date);
+      if (iso) map[row.adName] = iso;
+    }
     return map;
-  }, [allContacts]);
+  }, [allContacts, sheetImport]);
 
   const sortedAdNames = useMemo(() => {
     return [...adNames].sort((a, b) => {
@@ -255,11 +312,11 @@ export default function AdsTracking() {
       } else if (sortKey === 'date') {
         av = firstUsed[a] || '9999'; bv = firstUsed[b] || '9999';
       } else if (sortKey === 'total') {
-        av = states.reduce((s, st) => s + (grid[a]?.[st]?.length || 0), 0);
-        bv = states.reduce((s, st) => s + (grid[b]?.[st]?.length || 0), 0);
+        av = states.reduce((s, st) => s + (grid[a]?.[st]?.length || 0) + (sheetByName[a]?.leads?.[st] || 0), 0);
+        bv = states.reduce((s, st) => s + (grid[b]?.[st]?.length || 0) + (sheetByName[b]?.leads?.[st] || 0), 0);
       } else {
-        av = grid[a]?.[sortKey]?.length || 0;
-        bv = grid[b]?.[sortKey]?.length || 0;
+        av = (grid[a]?.[sortKey]?.length || 0) + (sheetByName[a]?.leads?.[sortKey] || 0);
+        bv = (grid[b]?.[sortKey]?.length || 0) + (sheetByName[b]?.leads?.[sortKey] || 0);
       }
       if (av < bv) return sortDir === 'asc' ? -1 : 1;
       if (av > bv) return sortDir === 'asc' ? 1  : -1;
@@ -343,6 +400,9 @@ export default function AdsTracking() {
             <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
               Last synced: {lastSync ? timeAgo(lastSync) : 'never'}
             </span>
+            <button className="btn btn--sm" onClick={importFromSheet} disabled={importing || syncing} title="Import lead counts from your Google Sheet">
+              {importing ? 'Importing…' : '📋 Import Sheet'}
+            </button>
             <button className="btn btn--sm btn--primary" onClick={sync} disabled={syncing}>
               {syncing ? 'Syncing…' : 'Sync Now'}
             </button>
@@ -355,6 +415,11 @@ export default function AdsTracking() {
           )}
           {!syncing && syncNote && !syncError && (
             <span style={{ fontSize: 11, color: 'var(--green-dark)' }}>{syncNote}</span>
+          )}
+          {importNote && (
+            <span style={{ fontSize: 11, color: importNote.startsWith('Import failed') ? '#dc2626' : 'var(--green-dark)' }}>
+              {importNote}
+            </span>
           )}
           {syncError && (
             <span style={{ fontSize: 11, color: '#dc2626' }} title={syncError}>
@@ -404,7 +469,9 @@ export default function AdsTracking() {
       {/* Grid stats */}
       <div style={{ display: 'flex', alignItems: 'center', marginBottom: 10 }}>
         <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-          {allContacts.length.toLocaleString()} total leads · {adNames.length} unique ads
+          {allContacts.length.toLocaleString()} live leads
+          {sheetImport.length > 0 && ` · ${sheetImport.reduce((s, r) => s + Object.values(r.leads).reduce((a, b) => a + b, 0), 0).toLocaleString()} imported`}
+          {' · '}{adNames.length} unique ads
         </span>
       </div>
 
@@ -476,7 +543,8 @@ export default function AdsTracking() {
             <tbody>
               {sortedAdNames.map(adName => {
                 const row   = grid[adName] || {};
-                const total = orderedStates.reduce((s, st) => s + (row[st]?.length || 0), 0);
+                const total = orderedStates.reduce((s, st) =>
+                  s + (row[st]?.length || 0) + (sheetByName[adName]?.leads?.[st] || 0), 0);
                 return (
                   <tr key={adName}>
                     <td className="tracking-td-ad" title={adName}>
@@ -484,11 +552,13 @@ export default function AdsTracking() {
                     </td>
                     <td className="tracking-td-date">{fmtDate(firstUsed[adName])}</td>
                     {orderedStates.map(state => {
-                      const leads = row[state] || [];
+                      const leads      = row[state] || [];
+                      const imported   = sheetByName[adName]?.leads?.[state] || 0;
+                      const total      = leads.length + imported;
                       return (
                         <td key={state} className="tracking-td-cell">
-                          {leads.length > 0
-                            ? <button className="tracking-cell-btn" onClick={() => setCellDetail({ adName, state, leads })}>{leads.length}</button>
+                          {total > 0
+                            ? <button className="tracking-cell-btn" onClick={() => setCellDetail({ adName, state, leads, imported })}>{total}</button>
                             : <span className="tracking-cell-empty">—</span>
                           }
                         </td>
@@ -504,11 +574,13 @@ export default function AdsTracking() {
                 <td className="tracking-td-ad tracking-tfoot-label">Total</td>
                 <td className="tracking-td-date tracking-tfoot-label" />
                 {orderedStates.map(state => {
-                  const total = adNames.reduce((s, a) => s + (grid[a]?.[state]?.length || 0), 0);
+                  const total = adNames.reduce((s, a) =>
+                    s + (grid[a]?.[state]?.length || 0) + (sheetByName[a]?.leads?.[state] || 0), 0);
                   return <td key={state} className="tracking-td-total tracking-tfoot-label">{total > 0 ? total : '—'}</td>;
                 })}
                 <td className="tracking-td-total tracking-tfoot-label">
-                  {adNames.reduce((s, a) => s + orderedStates.reduce((s2, st) => s2 + (grid[a]?.[st]?.length || 0), 0), 0) || '—'}
+                  {adNames.reduce((s, a) => s + orderedStates.reduce((s2, st) =>
+                    s2 + (grid[a]?.[st]?.length || 0) + (sheetByName[a]?.leads?.[st] || 0), 0), 0) || '—'}
                 </td>
               </tr>
             </tfoot>
@@ -524,12 +596,26 @@ export default function AdsTracking() {
               <div>
                 <div className="col-mgr-title">{cellDetail.adName}</div>
                 <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
-                  {accountLabel(cellDetail.state)} · {cellDetail.leads.length} lead{cellDetail.leads.length !== 1 ? 's' : ''}
+                  {accountLabel(cellDetail.state)} · {cellDetail.leads.length + (cellDetail.imported || 0)} total leads
                 </div>
               </div>
               <button className="col-mgr-x" onClick={() => setCellDetail(null)}>×</button>
             </div>
             <div style={{ overflowY: 'auto', flex: 1 }}>
+              {/* Sheet-imported historical count */}
+              {cellDetail.imported > 0 && (
+                <div style={{ padding: '10px 18px', borderBottom: '1px solid var(--border)', background: 'var(--bg)' }}>
+                  <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-muted)' }}>
+                    📋 {cellDetail.imported} imported from sheet
+                  </span>
+                </div>
+              )}
+              {/* GHL contacts */}
+              {cellDetail.leads.length > 0 && (
+                <div style={{ padding: '8px 18px 4px', fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                  Live leads
+                </div>
+              )}
               {[...cellDetail.leads]
                 .sort((a, b) => (b.dateAdded || '').localeCompare(a.dateAdded || ''))
                 .map(c => (
@@ -541,6 +627,9 @@ export default function AdsTracking() {
                     </div>
                   </div>
                 ))}
+              {cellDetail.leads.length === 0 && cellDetail.imported === 0 && (
+                <div className="empty" style={{ padding: 32 }}>No leads</div>
+              )}
             </div>
           </div>
         </div>
