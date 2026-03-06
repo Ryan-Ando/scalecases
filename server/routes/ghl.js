@@ -81,10 +81,11 @@ router.get('/contacts', async (req, res) => {
       phone:       c.phone  || '',
       email:       c.email  || '',
       dateAdded:   c.dateAdded,
-      utmCampaign: getCustomField(c, campaignFieldId) || (c.utmCampaign || '').trim(),
-      utmMedium:   getCustomField(c, mediumFieldId)   || (c.utmMedium   || '').trim(),
-      utmContent:  getCustomField(c, contentFieldId)  || (c.utmContent  || '').trim(),
-      utmTerm:     (c.utmTerm || '').trim(),
+      utmCampaign:  getCustomField(c, campaignFieldId) || (c.utmCampaign || '').trim(),
+      utmMedium:    getCustomField(c, mediumFieldId)   || (c.utmMedium   || '').trim(),
+      utmContent:   getCustomField(c, contentFieldId)  || (c.utmContent  || '').trim(),
+      utmTerm:      (c.utmTerm || '').trim(),
+      customFields: c.customFields || [],
     }));
 
     res.json(contacts);
