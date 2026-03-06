@@ -15,6 +15,27 @@ function toPreset(timeframe) {
   return PRESET_MAP[timeframe] || 'last_30d';
 }
 
+function timeframeToRange(timeframe, customStart, customEnd) {
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+
+  const ranges = {
+    'Today':        { start: today, end: now },
+    'Yesterday':    { start: new Date(today - 864e5), end: today },
+    'Last 7 Days':  { start: new Date(today - 6 * 864e5), end: now },
+    'Last 14 Days': { start: new Date(today - 13 * 864e5), end: now },
+    'Last 30 Days': { start: new Date(today - 29 * 864e5), end: now },
+    'This Month':   { start: new Date(now.getFullYear(), now.getMonth(), 1), end: now },
+    'Last Month':   {
+      start: new Date(now.getFullYear(), now.getMonth() - 1, 1),
+      end:   new Date(now.getFullYear(), now.getMonth(), 1),
+    },
+    'Custom Range': { start: customStart || null, end: customEnd || null },
+  };
+
+  return ranges[timeframe] || ranges['This Month'];
+}
+
 async function get(path) {
   const res = await fetch(`${BASE}${path}`);
   if (!res.ok) {
@@ -47,8 +68,12 @@ const api = {
     return get('/api/sheets/config');
   },
 
-  ghlContacts() {
-    return get('/api/ghl/contacts');
+  ghlContacts(timeframe, customStart, customEnd) {
+    const { start, end } = timeframeToRange(timeframe, customStart, customEnd);
+    const params = new URLSearchParams();
+    if (start) params.set('start', start.toISOString());
+    if (end)   params.set('end',   end.toISOString());
+    return get(`/api/ghl/contacts?${params}`);
   },
 };
 

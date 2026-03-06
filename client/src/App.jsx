@@ -690,12 +690,12 @@ export default function App() {
   // Checkbox selection (IDs of checked rows, per current tab view)
   const [checkedIds, setCheckedIds] = useState(new Set());
 
-  // Fetch GHL contacts once on mount
+  // Fetch GHL contacts whenever timeframe changes
   useEffect(() => {
-    api.ghlContacts()
+    api.ghlContacts(timeframe, customStart, customEnd)
       .then(setGhlContacts)
       .catch(err => console.warn('GHL contacts unavailable:', err.message));
-  }, []);
+  }, [timeframe, customStart, customEnd]);
 
   // Fetch data whenever tab or timeframe changes
   useEffect(() => {

@@ -31,19 +31,20 @@ async function fetchCustomFieldMap() {
   return Object.fromEntries(fields.map(f => [f.name.toLowerCase(), f.id]));
 }
 
-// Paginate through all GHL contacts for the sub-account
-async function fetchAllContacts() {
+// Paginate through all GHL contacts for the sub-account, optionally filtered by date range
+async function fetchAllContacts(startMs, endMs) {
   const all = [];
   let page = 1;
 
   while (true) {
     const params = new URLSearchParams({ locationId: locationId(), limit: 100, page });
+    if (startMs) params.set('startDate', startMs);
+    if (endMs)   params.set('endDate',   endMs);
 
     const res = await fetch(`${GHL_API}/contacts/?${params}`, {
       headers: GHL_HEADERS(),
     });
     const text = await res.text();
-    console.error('GHL raw response:', res.status, text.slice(0, 500));
     if (!res.ok) throw new Error(`GHL API error ${res.status}: ${text.slice(0, 200)}`);
     const json = JSON.parse(text);
 
@@ -57,13 +58,24 @@ async function fetchAllContacts() {
   return all;
 }
 
-// GET /api/ghl/contacts
+// Returns { startMs, endMs } for "this month" by default
+function thisMonthRange() {
+  const now = new Date();
+  const start = new Date(now.getFullYear(), now.getMonth(), 1);
+  return { startMs: start.getTime(), endMs: Date.now() };
+}
+
+// GET /api/ghl/contacts?start=ISO&end=ISO
 // Returns contacts with UTM attribution fields for adset/ad level case matching
 router.get('/contacts', async (req, res) => {
   try {
     if (!token() || !locationId()) return res.status(503).json({ error: 'GHL_API_KEY or GHL_LOCATION_ID not configured' });
 
-    const [raw, fieldMap] = await Promise.all([fetchAllContacts(), fetchCustomFieldMap()]);
+    const { start, end } = req.query;
+    const startMs = start ? new Date(start).getTime() : thisMonthRange().startMs;
+    const endMs   = end   ? new Date(end).getTime()   : thisMonthRange().endMs;
+
+    const [raw, fieldMap] = await Promise.all([fetchAllContacts(startMs, endMs), fetchCustomFieldMap()]);
 
     // Find IDs for UTM custom fields (match common naming variations)
     function findFieldId(map, ...names) {
