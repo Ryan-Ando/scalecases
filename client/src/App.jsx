@@ -798,19 +798,25 @@ export default function App() {
     return attributedCases.filter(c => (c[utmField] || '').toLowerCase().trim() === name);
   }
 
-  // Match ad set cases by adset ID (utm_term) — unique, no name collision
-  function matchCasesByAdsetId(adsetId) {
-    if (!adsetId) return [];
-    return attributedCases.filter(c => (c.utmTerm || '').trim() === String(adsetId));
+  // Match adset cases by campaign name + adset name — unique since campaign names are unique per client
+  function matchCasesByAdset(campaignName, adsetName) {
+    if (!adsetName) return [];
+    const cn = (campaignName || '').toLowerCase().trim();
+    const an = adsetName.toLowerCase().trim();
+    return attributedCases.filter(c =>
+      (c.utmCampaign || '').toLowerCase().trim() === cn &&
+      (c.utmMedium   || '').toLowerCase().trim() === an
+    );
   }
 
-  // Match ad cases by ad name + parent adset ID — disambiguates same-named ads
-  function matchCasesByAd(adName, adsetId) {
+  // Match ad cases by campaign name + ad name — disambiguates same-named ads across campaigns
+  function matchCasesByAd(campaignName, adName) {
     if (!adName) return [];
-    const name = adName.toLowerCase().trim();
+    const cn = (campaignName || '').toLowerCase().trim();
+    const an = adName.toLowerCase().trim();
     return attributedCases.filter(c =>
-      (c.utmContent || '').toLowerCase().trim() === name &&
-      (c.utmTerm    || '').trim() === String(adsetId)
+      (c.utmCampaign || '').toLowerCase().trim() === cn &&
+      (c.utmContent  || '').toLowerCase().trim() === an
     );
   }
 
@@ -831,7 +837,7 @@ export default function App() {
     if (campaignCtx) data = data.filter(a => campaignCtx.ids.has(a.campaignId));
     data = applyStatus(data);
     return data.map(a => {
-      const caseList = matchCasesByAdsetId(a.id);
+      const caseList = matchCasesByAdset(a.campaignName, a.name);
       return {
         ...a,
         cases: caseList.length,
@@ -846,7 +852,7 @@ export default function App() {
     if (adsetCtx) data = data.filter(a => adsetCtx.ids.has(a.adsetId));
     data = applyStatus(data);
     return data.map(a => {
-      const caseList = matchCasesByAd(a.name, a.adsetId);
+      const caseList = matchCasesByAd(a.campaignName, a.name);
       return {
         ...a,
         cases: caseList.length,

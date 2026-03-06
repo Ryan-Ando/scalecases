@@ -146,7 +146,7 @@ router.get('/adsets', async (req, res) => {
   try {
     const { date_preset, campaign_id } = req.query;
 
-    const listParams = { fields: 'id,name,status,campaign_id,created_time,daily_budget,lifetime_budget,optimization_goal' };
+    const listParams = { fields: 'id,name,status,campaign_id,campaign{name},created_time,daily_budget,lifetime_budget,optimization_goal' };
     if (campaign_id) listParams.campaign_id = campaign_id;
 
     const [adsets, insights] = await Promise.all([
@@ -163,6 +163,7 @@ router.get('/adsets', async (req, res) => {
         name: a.name,
         status: a.status,
         campaignId: a.campaign_id,
+        campaignName: a.campaign?.name || '',
         createdTime: a.created_time,
         dailyBudget: a.daily_budget,
         lifetimeBudget: a.lifetime_budget,
@@ -184,7 +185,7 @@ router.get('/ads', async (req, res) => {
   try {
     const { date_preset, adset_id } = req.query;
 
-    const listParams = { fields: 'id,name,status,adset_id,campaign_id,creative{id,name,thumbnail_url},created_time' };
+    const listParams = { fields: 'id,name,status,adset_id,campaign_id,campaign{name},creative{id,name,thumbnail_url},created_time' };
     if (adset_id) listParams.adset_id = adset_id;
 
     const [ads, insights] = await Promise.all([
@@ -202,6 +203,7 @@ router.get('/ads', async (req, res) => {
         status: a.status,
         adsetId: a.adset_id,
         campaignId: a.campaign_id,
+        campaignName: a.campaign?.name || '',
         creative: a.creative,
         createdTime: a.created_time,
         ...ins,
