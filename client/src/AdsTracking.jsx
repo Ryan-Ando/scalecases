@@ -1,10 +1,9 @@
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from 'recharts';
 import api from './api.js';
 
-// Extract 2-letter state abbreviation from campaign name e.g. "LSS - WA" → "WA"
 function extractState(campaignName) {
   const m = (campaignName || '').match(/[-–]\s*([A-Z]{2})\s*$/i);
   return m ? m[1].toUpperCase() : null;
@@ -17,11 +16,16 @@ function fmtPhone(p) {
   return p;
 }
 
+function fmtDate(iso) {
+  if (!iso) return '—';
+  return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
 const CHART_METRICS = [
-  { key: 'leads', label: 'Leads/Day',    color: '#3a8f5c', fmt: v => v },
-  { key: 'spend', label: 'Spend/Day',    color: '#6366f1', fmt: v => `$${v}` },
-  { key: 'cpm',   label: 'CPM/Day',      color: '#f59e0b', fmt: v => v != null ? `$${v}` : '—' },
-  { key: 'cpl',   label: 'Cost/Lead',    color: '#ef4444', fmt: v => v != null ? `$${v}` : '—' },
+  { key: 'leads', label: 'Leads/Day',  color: '#3a8f5c', fmt: v => v },
+  { key: 'spend', label: 'Spend/Day',  color: '#6366f1', fmt: v => `$${v}` },
+  { key: 'cpm',   label: 'CPM/Day',    color: '#f59e0b', fmt: v => v != null ? `$${v}` : '—' },
+  { key: 'cpl',   label: 'Cost/Lead',  color: '#ef4444', fmt: v => v != null ? `$${v}` : '—' },
 ];
 
 function CustomTooltip({ active, payload, label, metricKey }) {
@@ -36,6 +40,10 @@ function CustomTooltip({ active, payload, label, metricKey }) {
   );
 }
 
+function SortArrow({ dir }) {
+  return <span style={{ fontSize: 9, marginLeft: 3 }}>{dir === 'asc' ? '▲' : '▼'}</span>;
+}
+
 export default function AdsTracking({ ads, ghlContacts, timeframe }) {
   const [accountNames, setAccountNames] = useState(() => {
     try { return JSON.parse(localStorage.getItem('trackingAccountNames') || '{}'); }
@@ -47,13 +55,21 @@ export default function AdsTracking({ ads, ghlContacts, timeframe }) {
   const [dailyData, setDailyData] = useState([]);
   const [chartMetric, setChartMetric] = useState('leads');
 
+  // Sorting: key is 'name' | 'date' | 'total' | a state abbreviation
+  const [sortKey, setSortKey] = useState('date');
+  const [sortDir, setSortDir] = useState('asc');
+
+  // Column order (state abbreviations, draggable)
+  const [colOrder, setColOrder] = useState(null); // null = use default states order
+  const dragColRef = useRef(null);
+  const [dragOverCol, setDragOverCol] = useState(null);
+
   useEffect(() => {
     api.dailyInsights(timeframe)
       .then(setDailyData)
       .catch(err => console.warn('Daily insights unavailable:', err.message));
   }, [timeframe]);
 
-  // Unique states derived from GHL contact campaign names
   const states = useMemo(() => {
     const set = new Set();
     for (const c of ghlContacts) {
@@ -63,7 +79,14 @@ export default function AdsTracking({ ads, ghlContacts, timeframe }) {
     return [...set].sort();
   }, [ghlContacts]);
 
-  // Unique ad names from FB ads (deduped by name)
+  // Ordered columns: keep user drag order, add any new states at end
+  const orderedStates = useMemo(() => {
+    if (!colOrder) return states;
+    const existing = colOrder.filter(s => states.includes(s));
+    const newOnes  = states.filter(s => !colOrder.includes(s));
+    return [...existing, ...newOnes];
+  }, [states, colOrder]);
+
   const adNames = useMemo(() => {
     const seen = new Set();
     const names = [];
@@ -73,7 +96,7 @@ export default function AdsTracking({ ads, ghlContacts, timeframe }) {
         names.push(a.name.trim());
       }
     }
-    return names.sort();
+    return names;
   }, [ads]);
 
   // Grid: adName → state → [GHL contacts]
@@ -93,6 +116,58 @@ export default function AdsTracking({ ads, ghlContacts, timeframe }) {
     return map;
   }, [adNames, states, ghlContacts]);
 
+  // First-used date per ad: earliest dateAdded across all matching GHL contacts
+  const firstUsed = useMemo(() => {
+    const map = {};
+    for (const c of ghlContacts) {
+      const adName = (c.utmContent || '').trim();
+      if (!adName || !c.dateAdded) continue;
+      if (!map[adName] || c.dateAdded < map[adName]) map[adName] = c.dateAdded;
+    }
+    return map;
+  }, [ghlContacts]);
+
+  // Sorted rows
+  const sortedAdNames = useMemo(() => {
+    return [...adNames].sort((a, b) => {
+      let av, bv;
+      if (sortKey === 'name') {
+        av = a.toLowerCase(); bv = b.toLowerCase();
+      } else if (sortKey === 'date') {
+        av = firstUsed[a] || '9999'; bv = firstUsed[b] || '9999';
+      } else if (sortKey === 'total') {
+        av = states.reduce((s, st) => s + (grid[a]?.[st]?.length || 0), 0);
+        bv = states.reduce((s, st) => s + (grid[b]?.[st]?.length || 0), 0);
+      } else {
+        // sort by specific state column
+        av = grid[a]?.[sortKey]?.length || 0;
+        bv = grid[b]?.[sortKey]?.length || 0;
+      }
+      if (av < bv) return sortDir === 'asc' ? -1 : 1;
+      if (av > bv) return sortDir === 'asc' ? 1 : -1;
+      return 0;
+    });
+  }, [adNames, sortKey, sortDir, grid, firstUsed, states]);
+
+  function handleSort(key) {
+    if (sortKey === key) setSortDir(d => d === 'asc' ? 'desc' : 'asc');
+    else { setSortKey(key); setSortDir(key === 'date' || key === 'name' ? 'asc' : 'desc'); }
+  }
+
+  // Column drag handlers
+  function onColDragStart(state, i) { dragColRef.current = i; }
+  function onColDragOver(e, i) { e.preventDefault(); setDragOverCol(i); }
+  function onColDrop(i) {
+    if (dragColRef.current === null || dragColRef.current === i) {
+      dragColRef.current = null; setDragOverCol(null); return;
+    }
+    const next = [...orderedStates];
+    const [moved] = next.splice(dragColRef.current, 1);
+    next.splice(i, 0, moved);
+    setColOrder(next);
+    dragColRef.current = null; setDragOverCol(null);
+  }
+
   // Leads per day from GHL contacts
   const leadsPerDay = useMemo(() => {
     const map = {};
@@ -104,7 +179,6 @@ export default function AdsTracking({ ads, ghlContacts, timeframe }) {
     return map;
   }, [ghlContacts]);
 
-  // Combined chart data: FB daily (spend/CPM) merged with GHL leads/day
   const chartData = useMemo(() => {
     const fbMap = {};
     for (const row of dailyData) {
@@ -131,9 +205,7 @@ export default function AdsTracking({ ads, ghlContacts, timeframe }) {
     setEditingState(null);
   }
 
-  function accountLabel(state) {
-    return accountNames[state] || state;
-  }
+  function accountLabel(state) { return accountNames[state] || state; }
 
   const activeMetric = CHART_METRICS.find(m => m.key === chartMetric);
 
@@ -148,20 +220,14 @@ export default function AdsTracking({ ads, ghlContacts, timeframe }) {
       <div style={{ marginBottom: 32 }}>
         <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
           {CHART_METRICS.map(m => (
-            <button
-              key={m.key}
-              className={`btn btn--sm${chartMetric === m.key ? ' btn--primary' : ''}`}
-              onClick={() => setChartMetric(m.key)}
-            >
+            <button key={m.key} className={`btn btn--sm${chartMetric === m.key ? ' btn--primary' : ''}`} onClick={() => setChartMetric(m.key)}>
               {m.label}
             </button>
           ))}
         </div>
         <div style={{ background: 'var(--surface)', borderRadius: 12, border: '1px solid var(--border)', padding: '20px 8px 8px' }}>
           {chartData.length === 0 ? (
-            <div style={{ textAlign: 'center', padding: '40px 0', color: 'var(--text-muted)', fontSize: 13 }}>
-              No data for selected timeframe
-            </div>
+            <div style={{ textAlign: 'center', padding: '40px 0', color: 'var(--text-muted)', fontSize: 13 }}>No data for selected timeframe</div>
           ) : (
             <ResponsiveContainer width="100%" height={220}>
               <LineChart data={chartData} margin={{ top: 4, right: 24, bottom: 4, left: 8 }}>
@@ -169,14 +235,7 @@ export default function AdsTracking({ ads, ghlContacts, timeframe }) {
                 <XAxis dataKey="date" tick={{ fontSize: 10, fill: 'var(--text-muted)' }} />
                 <YAxis tick={{ fontSize: 10, fill: 'var(--text-muted)' }} />
                 <Tooltip content={<CustomTooltip metricKey={chartMetric} />} />
-                <Line
-                  type="monotone"
-                  dataKey={chartMetric}
-                  stroke={activeMetric?.color || '#3a8f5c'}
-                  dot={false}
-                  strokeWidth={2}
-                  connectNulls
-                />
+                <Line type="monotone" dataKey={chartMetric} stroke={activeMetric?.color || '#3a8f5c'} dot={false} strokeWidth={2} connectNulls />
               </LineChart>
             </ResponsiveContainer>
           )}
@@ -195,53 +254,80 @@ export default function AdsTracking({ ads, ghlContacts, timeframe }) {
           <table className="tracking-grid">
             <thead>
               <tr>
-                <th className="tracking-th-ad">Ad Name</th>
-                {states.map(state => (
-                  <th key={state} className="tracking-th-state">
-                    {editingState === state ? (
-                      <form
-                        style={{ margin: 0 }}
-                        onSubmit={e => { e.preventDefault(); saveAccountName(state, editValue); }}
-                      >
-                        <input
-                          autoFocus
-                          className="tracking-name-input"
-                          value={editValue}
-                          onChange={e => setEditValue(e.target.value)}
-                          onBlur={() => saveAccountName(state, editValue)}
-                        />
-                      </form>
-                    ) : (
+                {/* Ad Name column */}
+                <th className="tracking-th-ad tracking-th-sortable" onClick={() => handleSort('name')}>
+                  Ad Name {sortKey === 'name' && <SortArrow dir={sortDir} />}
+                </th>
+                {/* Date column */}
+                <th className="tracking-th-state tracking-th-sortable" onClick={() => handleSort('date')}>
+                  First Used {sortKey === 'date' && <SortArrow dir={sortDir} />}
+                </th>
+                {/* State columns — draggable, sortable */}
+                {orderedStates.map((state, i) => (
+                  <th
+                    key={state}
+                    className={`tracking-th-state${dragOverCol === i ? ' tracking-th-drag-over' : ''}`}
+                    draggable
+                    onDragStart={() => onColDragStart(state, i)}
+                    onDragOver={e => onColDragOver(e, i)}
+                    onDrop={() => onColDrop(i)}
+                    onDragEnd={() => { dragColRef.current = null; setDragOverCol(null); }}
+                  >
+                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
+                      {/* Rename button */}
+                      {editingState === state ? (
+                        <form style={{ margin: 0 }} onSubmit={e => { e.preventDefault(); saveAccountName(state, editValue); }}>
+                          <input
+                            autoFocus
+                            className="tracking-name-input"
+                            value={editValue}
+                            onChange={e => setEditValue(e.target.value)}
+                            onBlur={() => saveAccountName(state, editValue)}
+                            onClick={e => e.stopPropagation()}
+                          />
+                        </form>
+                      ) : (
+                        <button
+                          className="tracking-acct-name"
+                          title="Click to rename"
+                          onClick={e => { e.stopPropagation(); setEditingState(state); setEditValue(accountNames[state] || state); }}
+                        >
+                          {accountLabel(state)}
+                        </button>
+                      )}
+                      {/* Sort by this column's leads */}
                       <button
-                        className="tracking-acct-name"
-                        title="Click to rename"
-                        onClick={() => { setEditingState(state); setEditValue(accountNames[state] || state); }}
+                        className={`tracking-sort-btn${sortKey === state ? ' tracking-sort-btn--active' : ''}`}
+                        onClick={e => { e.stopPropagation(); handleSort(state); }}
+                        title="Sort by leads in this column"
                       >
-                        {accountLabel(state)}
+                        Sort {sortKey === state && <SortArrow dir={sortDir} />}
                       </button>
-                    )}
+                    </div>
                   </th>
                 ))}
-                <th className="tracking-th-state">Total</th>
+                {/* Total column */}
+                <th className="tracking-th-state tracking-th-sortable" onClick={() => handleSort('total')}>
+                  Total {sortKey === 'total' && <SortArrow dir={sortDir} />}
+                </th>
               </tr>
             </thead>
             <tbody>
-              {adNames.map(adName => {
+              {sortedAdNames.map(adName => {
                 const row = grid[adName] || {};
-                const total = states.reduce((s, st) => s + (row[st]?.length || 0), 0);
+                const total = orderedStates.reduce((s, st) => s + (row[st]?.length || 0), 0);
                 return (
                   <tr key={adName}>
                     <td className="tracking-td-ad" title={adName}>
                       <span className="tracking-ad-name">{adName}</span>
                     </td>
-                    {states.map(state => {
+                    <td className="tracking-td-date">{fmtDate(firstUsed[adName])}</td>
+                    {orderedStates.map(state => {
                       const leads = row[state] || [];
                       return (
                         <td key={state} className="tracking-td-cell">
                           {leads.length > 0
-                            ? <button className="tracking-cell-btn" onClick={() => setCellDetail({ adName, state, leads })}>
-                                {leads.length}
-                              </button>
+                            ? <button className="tracking-cell-btn" onClick={() => setCellDetail({ adName, state, leads })}>{leads.length}</button>
                             : <span className="tracking-cell-empty">—</span>
                           }
                         </td>
@@ -255,12 +341,13 @@ export default function AdsTracking({ ads, ghlContacts, timeframe }) {
             <tfoot>
               <tr>
                 <td className="tracking-td-ad tracking-tfoot-label">Total</td>
-                {states.map(state => {
+                <td className="tracking-td-date tracking-tfoot-label" />
+                {orderedStates.map(state => {
                   const total = adNames.reduce((s, a) => s + (grid[a]?.[state]?.length || 0), 0);
                   return <td key={state} className="tracking-td-total tracking-tfoot-label">{total > 0 ? total : '—'}</td>;
                 })}
                 <td className="tracking-td-total tracking-tfoot-label">
-                  {adNames.reduce((s, a) => s + states.reduce((s2, st) => s2 + (grid[a]?.[st]?.length || 0), 0), 0) || '—'}
+                  {adNames.reduce((s, a) => s + orderedStates.reduce((s2, st) => s2 + (grid[a]?.[st]?.length || 0), 0), 0) || '—'}
                 </td>
               </tr>
             </tfoot>
@@ -287,9 +374,7 @@ export default function AdsTracking({ ads, ghlContacts, timeframe }) {
                   <div className="case-item-name">{c.name}</div>
                   <div className="case-item-meta">
                     <span>{fmtPhone(c.phone)}</span>
-                    {c.dateAdded && (
-                      <span>{new Date(c.dateAdded).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}</span>
-                    )}
+                    {c.dateAdded && <span>{fmtDate(c.dateAdded)}</span>}
                   </div>
                 </div>
               ))}

@@ -806,6 +806,41 @@ tfoot .td-name { font-family: var(--sans); font-weight: 700; font-size: 13px; }
   background: #f8f9fa;
 }
 
+.tracking-th-sortable {
+  cursor: pointer;
+  user-select: none;
+}
+.tracking-th-sortable:hover { background: #eef2f0; }
+
+.tracking-th-drag-over {
+  background: var(--green-light) !important;
+  border-left: 2px solid var(--green) !important;
+}
+
+.tracking-td-date {
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--border);
+  border-left: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: var(--mono);
+  white-space: nowrap;
+  background: var(--surface);
+}
+
+.tracking-sort-btn {
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-size: 10px;
+  color: var(--text-muted);
+  padding: 1px 4px;
+  border-radius: 3px;
+  line-height: 1;
+}
+.tracking-sort-btn:hover { background: rgba(0,0,0,0.06); color: var(--text); }
+.tracking-sort-btn--active { color: var(--green-dark); font-weight: 700; }
+
 .tracking-grid tbody tr:hover .tracking-td-ad,
 .tracking-grid tbody tr:hover .tracking-td-cell,
 .tracking-grid tbody tr:hover .tracking-td-total {
