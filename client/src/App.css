@@ -468,6 +468,27 @@ tfoot .td-name { font-family: var(--sans); font-weight: 700; font-size: 13px; }
   border: 1px solid var(--border);
 }
 
+/* ── Ad Detail Panel ─────────────────────────────────────────────────────────── */
+.ad-detail-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  background: rgba(0,0,0,0.2);
+}
+.ad-detail-panel {
+  position: absolute;
+  top: 0; right: 0;
+  width: min(960px, 90vw);
+  height: 100%;
+  background: var(--surface);
+  border-left: 1px solid var(--border);
+  box-shadow: -6px 0 32px rgba(0,0,0,0.14);
+  display: flex;
+  flex-direction: column;
+  z-index: 301;
+  overflow: hidden;
+}
+
 /* ── Reports Tab ────────────────────────────────────────────────────────────── */
 .tab-header { margin-bottom: 20px; }
 .tab-title { font-size: 20px; font-weight: 700; margin-bottom: 4px; }

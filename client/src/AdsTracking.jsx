@@ -86,6 +86,251 @@ function SortArrow({ dir }) {
   return <span style={{ fontSize: 9, marginLeft: 3 }}>{dir === 'asc' ? '▲' : '▼'}</span>;
 }
 
+const AD_DETAIL_TABLE_COLS = [
+  { key: 'campaign',    label: 'Campaign'   },
+  { key: 'adset',       label: 'Adset'      },
+  { key: 'status',      label: 'Status'     },
+  { key: 'spend',       label: 'Spend'      },
+  { key: 'fbLeads',     label: 'FB Leads'   },
+  { key: 'cpl',         label: 'Cost/Lead'  },
+  { key: 'cpm',         label: 'CPM'        },
+  { key: 'ctr',         label: 'CTR'        },
+  { key: 'clicks',      label: 'Clicks'     },
+  { key: 'created',     label: 'Created'    },
+];
+
+function AdDetailModal({ adName, state, allAds, allContacts, sheetByName, accountLabel, onClose }) {
+  const [period, setPeriod]     = useState('90');
+  const [sortKey, setSortKey]   = useState('spend');
+  const [sortDir, setSortDir]   = useState('desc');
+
+  // All FB ad records that share this ad name
+  const fbInstances = useMemo(() =>
+    allAds.filter(a => (a.name || '').trim() === adName),
+    [allAds, adName]
+  );
+
+  // Unique adsets this ad has lived in
+  const adsets = useMemo(() => {
+    const seen = new Set();
+    const list = [];
+    for (const a of fbInstances) {
+      if (!seen.has(a.adsetId)) {
+        seen.add(a.adsetId);
+        list.push({ id: a.adsetId, name: a.adsetName, campaign: a.campaignName });
+      }
+    }
+    return list;
+  }, [fbInstances]);
+
+  // GHL leads for this ad + state
+  const ghlLeads = useMemo(() =>
+    allContacts.filter(c =>
+      (c.utmContent || '').trim() === adName && extractState(c.utmCampaign) === state
+    ),
+    [allContacts, adName, state]
+  );
+
+  const importedCount = sheetByName[adName]?.leads?.[state] || 0;
+  const totalLeads    = ghlLeads.length + importedCount;
+
+  // Chart data: GHL leads per day (filtered by period)
+  const cutoff = useMemo(() => {
+    if (period === 'all') return null;
+    return new Date(Date.now() - parseInt(period) * 864e5).toISOString().slice(0, 10);
+  }, [period]);
+
+  const chartData = useMemo(() => {
+    const map = {};
+    for (const c of ghlLeads) {
+      if (!c.dateAdded) continue;
+      const day = c.dateAdded.slice(0, 10);
+      if (cutoff && day < cutoff) continue;
+      map[day] = (map[day] || 0) + 1;
+    }
+    return Object.entries(map)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([date, leads]) => ({ date: date.slice(5), leads }));
+  }, [ghlLeads, cutoff]);
+
+  // Table rows: one per FB ad instance
+  const tableRows = useMemo(() =>
+    fbInstances.map(a => ({
+      id:       a.id,
+      campaign: a.campaignName || '—',
+      adset:    a.adsetName    || '—',
+      status:   a.status       || '—',
+      spend:    parseFloat(a.spend)  || 0,
+      fbLeads:  a.results            || 0,
+      cpl:      a.results > 0 && parseFloat(a.spend) > 0
+                  ? parseFloat((parseFloat(a.spend) / a.results).toFixed(2))
+                  : null,
+      cpm:      parseFloat(a.cpm)    || 0,
+      ctr:      parseFloat(a.ctr)    || 0,
+      clicks:   parseInt(a.clicks)   || 0,
+      created:  a.createdTime        || '',
+    })),
+    [fbInstances]
+  );
+
+  const sortedRows = useMemo(() => {
+    return [...tableRows].sort((a, b) => {
+      const av = a[sortKey] ?? '', bv = b[sortKey] ?? '';
+      if (av < bv) return sortDir === 'asc' ? -1 : 1;
+      if (av > bv) return sortDir === 'asc' ?  1 : -1;
+      return 0;
+    });
+  }, [tableRows, sortKey, sortDir]);
+
+  // Totals row
+  const totals = useMemo(() => ({
+    spend:   tableRows.reduce((s, r) => s + r.spend,   0),
+    fbLeads: tableRows.reduce((s, r) => s + r.fbLeads, 0),
+    clicks:  tableRows.reduce((s, r) => s + r.clicks,  0),
+  }), [tableRows]);
+
+  function handleSort(key) {
+    if (sortKey === key) setSortDir(d => d === 'asc' ? 'desc' : 'asc');
+    else { setSortKey(key); setSortDir('desc'); }
+  }
+
+  function fmtCell(key, val) {
+    if (val == null) return '—';
+    if (key === 'spend' || key === 'cpl' || key === 'cpm') return `$${val.toFixed(2)}`;
+    if (key === 'ctr')     return `${val.toFixed(2)}%`;
+    if (key === 'created') return fmtDate(val);
+    if (key === 'status')  return <span style={{ color: val === 'ACTIVE' ? '#22c55e' : '#94a3b8', fontSize: 11, fontWeight: 600 }}>{val}</span>;
+    return val;
+  }
+
+  return (
+    <div className="ad-detail-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className="ad-detail-panel">
+        {/* Header */}
+        <div className="col-mgr-head">
+          <div>
+            <div className="col-mgr-title">{adName}</div>
+            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
+              {accountLabel(state)} ({state}) · {totalLeads} total leads
+              {importedCount > 0 && <span style={{ marginLeft: 8, color: 'var(--text-muted)' }}>({ghlLeads.length} live + {importedCount} imported)</span>}
+            </div>
+          </div>
+          <button className="col-mgr-x" onClick={onClose}>×</button>
+        </div>
+
+        <div style={{ overflowY: 'auto', flex: 1, padding: '0 20px 20px' }}>
+          {/* Adsets section */}
+          {adsets.length > 0 && (
+            <div style={{ marginTop: 16, marginBottom: 20 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)', marginBottom: 8 }}>
+                Adsets ({adsets.length})
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                {adsets.map(as => (
+                  <div key={as.id} style={{ background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, padding: '4px 10px', fontSize: 12 }}>
+                    <span style={{ fontWeight: 600 }}>{as.name || 'Unknown'}</span>
+                    {as.campaign && <span style={{ color: 'var(--text-muted)', marginLeft: 6, fontSize: 11 }}>{as.campaign}</span>}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Per-ad leads chart */}
+          <div style={{ marginBottom: 20 }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)' }}>
+                Leads / Day
+              </div>
+              <div style={{ display: 'flex', gap: 4 }}>
+                {CHART_PERIODS.map(p => (
+                  <button key={p.key} className={`btn btn--sm${period === p.key ? ' btn--primary' : ''}`} onClick={() => setPeriod(p.key)}>
+                    {p.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div style={{ background: 'var(--surface)', borderRadius: 10, border: '1px solid var(--border)', padding: '16px 8px 8px' }}>
+              {chartData.length === 0 ? (
+                <div style={{ textAlign: 'center', padding: '32px 0', color: 'var(--text-muted)', fontSize: 13 }}>
+                  No GHL leads in this period
+                </div>
+              ) : (
+                <ResponsiveContainer width="100%" height={180}>
+                  <LineChart data={chartData} margin={{ top: 4, right: 20, bottom: 4, left: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+                    <XAxis dataKey="date" tick={{ fontSize: 10, fill: 'var(--text-muted)' }} />
+                    <YAxis tick={{ fontSize: 10, fill: 'var(--text-muted)' }} allowDecimals={false} />
+                    <Tooltip content={<CustomTooltip metricKey="leads" />} />
+                    <Line type="linear" dataKey="leads" stroke="#3a8f5c" dot={false} strokeWidth={2} connectNulls />
+                  </LineChart>
+                </ResponsiveContainer>
+              )}
+            </div>
+          </div>
+
+          {/* FB Instances table */}
+          {fbInstances.length > 0 && (
+            <div>
+              <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)', marginBottom: 8 }}>
+                FB Ad Instances ({fbInstances.length})
+              </div>
+              <div style={{ overflowX: 'auto' }}>
+                <table className="tracking-grid" style={{ minWidth: 900 }}>
+                  <thead>
+                    <tr>
+                      {AD_DETAIL_TABLE_COLS.map(col => (
+                        <th
+                          key={col.key}
+                          className="tracking-th-state tracking-th-sortable"
+                          onClick={() => handleSort(col.key)}
+                          style={{ whiteSpace: 'nowrap', cursor: 'pointer' }}
+                        >
+                          {col.label}
+                          {sortKey === col.key && <SortArrow dir={sortDir} />}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {sortedRows.map(row => (
+                      <tr key={row.id}>
+                        {AD_DETAIL_TABLE_COLS.map(col => (
+                          <td key={col.key} className="tracking-td-cell" style={{ whiteSpace: col.key === 'campaign' || col.key === 'adset' ? 'normal' : 'nowrap', maxWidth: col.key === 'campaign' || col.key === 'adset' ? 200 : undefined }}>
+                            {fmtCell(col.key, row[col.key])}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                  <tfoot>
+                    <tr>
+                      <td className="tracking-tfoot-label" colSpan={3}>Total</td>
+                      <td className="tracking-td-total tracking-tfoot-label">${totals.spend.toFixed(2)}</td>
+                      <td className="tracking-td-total tracking-tfoot-label">{totals.fbLeads}</td>
+                      <td className="tracking-td-total tracking-tfoot-label">
+                        {totals.fbLeads > 0 && totals.spend > 0 ? `$${(totals.spend / totals.fbLeads).toFixed(2)}` : '—'}
+                      </td>
+                      <td className="tracking-tfoot-label" />
+                      <td className="tracking-tfoot-label" />
+                      <td className="tracking-td-total tracking-tfoot-label">{totals.clicks}</td>
+                      <td className="tracking-tfoot-label" />
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {fbInstances.length === 0 && ghlLeads.length === 0 && (
+            <div className="empty" style={{ padding: 48 }}>No data found for this ad</div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function AdsTracking() {
   // Persistent data (from IndexedDB)
   const [allContacts, setAllContacts]           = useState([]);
@@ -109,7 +354,7 @@ export default function AdsTracking() {
   });
   const [editingState, setEditingState] = useState(null);
   const [editValue, setEditValue]       = useState('');
-  const [cellDetail, setCellDetail]     = useState(null);
+  const [adDetail, setAdDetail]         = useState(null); // { adName, state }
   const [chartMetric, setChartMetric]   = useState('leads');
   const [chartPeriod, setChartPeriod]   = useState('90');
   const [sortKey, setSortKey]           = useState('date');
@@ -216,12 +461,45 @@ export default function AdsTracking() {
     }
   }, []);
 
-  // On mount: load cached data immediately, then auto-sync if stale (> 6 hours)
+  // Lightweight lead sync: only GHL contacts since lastSync — always runs on mount
+  const syncLeads = useCallback(async () => {
+    if (syncingRef.current) return;
+    syncingRef.current = true;
+    setSyncing(true);
+    setSyncError('');
+    setSyncNote('Fetching new leads…');
+    try {
+      const lastSyncTime = await dbGetMeta('lastSync');
+      const since = lastSyncTime
+        ? lastSyncTime
+        : new Date(Date.now() - 2 * 365 * 864e5).toISOString();
+      const now = new Date().toISOString();
+      const contacts = await apiFetch(
+        `/api/ghl/contacts?start=${encodeURIComponent(since)}&end=${encodeURIComponent(now)}`
+      );
+      await dbUpsert('ghlContacts', contacts);
+      await dbSetMeta('lastSync', now);
+      const all = await dbGetAll('ghlContacts');
+      setAllContacts(all);
+      setLastSync(now);
+      setSyncNote(`+${contacts.length} new leads`);
+    } catch (err) {
+      console.error('Lead sync error:', err);
+      setSyncError(err.message);
+      setSyncNote('');
+    } finally {
+      syncingRef.current = false;
+      setSyncing(false);
+    }
+  }, []);
+
+  // On mount: load cache immediately, always sync leads, full sync only if stale (> 6h)
   useEffect(() => {
     loadFromDB().then(async () => {
       const ts    = await dbGetMeta('lastSync');
       const stale = !ts || (Date.now() - new Date(ts).getTime() > 6 * 3600 * 1000);
-      if (stale) sync();
+      if (stale) sync(); // full sync (GHL + FB)
+      else syncLeads();   // leads-only sync
     });
   }, []);
 
@@ -470,7 +748,7 @@ export default function AdsTracking() {
                 <XAxis dataKey="date" tick={{ fontSize: 10, fill: 'var(--text-muted)' }} />
                 <YAxis tick={{ fontSize: 10, fill: 'var(--text-muted)' }} />
                 <Tooltip content={<CustomTooltip metricKey={chartMetric} />} />
-                <Line type="monotone" dataKey={chartMetric} stroke={activeMetric?.color || '#3a8f5c'} dot={false} strokeWidth={2} connectNulls />
+                <Line type="linear" dataKey={chartMetric} stroke={activeMetric?.color || '#3a8f5c'} dot={false} strokeWidth={2} connectNulls />
               </LineChart>
             </ResponsiveContainer>
           )}
@@ -571,7 +849,7 @@ export default function AdsTracking() {
                       return (
                         <td key={state} className="tracking-td-cell">
                           {cellTotal > 0
-                            ? <button className="tracking-cell-btn" onClick={() => setCellDetail({ adName, state, leads, imported })}>{cellTotal}</button>
+                            ? <button className="tracking-cell-btn" onClick={() => setAdDetail({ adName, state })}>{cellTotal}</button>
                             : <span className="tracking-cell-empty">—</span>
                           }
                         </td>
@@ -600,51 +878,17 @@ export default function AdsTracking() {
         </div>
       )}
 
-      {/* Cell Detail Modal */}
-      {cellDetail && (
-        <div className="col-mgr-overlay" onClick={e => e.target === e.currentTarget && setCellDetail(null)}>
-          <div className="col-mgr-panel">
-            <div className="col-mgr-head">
-              <div>
-                <div className="col-mgr-title">{cellDetail.adName}</div>
-                <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
-                  {accountLabel(cellDetail.state)} · {cellDetail.leads.length + (cellDetail.imported || 0)} total leads
-                </div>
-              </div>
-              <button className="col-mgr-x" onClick={() => setCellDetail(null)}>×</button>
-            </div>
-            <div style={{ overflowY: 'auto', flex: 1 }}>
-              {/* Sheet-imported historical count */}
-              {cellDetail.imported > 0 && (
-                <div style={{ padding: '10px 18px', borderBottom: '1px solid var(--border)', background: 'var(--bg)' }}>
-                  <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-muted)' }}>
-                    📋 {cellDetail.imported} imported from sheet
-                  </span>
-                </div>
-              )}
-              {/* GHL contacts */}
-              {cellDetail.leads.length > 0 && (
-                <div style={{ padding: '8px 18px 4px', fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-                  Live leads
-                </div>
-              )}
-              {[...cellDetail.leads]
-                .sort((a, b) => (b.dateAdded || '').localeCompare(a.dateAdded || ''))
-                .map(c => (
-                  <div key={c.id} className="case-item">
-                    <div className="case-item-name">{c.name}</div>
-                    <div className="case-item-meta">
-                      <span>{fmtPhone(c.phone)}</span>
-                      {c.dateAdded && <span>{fmtDate(c.dateAdded)}</span>}
-                    </div>
-                  </div>
-                ))}
-              {cellDetail.leads.length === 0 && cellDetail.imported === 0 && (
-                <div className="empty" style={{ padding: 32 }}>No leads</div>
-              )}
-            </div>
-          </div>
-        </div>
+      {/* Ad Detail Modal */}
+      {adDetail && (
+        <AdDetailModal
+          adName={adDetail.adName}
+          state={adDetail.state}
+          allAds={allAds}
+          allContacts={allContacts}
+          sheetByName={sheetByName}
+          accountLabel={accountLabel}
+          onClose={() => setAdDetail(null)}
+        />
       )}
     </div>
   );
