@@ -1270,6 +1270,7 @@ export default function AdsTracking() {
               <col style={{ width: colWidths.spend ?? 80 }} />
               <col style={{ width: colWidths.cpl   ?? 70 }} />
               <col style={{ width: colWidths.cpc   ?? 70 }} />
+              <col style={{ width: colWidths.total ?? 65 }} />
               {orderedStates.map(st => <col key={st} style={{ width: colWidths[st] ?? 110 }} />)}
             </colgroup>
             <thead>
@@ -1295,7 +1296,15 @@ export default function AdsTracking() {
                   CPC {sortKey === 'cpc' && <SortArrow dir={sortDir} />}
                   <div className="col-resize-handle" onMouseDown={e => startColResize('cpc', 70, e)} />
                 </th>
-                {orderedStates.map((state, i) => (
+                <th className="tracking-th-state tracking-th-sortable" onClick={() => handleSort('total')}>
+                  Total {sortKey === 'total' && <SortArrow dir={sortDir} />}
+                  <div className="col-resize-handle" onMouseDown={e => startColResize('total', 65, e)} />
+                </th>
+                {orderedStates.map((state, i) => {
+                  const colSpend = adNames.reduce((s, a) => s + (spendGrid[a]?.[state] || 0), 0);
+                  const colLeads = adNames.reduce((s, a) => s + (grid[a]?.[state]      || 0), 0);
+                  const colCases = adNames.reduce((s, a) => s + (caseGrid[a]?.[state]  || 0), 0);
+                  return (
                   <th
                     key={state}
                     className={`tracking-th-state${dragOverCol === i ? ' tracking-th-drag-over' : ''}`}
@@ -1334,10 +1343,18 @@ export default function AdsTracking() {
                       >
                         Sort {sortKey === state && <SortArrow dir={sortDir} />}
                       </button>
+                      {colSpend > 0 && (
+                        <span className="cell-stats" style={{ marginTop: 4 }}>
+                          <span style={{ color: '#94a3b8' }}>${colSpend.toLocaleString('en-US', { maximumFractionDigits: 0 })}</span>
+                          {colLeads > 0 && <span style={{ color: '#16a34a' }}>${(colSpend / colLeads).toFixed(0)}</span>}
+                          {colCases > 0 && <span style={{ color: '#3b82f6' }}>${(colSpend / colCases).toFixed(0)}</span>}
+                        </span>
+                      )}
                     </div>
                     <div className="col-resize-handle" onMouseDown={e => startColResize(state, 110, e)} />
                   </th>
-                ))}
+                  );
+                })}
               </tr>
             </thead>
             <tbody>
@@ -1409,13 +1426,13 @@ export default function AdsTracking() {
                     <td className="tracking-td-total" style={{ color: '#3b82f6', fontSize: 12 }}>
                       {cpc != null ? `$${cpc.toFixed(0)}` : '—'}
                     </td>
+                    <td className="tracking-td-total" style={{ fontWeight: 700 }}>
+                      {totalLeads > 0 ? totalLeads : '—'}
+                    </td>
                     {orderedStates.map(state => {
-                      const leads     = row[state]      || 0;
-                      const cases     = caseRow[state]  || 0;
-                      const cellSpend = spendRow[state] || 0;
-                      const cellCPL   = leads > 0 ? cellSpend / leads : null;
-                      const cellCPC   = cases > 0 ? cellSpend / cases : null;
-                      const hasData   = leads > 0 || cases > 0;
+                      const leads   = row[state]     || 0;
+                      const cases   = caseRow[state] || 0;
+                      const hasData = leads > 0 || cases > 0;
                       return (
                         <td key={state} className="tracking-td-cell">
                           {hasData
@@ -1423,20 +1440,11 @@ export default function AdsTracking() {
                               <button
                                 className="tracking-cell-btn"
                                 onClick={e => { e.stopPropagation(); setAdDetail({ adName, state }); }}
-                                style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 0, padding: '4px 6px', width: '100%' }}
+                                style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 3, padding: '4px 6px', width: '100%', fontWeight: 600 }}
                               >
-                                <span style={{ display: 'flex', alignItems: 'center', gap: 3, fontWeight: 600 }}>
-                                  {leads > 0 ? <span>{leads}</span> : <span style={{ color: 'var(--text-muted)' }}>0</span>}
-                                  <span style={{ color: '#cbd5e1', fontSize: 10 }}>|</span>
-                                  <span style={{ color: '#3b82f6' }}>{cases > 0 ? cases : <span style={{ opacity: 0.4 }}>0</span>}</span>
-                                </span>
-                                {cellSpend > 0 && (
-                                  <span className="cell-stats">
-                                    <span style={{ color: '#94a3b8' }}>${cellSpend.toLocaleString('en-US', { maximumFractionDigits: 0 })}</span>
-                                    {cellCPL != null && <span style={{ color: '#16a34a' }}>${cellCPL.toFixed(0)}</span>}
-                                    {cellCPC != null && <span style={{ color: '#3b82f6' }}>${cellCPC.toFixed(0)}</span>}
-                                  </span>
-                                )}
+                                <span>{leads > 0 ? leads : <span style={{ color: 'var(--text-muted)' }}>0</span>}</span>
+                                <span style={{ color: '#cbd5e1', fontSize: 10 }}>|</span>
+                                <span style={{ color: '#3b82f6' }}>{cases > 0 ? cases : <span style={{ opacity: 0.4 }}>0</span>}</span>
                               </button>
                             )
                             : <span className="tracking-cell-empty">—</span>
@@ -1467,29 +1475,22 @@ export default function AdsTracking() {
                     <td className="tracking-td-total tracking-tfoot-label" style={{ color: '#3b82f6' }}>
                       {totCases > 0 ? `$${(totSpend / totCases).toFixed(0)}` : '—'}
                     </td>
+                    <td className="tracking-td-total tracking-tfoot-label" style={{ fontWeight: 700 }}>
+                      {totLeads > 0 ? totLeads : '—'}
+                    </td>
                   </>);
                 })()}
                 {orderedStates.map(state => {
-                  const leads = adNames.reduce((s, a) => s + (grid[a]?.[state]      || 0), 0);
-                  const cases = adNames.reduce((s, a) => s + (caseGrid[a]?.[state]  || 0), 0);
-                  const spend = adNames.reduce((s, a) => s + (spendGrid[a]?.[state] || 0), 0);
+                  const leads = adNames.reduce((s, a) => s + (grid[a]?.[state]     || 0), 0);
+                  const cases = adNames.reduce((s, a) => s + (caseGrid[a]?.[state] || 0), 0);
                   return (
                     <td key={state} className="tracking-td-total tracking-tfoot-label">
                       {(leads > 0 || cases > 0) ? (
-                        <>
-                          <span style={{ display: 'flex', alignItems: 'center', gap: 3, justifyContent: 'center' }}>
-                            <span>{leads}</span>
-                            <span style={{ color: '#cbd5e1', fontSize: 10 }}>|</span>
-                            <span style={{ color: '#3b82f6' }}>{cases}</span>
-                          </span>
-                          {spend > 0 && (
-                            <span className="cell-stats">
-                              <span style={{ color: '#94a3b8' }}>${spend.toLocaleString('en-US', { maximumFractionDigits: 0 })}</span>
-                              {leads > 0 && <span style={{ color: '#16a34a' }}>${(spend/leads).toFixed(0)}</span>}
-                              {cases > 0 && <span style={{ color: '#3b82f6' }}>${(spend/cases).toFixed(0)}</span>}
-                            </span>
-                          )}
-                        </>
+                        <span style={{ display: 'flex', alignItems: 'center', gap: 3, justifyContent: 'center' }}>
+                          <span>{leads}</span>
+                          <span style={{ color: '#cbd5e1', fontSize: 10 }}>|</span>
+                          <span style={{ color: '#3b82f6' }}>{cases}</span>
+                        </span>
                       ) : '—'}
                     </td>
                   );
