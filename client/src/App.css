@@ -729,7 +729,7 @@ tfoot .td-name { font-family: var(--sans); font-weight: 700; font-size: 13px; }
   min-width: 240px;
   position: sticky;
   left: 0;
-  z-index: 1;
+  z-index: 4;
 }
 
 .tracking-th-state {
@@ -740,6 +740,7 @@ tfoot .td-name { font-family: var(--sans); font-weight: 700; font-size: 13px; }
   border-left: 1px solid var(--border);
   min-width: 80px;
   white-space: nowrap;
+  position: relative;
 }
 
 .tracking-acct-name {
@@ -776,6 +777,7 @@ tfoot .td-name { font-family: var(--sans); font-weight: 700; font-size: 13px; }
   position: sticky;
   left: 0;
   z-index: 1;
+  overflow: hidden;
 }
 
 .tracking-ad-name {
@@ -946,6 +948,42 @@ tfoot .td-name { font-family: var(--sans); font-weight: 700; font-size: 13px; }
 .tracking-row-selected .tracking-td-total,
 .tracking-row-selected .tracking-td-date {
   background: #f0fdf4;
+}
+
+/* Column + row resize handles */
+.col-resize-handle {
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 5px;
+  cursor: col-resize;
+  user-select: none;
+  z-index: 4;
+}
+.col-resize-handle:hover, .col-resize-handle:active { background: var(--green); opacity: 0.5; }
+
+.row-resize-handle {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 4px;
+  cursor: row-resize;
+  user-select: none;
+  z-index: 2;
+}
+.row-resize-handle:hover, .row-resize-handle:active { background: var(--green); opacity: 0.5; }
+
+/* Cell stats (spend / CPL / CPC inside state cell) */
+.cell-stats {
+  display: flex;
+  gap: 4px;
+  font-size: 10px;
+  font-family: var(--mono);
+  justify-content: center;
+  margin-top: 2px;
+  opacity: 0.85;
 }
 
 @media (max-width: 900px) {
