@@ -511,7 +511,6 @@ export default function AdsTracking() {
   const [allContacts, setAllContacts]           = useState([]);
   const [allDailyInsights, setAllDailyInsights] = useState([]);
   const [allAds, setAllAds]                     = useState([]);
-  const [sheetColumns, setSheetColumns]         = useState([]);
   const [lastSync, setLastSync]                 = useState(null);
 
   // Row management
@@ -568,12 +567,11 @@ export default function AdsTracking() {
 
   // ── Load from IndexedDB ─────────────────────────────────────────────────────
   async function loadFromDB() {
-    const [contacts, insights, ads, adDaily, cols, syncTime, deleted, merges] = await Promise.all([
+    const [contacts, insights, ads, adDaily, syncTime, deleted, merges] = await Promise.all([
       dbGetAll('ghlContacts'),
       dbGetAll('fbDailyInsights'),
       dbGetAll('fbAds'),
       dbGetAll('adDailyInsights'),
-      dbGetMeta('trackingColumns'),
       dbGetMeta('lastSync'),
       dbGetMeta('deletedAds'),
       dbGetMeta('mergeGroups'),
@@ -582,7 +580,6 @@ export default function AdsTracking() {
     setAllDailyInsights(insights);
     setAllAds(ads);
     setAllAdDailyInsights(adDaily);
-    setSheetColumns(cols || []);
     setLastSync(syncTime);
     setDeletedAds(new Set(deleted || []));
     setMergeGroups(merges || []);
@@ -812,6 +809,8 @@ export default function AdsTracking() {
     return names;
   }, [allAds, deletedAds, absorbedMembers]);
 
+  const sheetByName = {};
+
   // Grid: FB results (leads) per ad per state
   const grid = useMemo(() => {
     const map = {};
@@ -862,7 +861,7 @@ export default function AdsTracking() {
       if (av > bv) return sortDir === 'asc' ?  1 : -1;
       return 0;
     });
-  }, [adNames, sortKey, sortDir, grid, firstUsed, states, sheetByName]);
+  }, [adNames, sortKey, sortDir, grid, firstUsed, states]);
 
   function handleSort(key) {
     if (sortKey === key) setSortDir(d => d === 'asc' ? 'desc' : 'asc');
