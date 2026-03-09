@@ -1344,11 +1344,11 @@ export default function AdsTracking() {
                         Sort {sortKey === state && <SortArrow dir={sortDir} />}
                       </button>
                       {colSpend > 0 && (
-                        <span className="cell-stats" style={{ marginTop: 4 }}>
+                        <div style={{ marginTop: 4, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2, fontSize: 10, fontFamily: 'var(--mono)' }}>
                           <span style={{ color: '#94a3b8' }}>${colSpend.toLocaleString('en-US', { maximumFractionDigits: 0 })}</span>
-                          {colLeads > 0 && <span style={{ color: '#16a34a' }}>${(colSpend / colLeads).toFixed(0)}</span>}
-                          {colCases > 0 && <span style={{ color: '#3b82f6' }}>${(colSpend / colCases).toFixed(0)}</span>}
-                        </span>
+                          {colLeads > 0 && <span style={{ color: '#16a34a' }}>CPL ${(colSpend / colLeads).toFixed(0)}</span>}
+                          {colCases > 0 && <span style={{ color: '#3b82f6' }}>CPC ${(colSpend / colCases).toFixed(0)}</span>}
+                        </div>
                       )}
                     </div>
                     <div className="col-resize-handle" onMouseDown={e => startColResize(state, 110, e)} />
