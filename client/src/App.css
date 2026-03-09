@@ -877,6 +877,32 @@ tfoot .td-name { font-family: var(--sans); font-weight: 700; font-size: 13px; }
   background: #f5faf7;
 }
 
+/* Sync button — hidden until row hover */
+.ad-row-sync-btn {
+  border: none;
+  background: none;
+  cursor: pointer;
+  color: #94a3b8;
+  font-size: 14px;
+  padding: 0 3px;
+  border-radius: 3px;
+  line-height: 1;
+  opacity: 0;
+  transition: opacity 0.1s;
+  flex-shrink: 0;
+}
+.tracking-grid tbody tr:hover .ad-row-sync-btn { opacity: 1; }
+.ad-row-sync-btn:hover { color: #6366f1; background: #ede9fe; }
+.ad-row-sync-btn:disabled { cursor: not-allowed; opacity: 0.4 !important; }
+
+/* Synced indicator badge */
+.tracking-synced-badge {
+  font-size: 9px;
+  font-weight: 700;
+  color: #16a34a;
+  flex-shrink: 0;
+}
+
 /* Delete button — hidden until row hover */
 .ad-row-delete-btn {
   border: none;

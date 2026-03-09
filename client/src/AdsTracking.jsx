@@ -97,13 +97,11 @@ const AD_DETAIL_TABLE_COLS = [
 ];
 
 // ── Ad Detail Modal ───────────────────────────────────────────────────────────
-function AdDetailModal({ adName, state, allAds, allContacts, sheetByName, accountLabel, mergeGroups, onUnmerge, onClose }) {
-  const [period, setPeriod]                     = useState('90');
-  const [sortKey, setSortKey]                   = useState('spend');
-  const [sortDir, setSortDir]                   = useState('desc');
-  const [modalMetric, setModalMetric]           = useState('leads');
-  const [adDailyInsights, setAdDailyInsights]   = useState([]);
-  const [loadingDaily, setLoadingDaily]         = useState(false);
+function AdDetailModal({ adName, state, allAds, allContacts, sheetByName, accountLabel, mergeGroups, allAdDailyInsights, onSyncMax, onUnmerge, onClose }) {
+  const [period, setPeriod]   = useState('90');
+  const [sortKey, setSortKey] = useState('spend');
+  const [sortDir, setSortDir] = useState('desc');
+  const [modalMetric, setModalMetric] = useState('leads');
 
   // Merge group this ad belongs to as canonical
   const mergeGroup = useMemo(() =>
@@ -145,16 +143,15 @@ function AdDetailModal({ adName, state, allAds, allContacts, sheetByName, accoun
   const importedCount = sheetByName[adName]?.leads?.[state] || 0;
   const totalLeads    = ghlLeads.length + importedCount;
 
-  // Fetch ad-level daily insights scoped to these specific ad IDs
-  useEffect(() => {
-    const adIds = fbInstances.map(a => a.id).filter(Boolean).join(',');
-    if (!adIds) return;
-    setLoadingDaily(true);
-    apiFetch(`/api/facebook/daily?date_preset=maximum&ad_ids=${encodeURIComponent(adIds)}`)
-      .then(data => setAdDailyInsights(data))
-      .catch(err => console.warn('Ad daily fetch failed:', err.message))
-      .finally(() => setLoadingDaily(false));
-  }, [fbInstances]);
+  // Use stored ad-level daily insights (populated by syncAdMax)
+  const fbAdIds = useMemo(() => new Set(fbInstances.map(a => a.id).filter(Boolean)), [fbInstances]);
+
+  const adDailyInsights = useMemo(() =>
+    allAdDailyInsights.filter(r => fbAdIds.has(r.ad_id)),
+    [allAdDailyInsights, fbAdIds]
+  );
+
+  const hasStoredSpend = adDailyInsights.length > 0;
 
   const cutoff = useMemo(() => {
     if (period === 'all') return null;
@@ -313,16 +310,33 @@ function AdDetailModal({ adName, state, allAds, allContacts, sheetByName, accoun
           {/* Per-ad chart */}
           <div style={{ marginBottom: 20 }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-              <div style={{ display: 'flex', gap: 6 }}>
+              <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
                 {MODAL_METRICS.map(m => (
                   <button
                     key={m.key}
                     className={`btn btn--sm${modalMetric === m.key ? ' btn--primary' : ''}`}
                     onClick={() => setModalMetric(m.key)}
+                    disabled={m.key === 'spend' && !hasStoredSpend}
+                    title={m.key === 'spend' && !hasStoredSpend ? 'Use Sync Max to pull spend data for this ad' : undefined}
                   >
-                    {m.label}{m.key === 'spend' && loadingDaily ? ' …' : ''}
+                    {m.label}
                   </button>
                 ))}
+                {!hasStoredSpend && (
+                  <button
+                    className="btn btn--sm"
+                    style={{ marginLeft: 4 }}
+                    onClick={() => onSyncMax([adName])}
+                    title="Pull all-time daily spend data for this ad"
+                  >
+                    Sync Max
+                  </button>
+                )}
+                {hasStoredSpend && (
+                  <span style={{ fontSize: 11, color: 'var(--text-muted)', marginLeft: 4 }}>
+                    {adDailyInsights.length} daily rows
+                  </span>
+                )}
               </div>
               <div style={{ display: 'flex', gap: 4 }}>
                 {CHART_PERIODS.map(p => (
@@ -335,7 +349,9 @@ function AdDetailModal({ adName, state, allAds, allContacts, sheetByName, accoun
             <div style={{ background: 'var(--surface)', borderRadius: 10, border: '1px solid var(--border)', padding: '16px 8px 8px' }}>
               {chartData.length === 0 ? (
                 <div style={{ textAlign: 'center', padding: '32px 0', color: 'var(--text-muted)', fontSize: 13 }}>
-                  {loadingDaily && modalMetric === 'spend' ? 'Loading spend data…' : 'No data in this period'}
+                  {modalMetric === 'spend' && !hasStoredSpend
+                    ? 'Click "Sync Max" above to pull spend data for this ad'
+                    : 'No data in this period'}
                 </div>
               ) : (
                 <ResponsiveContainer width="100%" height={180}>
@@ -437,6 +453,11 @@ export default function AdsTracking() {
   const [deletedAds, setDeletedAds]   = useState(new Set());  // hidden ad names
   const [mergeGroups, setMergeGroups] = useState([]);          // [{canonical, members}]
 
+  // Ad-level daily insights (selectively synced)
+  const [allAdDailyInsights, setAllAdDailyInsights] = useState([]);
+  const [syncingAdMax, setSyncingAdMax]             = useState(false);
+  const [adMaxNote, setAdMaxNote]                   = useState('');
+
   // Import
   const [importing, setImporting] = useState(false);
   const [importNote, setImportNote] = useState('');
@@ -485,11 +506,12 @@ export default function AdsTracking() {
 
   // ── Load from IndexedDB ─────────────────────────────────────────────────────
   async function loadFromDB() {
-    const [contacts, insights, ads, imported, cols, syncTime, deleted, merges] = await Promise.all([
+    const [contacts, insights, ads, imported, adDaily, cols, syncTime, deleted, merges] = await Promise.all([
       dbGetAll('ghlContacts'),
       dbGetAll('fbDailyInsights'),
       dbGetAll('fbAds'),
       dbGetAll('sheetImport'),
+      dbGetAll('adDailyInsights'),
       dbGetMeta('trackingColumns'),
       dbGetMeta('lastSync'),
       dbGetMeta('deletedAds'),
@@ -499,6 +521,7 @@ export default function AdsTracking() {
     setAllDailyInsights(insights);
     setAllAds(ads);
     setSheetImport(imported);
+    setAllAdDailyInsights(adDaily);
     setSheetColumns(cols || []);
     setLastSync(syncTime);
     setDeletedAds(new Set(deleted || []));
@@ -660,6 +683,46 @@ export default function AdsTracking() {
     const next = mergeGroups.filter(g => g.canonical !== canonical);
     setMergeGroups(next);
     await dbSetMeta('mergeGroups', next);
+  }
+
+  // Sync all-time ad-level daily data for specific ad names (selective API pull)
+  async function syncAdMax(adNamesList) {
+    if (syncingAdMax) return;
+    setSyncingAdMax(true);
+    setAdMaxNote('');
+    try {
+      // Resolve all effective names (including merged members)
+      const effectiveNames = new Set();
+      for (const name of adNamesList) {
+        effectiveNames.add(name);
+        const group = mergeGroups.find(g => g.canonical === name);
+        if (group) group.members.forEach(m => effectiveNames.add(m));
+      }
+      // Find FB ad IDs for these names
+      const adIds = allAds
+        .filter(a => effectiveNames.has((a.name || '').trim()))
+        .map(a => a.id)
+        .filter(Boolean);
+      if (!adIds.length) {
+        setAdMaxNote('No FB ad IDs found — run Sync Now first to load ads');
+        return;
+      }
+      setAdMaxNote(`Fetching ${adIds.length} ad IDs across accounts…`);
+      const data = await apiFetch(
+        `/api/facebook/daily?date_preset=maximum&ad_ids=${encodeURIComponent(adIds.join(','))}`
+      );
+      const records = data.map(r => ({ ...r, id: `${r.date_start}|${r.ad_id}` }));
+      await dbUpsert('adDailyInsights', records);
+      const all = await dbGetAll('adDailyInsights');
+      setAllAdDailyInsights(all);
+      setAdMaxNote(`Synced ${adNamesList.length} ad${adNamesList.length !== 1 ? 's' : ''} · ${records.length} daily rows`);
+      setSelectedRows(new Set());
+      setSelecting(false);
+    } catch (err) {
+      setAdMaxNote(`Sync failed: ${err.message.slice(0, 80)}`);
+    } finally {
+      setSyncingAdMax(false);
+    }
   }
 
   function toggleRowSelect(adName) {
@@ -1030,14 +1093,30 @@ export default function AdsTracking() {
                         {mergeGroup && (
                           <span className="tracking-merge-badge">{mergeGroup.members.length} ads</span>
                         )}
+                        {allAdDailyInsights.some(r => {
+                          const effectiveNames = mergeGroup ? mergeGroup.members : [adName];
+                          return effectiveNames.some(n => allAds.find(a => a.name?.trim() === n && a.id === r.ad_id));
+                        }) && (
+                          <span className="tracking-synced-badge" title="Ad-level daily data synced">✓</span>
+                        )}
                         {!selecting && (
-                          <button
-                            className="ad-row-delete-btn"
-                            onClick={e => { e.stopPropagation(); deleteAd(adName); }}
-                            title="Hide this ad permanently"
-                          >
-                            ×
-                          </button>
+                          <>
+                            <button
+                              className="ad-row-sync-btn"
+                              onClick={e => { e.stopPropagation(); syncAdMax([adName]); }}
+                              disabled={syncingAdMax}
+                              title="Sync all-time daily data for this ad"
+                            >
+                              ↻
+                            </button>
+                            <button
+                              className="ad-row-delete-btn"
+                              onClick={e => { e.stopPropagation(); deleteAd(adName); }}
+                              title="Hide this ad permanently"
+                            >
+                              ×
+                            </button>
+                          </>
                         )}
                       </div>
                     </td>
@@ -1080,21 +1159,36 @@ export default function AdsTracking() {
         </div>
       )}
 
-      {/* Floating combine bar */}
-      {selecting && selectedRows.size >= 2 && (
+      {/* Floating action bar (1+ rows selected) */}
+      {selecting && selectedRows.size >= 1 && (
         <div style={{
           position: 'fixed', bottom: 24, left: '50%', transform: 'translateX(-50%)',
           background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 10,
           padding: '10px 18px', display: 'flex', gap: 12, alignItems: 'center',
-          boxShadow: '0 4px 24px rgba(0,0,0,0.18)', zIndex: 200,
+          boxShadow: '0 4px 24px rgba(0,0,0,0.18)', zIndex: 200, flexWrap: 'wrap',
         }}>
-          <span style={{ fontSize: 13, fontWeight: 600 }}>{selectedRows.size} ads selected</span>
-          <button className="btn btn--sm btn--primary" onClick={openMergeDialog}>
-            Combine
+          <span style={{ fontSize: 13, fontWeight: 600 }}>{selectedRows.size} ad{selectedRows.size !== 1 ? 's' : ''} selected</span>
+          <button
+            className="btn btn--sm btn--primary"
+            onClick={() => syncAdMax([...selectedRows])}
+            disabled={syncingAdMax}
+            title="Fetch all-time daily data for these ads only (efficient — no full account scan)"
+          >
+            {syncingAdMax ? 'Syncing…' : 'Sync Max'}
           </button>
+          {selectedRows.size >= 2 && (
+            <button className="btn btn--sm" onClick={openMergeDialog}>
+              Combine
+            </button>
+          )}
           <button className="btn btn--sm" onClick={() => { setSelectedRows(new Set()); setSelecting(false); }}>
             Cancel
           </button>
+          {adMaxNote && (
+            <span style={{ fontSize: 11, color: adMaxNote.startsWith('Sync failed') ? '#dc2626' : 'var(--green-dark)', maxWidth: 300 }}>
+              {adMaxNote}
+            </span>
+          )}
         </div>
       )}
 
@@ -1146,6 +1240,8 @@ export default function AdsTracking() {
           sheetByName={sheetByName}
           accountLabel={accountLabel}
           mergeGroups={mergeGroups}
+          allAdDailyInsights={allAdDailyInsights}
+          onSyncMax={syncAdMax}
           onUnmerge={unmergeGroup}
           onClose={() => setAdDetail(null)}
         />

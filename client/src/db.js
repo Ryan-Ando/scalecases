@@ -2,7 +2,7 @@
 // Stores GHL contacts, FB daily insights, and FB ads across sessions.
 
 const DB_NAME = 'scalecases_v1';
-const DB_VERSION = 2; // v2 adds sheetImport store
+const DB_VERSION = 3; // v3 adds adDailyInsights store
 let _db = null;
 
 async function openDB() {
@@ -26,6 +26,10 @@ async function openDB() {
       // v2: manual sheet import store
       if (!db.objectStoreNames.contains('sheetImport')) {
         db.createObjectStore('sheetImport', { keyPath: 'id' });
+      }
+      // v3: ad-level daily insights (selectively synced per ad)
+      if (!db.objectStoreNames.contains('adDailyInsights')) {
+        db.createObjectStore('adDailyInsights', { keyPath: 'id' });
       }
     };
     req.onsuccess = e => { _db = e.target.result; resolve(_db); };
@@ -83,7 +87,7 @@ export async function dbClearAll(clearImport = false) {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
     req.onsuccess = e => {
       const db = e.target.result;
-      const stores = ['ghlContacts', 'fbDailyInsights', 'fbAds', 'meta'];
+      const stores = ['ghlContacts', 'fbDailyInsights', 'fbAds', 'adDailyInsights', 'meta'];
       if (clearImport) stores.push('sheetImport');
       const tx = db.transaction(stores, 'readwrite');
       for (const s of stores) tx.objectStore(s).clear();
