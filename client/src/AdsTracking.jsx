@@ -647,8 +647,7 @@ export default function AdsTracking() {
   const [dragOverCol, setDragOverCol]   = useState(null);
   const dragColRef = useRef(null);
 
-  // Cases toggle
-  const [viewMode, setViewMode]       = useState('leads'); // 'leads' | 'cases'
+  // Cases data (loaded on mount)
   const [ghlContacts, setGhlContacts] = useState([]);
   const [sheetCases, setSheetCases]   = useState([]);
   const [loadingCases, setLoadingCases] = useState(false);
@@ -747,9 +746,7 @@ export default function AdsTracking() {
     }
   }
 
-  useEffect(() => {
-    if (viewMode === 'cases') loadCases();
-  }, [viewMode]);
+  useEffect(() => { loadCases(); }, []);
 
   // ── FB sync ─────────────────────────────────────────────────────────────────
   const sync = useCallback(async () => {
@@ -986,7 +983,24 @@ export default function AdsTracking() {
     return map;
   }, [adNames, states, attributedCases, memberToCanonical]);
 
-  const activeGrid = viewMode === 'cases' ? caseGrid : grid;
+  // Spend per ad per state
+  const spendGrid = useMemo(() => {
+    const map = {};
+    for (const adName of adNames) {
+      map[adName] = {};
+      for (const st of states) map[adName][st] = 0;
+    }
+    for (const a of activeAds) {
+      const rawName = (a.name || '').trim();
+      const st      = extractState(a.campaignName);
+      if (!rawName || !st || deletedAds.has(rawName)) continue;
+      const adName  = memberToCanonical[rawName] || rawName;
+      if (map[adName]?.[st] !== undefined) {
+        map[adName][st] += parseFloat(a.spend) || 0;
+      }
+    }
+    return map;
+  }, [adNames, states, activeAds, deletedAds, memberToCanonical]);
 
   // First used: earliest date among all members' ad names
   const firstUsed = useMemo(() => {
@@ -1017,18 +1031,35 @@ export default function AdsTracking() {
       let av, bv;
       if (sortKey === 'name') {
         av = a.toLowerCase(); bv = b.toLowerCase();
+      } else if (sortKey === 'spend') {
+        av = states.reduce((s, st) => s + (spendGrid[a]?.[st] || 0), 0);
+        bv = states.reduce((s, st) => s + (spendGrid[b]?.[st] || 0), 0);
+      } else if (sortKey === 'cpl') {
+        const aLeads = states.reduce((s, st) => s + (grid[a]?.[st] || 0), 0);
+        const bLeads = states.reduce((s, st) => s + (grid[b]?.[st] || 0), 0);
+        const aSpend = states.reduce((s, st) => s + (spendGrid[a]?.[st] || 0), 0);
+        const bSpend = states.reduce((s, st) => s + (spendGrid[b]?.[st] || 0), 0);
+        av = aLeads > 0 ? aSpend / aLeads : Infinity;
+        bv = bLeads > 0 ? bSpend / bLeads : Infinity;
+      } else if (sortKey === 'cpc') {
+        const aCases = states.reduce((s, st) => s + (caseGrid[a]?.[st] || 0), 0);
+        const bCases = states.reduce((s, st) => s + (caseGrid[b]?.[st] || 0), 0);
+        const aSpend = states.reduce((s, st) => s + (spendGrid[a]?.[st] || 0), 0);
+        const bSpend = states.reduce((s, st) => s + (spendGrid[b]?.[st] || 0), 0);
+        av = aCases > 0 ? aSpend / aCases : Infinity;
+        bv = bCases > 0 ? bSpend / bCases : Infinity;
       } else if (sortKey === 'total') {
-        av = states.reduce((s, st) => s + (activeGrid[a]?.[st] || 0), 0);
-        bv = states.reduce((s, st) => s + (activeGrid[b]?.[st] || 0), 0);
+        av = states.reduce((s, st) => s + (grid[a]?.[st] || 0), 0);
+        bv = states.reduce((s, st) => s + (grid[b]?.[st] || 0), 0);
       } else {
-        av = activeGrid[a]?.[sortKey] || 0;
-        bv = activeGrid[b]?.[sortKey] || 0;
+        av = grid[a]?.[sortKey] || 0;
+        bv = grid[b]?.[sortKey] || 0;
       }
       if (av < bv) return sortDir === 'asc' ? -1 : 1;
       if (av > bv) return sortDir === 'asc' ?  1 : -1;
       return 0;
     });
-  }, [adNames, sortKey, sortDir, activeGrid, firstUsed, states]);
+  }, [adNames, sortKey, sortDir, grid, caseGrid, spendGrid, firstUsed, states]);
 
   function handleSort(key) {
     if (sortKey === key) setSortDir(d => d === 'asc' ? 'desc' : 'asc');
@@ -1188,25 +1219,8 @@ export default function AdsTracking() {
           {deletedAds.size > 0 && ` · ${deletedAds.size} hidden`}
           {rangeAds && ` · ${rangeStart} – ${rangeEnd}`}
         </span>
-        <div style={{ display: 'flex', gap: 2, background: 'var(--border)', borderRadius: 7, padding: 2 }}>
-          <button
-            className={`btn btn--sm${viewMode === 'leads' ? ' btn--primary' : ''}`}
-            style={{ borderRadius: 5 }}
-            onClick={() => setViewMode('leads')}
-          >Leads</button>
-          <button
-            className={`btn btn--sm${viewMode === 'cases' ? ' btn--primary' : ''}`}
-            style={{ borderRadius: 5 }}
-            onClick={() => setViewMode('cases')}
-          >Cases</button>
-        </div>
-        {viewMode === 'cases' && loadingCases && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Loading cases…</span>}
-        {viewMode === 'cases' && casesError && <span style={{ fontSize: 11, color: '#dc2626' }}>{casesError}</span>}
-        {viewMode === 'cases' && !loadingCases && !casesError && (
-          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-            {sheetCases.length} sheet cases · {attributedCases.length} attributed
-          </span>
-        )}
+        {loadingCases && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Loading cases…</span>}
+        {casesError && <span style={{ fontSize: 11, color: '#dc2626' }}>{casesError}</span>}
         <button
           className={`btn btn--sm${selecting ? ' btn--primary' : ''}`}
           style={{ marginLeft: 'auto' }}
@@ -1236,8 +1250,14 @@ export default function AdsTracking() {
                 <th className="tracking-th-state tracking-th-sortable" onClick={() => handleSort('date')}>
                   First Used {sortKey === 'date' && <SortArrow dir={sortDir} />}
                 </th>
-                <th className="tracking-th-state tracking-th-sortable" onClick={() => handleSort('total')}>
-                  Total {sortKey === 'total' && <SortArrow dir={sortDir} />}
+                <th className="tracking-th-state tracking-th-sortable" onClick={() => handleSort('spend')} style={{ color: '#94a3b8' }}>
+                  Spend {sortKey === 'spend' && <SortArrow dir={sortDir} />}
+                </th>
+                <th className="tracking-th-state tracking-th-sortable" onClick={() => handleSort('cpl')} style={{ color: '#16a34a' }}>
+                  CPL {sortKey === 'cpl' && <SortArrow dir={sortDir} />}
+                </th>
+                <th className="tracking-th-state tracking-th-sortable" onClick={() => handleSort('cpc')} style={{ color: '#3b82f6' }}>
+                  CPC {sortKey === 'cpc' && <SortArrow dir={sortDir} />}
                 </th>
                 {orderedStates.map((state, i) => (
                   <th
@@ -1285,9 +1305,15 @@ export default function AdsTracking() {
             </thead>
             <tbody>
               {sortedAdNames.map(adName => {
-                const row        = activeGrid[adName] || {};
+                const row        = grid[adName]      || {};
+                const caseRow    = caseGrid[adName]  || {};
+                const spendRow   = spendGrid[adName] || {};
                 const mergeGroup = mergeGroups.find(g => g.canonical === adName);
-                const total      = orderedStates.reduce((s, st) => s + (row[st] || 0), 0);
+                const totalLeads = orderedStates.reduce((s, st) => s + (row[st]     || 0), 0);
+                const totalCases = orderedStates.reduce((s, st) => s + (caseRow[st] || 0), 0);
+                const totalSpend = orderedStates.reduce((s, st) => s + (spendRow[st] || 0), 0);
+                const cpl        = totalLeads > 0 ? totalSpend / totalLeads : null;
+                const cpc        = totalCases > 0 ? totalSpend / totalCases : null;
                 const isSelected = selectedRows.has(adName);
                 return (
                   <tr key={adName} className={isSelected ? 'tracking-row-selected' : ''} onClick={selecting ? () => toggleRowSelect(adName) : undefined} style={selecting ? { cursor: 'pointer' } : undefined}>
@@ -1336,13 +1362,32 @@ export default function AdsTracking() {
                       </div>
                     </td>
                     <td className="tracking-td-date">{fmtDate(firstUsed[adName])}</td>
-                    <td className="tracking-td-total">{total > 0 ? total : '—'}</td>
+                    <td className="tracking-td-total" style={{ color: '#94a3b8', fontSize: 12 }}>
+                      {totalSpend > 0 ? `$${totalSpend.toLocaleString('en-US', { maximumFractionDigits: 0 })}` : '—'}
+                    </td>
+                    <td className="tracking-td-total" style={{ color: '#16a34a', fontSize: 12 }}>
+                      {cpl != null ? `$${cpl.toFixed(0)}` : '—'}
+                    </td>
+                    <td className="tracking-td-total" style={{ color: '#3b82f6', fontSize: 12 }}>
+                      {cpc != null ? `$${cpc.toFixed(0)}` : '—'}
+                    </td>
                     {orderedStates.map(state => {
-                      const cellTotal = row[state] || 0;
+                      const leads = row[state]     || 0;
+                      const cases = caseRow[state] || 0;
+                      const hasData = leads > 0 || cases > 0;
                       return (
                         <td key={state} className="tracking-td-cell">
-                          {cellTotal > 0
-                            ? <button className="tracking-cell-btn" onClick={e => { e.stopPropagation(); setAdDetail({ adName, state }); }}>{cellTotal}</button>
+                          {hasData
+                            ? (
+                              <button
+                                className="tracking-cell-btn"
+                                onClick={e => { e.stopPropagation(); setAdDetail({ adName, state }); }}
+                                style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1, padding: '3px 8px' }}
+                              >
+                                {leads > 0 && <span>{leads}</span>}
+                                {cases > 0 && <span style={{ color: '#3b82f6', fontSize: 11 }}>{cases}</span>}
+                              </button>
+                            )
                             : <span className="tracking-cell-empty">—</span>
                           }
                         </td>
@@ -1357,12 +1402,32 @@ export default function AdsTracking() {
                 {selecting && <td />}
                 <td className="tracking-td-ad tracking-tfoot-label">Total</td>
                 <td className="tracking-td-date tracking-tfoot-label" />
-                <td className="tracking-td-total tracking-tfoot-label">
-                  {adNames.reduce((s, a) => s + orderedStates.reduce((s2, st) => s2 + (activeGrid[a]?.[st] || 0), 0), 0) || '—'}
-                </td>
+                {(() => {
+                  const totSpend = adNames.reduce((s, a) => s + orderedStates.reduce((s2, st) => s2 + (spendGrid[a]?.[st] || 0), 0), 0);
+                  const totLeads = adNames.reduce((s, a) => s + orderedStates.reduce((s2, st) => s2 + (grid[a]?.[st]      || 0), 0), 0);
+                  const totCases = adNames.reduce((s, a) => s + orderedStates.reduce((s2, st) => s2 + (caseGrid[a]?.[st]  || 0), 0), 0);
+                  return (<>
+                    <td className="tracking-td-total tracking-tfoot-label" style={{ color: '#94a3b8' }}>
+                      {totSpend > 0 ? `$${totSpend.toLocaleString('en-US', { maximumFractionDigits: 0 })}` : '—'}
+                    </td>
+                    <td className="tracking-td-total tracking-tfoot-label" style={{ color: '#16a34a' }}>
+                      {totLeads > 0 ? `$${(totSpend / totLeads).toFixed(0)}` : '—'}
+                    </td>
+                    <td className="tracking-td-total tracking-tfoot-label" style={{ color: '#3b82f6' }}>
+                      {totCases > 0 ? `$${(totSpend / totCases).toFixed(0)}` : '—'}
+                    </td>
+                  </>);
+                })()}
                 {orderedStates.map(state => {
-                  const total = adNames.reduce((s, a) => s + (activeGrid[a]?.[state] || 0), 0);
-                  return <td key={state} className="tracking-td-total tracking-tfoot-label">{total > 0 ? total : '—'}</td>;
+                  const leads = adNames.reduce((s, a) => s + (grid[a]?.[state]      || 0), 0);
+                  const cases = adNames.reduce((s, a) => s + (caseGrid[a]?.[state]  || 0), 0);
+                  return (
+                    <td key={state} className="tracking-td-total tracking-tfoot-label">
+                      {leads > 0 && <span>{leads}</span>}
+                      {cases > 0 && <span style={{ color: '#3b82f6', fontSize: 11, display: 'block' }}>{cases}</span>}
+                      {leads === 0 && cases === 0 && '—'}
+                    </td>
+                  );
                 })}
               </tr>
             </tfoot>
