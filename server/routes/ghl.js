@@ -42,6 +42,8 @@ async function fetchAllContacts(startMs, endMs) {
     if (!res.ok) throw new Error(`GHL API error ${res.status}: ${text.slice(0, 200)}`);
     const json = JSON.parse(text);
 
+    console.log('[GHL] page keys:', Object.keys(json), '| contacts:', (json.contacts||[]).length, '| meta:', JSON.stringify(json.meta || json.pagination || null));
+
     const batch = json.contacts || [];
     if (!batch.length) break;
 
@@ -52,11 +54,14 @@ async function fetchAllContacts(startMs, endMs) {
       all.push(c);
     }
 
+    console.log(`[GHL] batch=${batch.length} in-range=${all.length} lastDateAdded=${batch[batch.length-1]?.dateAdded} lastId=${batch[batch.length-1]?.id}`);
+
     if (batch.length < 100) break;
 
     const last = batch[batch.length - 1];
     startAfter   = last.dateAdded ? new Date(last.dateAdded).getTime() : null;
     startAfterId = last.id || null;
+    console.log(`[GHL] next cursor startAfter=${startAfter} startAfterId=${startAfterId}`);
     if (!startAfterId) break;
   }
 
