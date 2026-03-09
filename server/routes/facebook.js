@@ -219,11 +219,15 @@ router.get('/ads', async (req, res) => {
   }
 });
 
-// GET /api/facebook/daily?date_preset=&level=campaign
+// GET /api/facebook/daily?date_preset=&level=campaign&ad_ids=id1,id2
 // Returns per-day spend/impressions/CPM — paginates through all cursor pages.
+// When ad_ids is provided (comma-separated), filters to only those ad IDs (level=ad implied).
 router.get('/daily', async (req, res) => {
   try {
-    const { date_preset, level = 'campaign' } = req.query;
+    const { date_preset, ad_ids } = req.query;
+    const adIdList = ad_ids ? ad_ids.split(',').filter(Boolean) : null;
+    const level = adIdList?.length ? 'ad' : (req.query.level || 'campaign');
+
     const accounts = adAccounts();
     const all = [];
     await Promise.all(accounts.map(async account => {
@@ -235,6 +239,9 @@ router.get('/daily', async (req, res) => {
         access_token: token(),
         limit: 500,
       });
+      if (adIdList?.length) {
+        params.set('filtering', JSON.stringify([{ field: 'ad.id', operator: 'IN', value: adIdList }]));
+      }
       let url = `${FB_API}/${account}/insights?${params}`;
       while (url) {
         const r = await fetch(url);

@@ -15,17 +15,9 @@ async function apiFetch(path) {
   return res.json();
 }
 
-// Match 2-letter state at end of campaign name after a dash, em-dash, or space
 function extractState(campaignName) {
   const m = (campaignName || '').match(/[-–\s]([A-Z]{2})\s*$/i);
   return m ? m[1].toUpperCase() : null;
-}
-
-function fmtPhone(p) {
-  const d = (p || '').replace(/\D/g, '');
-  if (d.length === 11 && d[0] === '1') return `(${d.slice(1,4)}) ${d.slice(4,7)}-${d.slice(7)}`;
-  if (d.length === 10) return `(${d.slice(0,3)}) ${d.slice(3,6)}-${d.slice(6)}`;
-  return p;
 }
 
 function fmtDate(iso) {
@@ -33,7 +25,6 @@ function fmtDate(iso) {
   return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
-// Extract MMDD date from the start of an ad name (e.g. "0304-IG SC-2-img" → Mar 4)
 function parseAdNameDate(adName) {
   const m = (adName || '').match(/^(\d{2})(\d{2})[-\s]/);
   if (!m) return null;
@@ -57,10 +48,15 @@ function timeAgo(iso) {
 }
 
 const CHART_METRICS = [
-  { key: 'leads', label: 'Leads/Day',  color: '#3a8f5c', fmt: v => v },
-  { key: 'spend', label: 'Spend/Day',  color: '#6366f1', fmt: v => `$${v}` },
-  { key: 'cpm',   label: 'CPM/Day',    color: '#f59e0b', fmt: v => v != null ? `$${v}` : '—' },
-  { key: 'cpl',   label: 'Cost/Lead',  color: '#ef4444', fmt: v => v != null ? `$${v}` : '—' },
+  { key: 'leads', label: 'Leads/Day', color: '#3a8f5c', fmt: v => v },
+  { key: 'spend', label: 'Spend/Day', color: '#6366f1', fmt: v => `$${v}` },
+  { key: 'cpm',   label: 'CPM/Day',   color: '#f59e0b', fmt: v => v != null ? `$${v}` : '—' },
+  { key: 'cpl',   label: 'Cost/Lead', color: '#ef4444', fmt: v => v != null ? `$${v}` : '—' },
+];
+
+const MODAL_METRICS = [
+  { key: 'leads', label: 'Leads', color: '#3a8f5c', fmt: v => v },
+  { key: 'spend', label: 'Spend', color: '#6366f1', fmt: v => `$${(v || 0).toFixed(2)}` },
 ];
 
 const CHART_PERIODS = [
@@ -72,12 +68,13 @@ const CHART_PERIODS = [
 
 function CustomTooltip({ active, payload, label, metricKey }) {
   if (!active || !payload?.length) return null;
-  const m = CHART_METRICS.find(x => x.key === metricKey);
+  const m = [...CHART_METRICS, ...MODAL_METRICS].find(x => x.key === metricKey);
   const val = payload[0]?.value;
+  const display = m?.fmt ? m.fmt(val) : val;
   return (
     <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 8, padding: '8px 12px', fontSize: 12 }}>
       <div style={{ color: 'var(--text-muted)', marginBottom: 4 }}>{label}</div>
-      <div style={{ fontWeight: 600 }}>{m ? m.fmt(val) : val}</div>
+      <div style={{ fontWeight: 600 }}>{display}</div>
     </div>
   );
 }
@@ -87,76 +84,111 @@ function SortArrow({ dir }) {
 }
 
 const AD_DETAIL_TABLE_COLS = [
-  { key: 'campaign',    label: 'Campaign'   },
-  { key: 'adset',       label: 'Adset'      },
-  { key: 'status',      label: 'Status'     },
-  { key: 'spend',       label: 'Spend'      },
-  { key: 'fbLeads',     label: 'FB Leads'   },
-  { key: 'cpl',         label: 'Cost/Lead'  },
-  { key: 'cpm',         label: 'CPM'        },
-  { key: 'ctr',         label: 'CTR'        },
-  { key: 'clicks',      label: 'Clicks'     },
-  { key: 'created',     label: 'Created'    },
+  { key: 'campaign', label: 'Campaign'  },
+  { key: 'adset',    label: 'Adset'     },
+  { key: 'status',   label: 'Status'    },
+  { key: 'spend',    label: 'Spend'     },
+  { key: 'fbLeads',  label: 'FB Leads'  },
+  { key: 'cpl',      label: 'Cost/Lead' },
+  { key: 'cpm',      label: 'CPM'       },
+  { key: 'ctr',      label: 'CTR'       },
+  { key: 'clicks',   label: 'Clicks'    },
+  { key: 'created',  label: 'Created'   },
 ];
 
-function AdDetailModal({ adName, state, allAds, allContacts, sheetByName, accountLabel, onClose }) {
-  const [period, setPeriod]     = useState('90');
-  const [sortKey, setSortKey]   = useState('spend');
-  const [sortDir, setSortDir]   = useState('desc');
+// ── Ad Detail Modal ───────────────────────────────────────────────────────────
+function AdDetailModal({ adName, state, allAds, allContacts, sheetByName, accountLabel, mergeGroups, onUnmerge, onClose }) {
+  const [period, setPeriod]                     = useState('90');
+  const [sortKey, setSortKey]                   = useState('spend');
+  const [sortDir, setSortDir]                   = useState('desc');
+  const [modalMetric, setModalMetric]           = useState('leads');
+  const [adDailyInsights, setAdDailyInsights]   = useState([]);
+  const [loadingDaily, setLoadingDaily]         = useState(false);
 
-  // All FB ad records that share this ad name
+  // Merge group this ad belongs to as canonical
+  const mergeGroup = useMemo(() =>
+    mergeGroups.find(g => g.canonical === adName),
+    [mergeGroups, adName]
+  );
+
+  // All member names (for merged rows, includes canonical)
+  const effectiveNames = useMemo(() =>
+    mergeGroup ? mergeGroup.members : [adName],
+    [mergeGroup, adName]
+  );
+
+  // FB instances: all ads matching any effective name
   const fbInstances = useMemo(() =>
-    allAds.filter(a => (a.name || '').trim() === adName),
-    [allAds, adName]
+    allAds.filter(a => effectiveNames.includes((a.name || '').trim())),
+    [allAds, effectiveNames]
   );
 
   // Unique adsets this ad has lived in
   const adsets = useMemo(() => {
     const seen = new Set();
-    const list = [];
-    for (const a of fbInstances) {
-      if (!seen.has(a.adsetId)) {
-        seen.add(a.adsetId);
-        list.push({ id: a.adsetId, name: a.adsetName, campaign: a.campaignName });
-      }
-    }
-    return list;
+    return fbInstances.filter(a => {
+      if (seen.has(a.adsetId)) return false;
+      seen.add(a.adsetId);
+      return true;
+    }).map(a => ({ id: a.adsetId, name: a.adsetName, campaign: a.campaignName }));
   }, [fbInstances]);
 
-  // GHL leads for this ad + state
+  // GHL leads for this ad (all member names) + state
   const ghlLeads = useMemo(() =>
-    allContacts.filter(c =>
-      (c.utmContent || '').trim() === adName && extractState(c.utmCampaign) === state
-    ),
-    [allContacts, adName, state]
+    allContacts.filter(c => {
+      const name = (c.utmContent || '').trim();
+      return effectiveNames.includes(name) && extractState(c.utmCampaign) === state;
+    }),
+    [allContacts, effectiveNames, state]
   );
 
   const importedCount = sheetByName[adName]?.leads?.[state] || 0;
   const totalLeads    = ghlLeads.length + importedCount;
 
-  // Chart data: GHL leads per day (filtered by period)
+  // Fetch ad-level daily insights scoped to these specific ad IDs
+  useEffect(() => {
+    const adIds = fbInstances.map(a => a.id).filter(Boolean).join(',');
+    if (!adIds) return;
+    setLoadingDaily(true);
+    apiFetch(`/api/facebook/daily?date_preset=maximum&ad_ids=${encodeURIComponent(adIds)}`)
+      .then(data => setAdDailyInsights(data))
+      .catch(err => console.warn('Ad daily fetch failed:', err.message))
+      .finally(() => setLoadingDaily(false));
+  }, [fbInstances]);
+
   const cutoff = useMemo(() => {
     if (period === 'all') return null;
     return new Date(Date.now() - parseInt(period) * 864e5).toISOString().slice(0, 10);
   }, [period]);
 
+  // Chart: GHL leads/day + FB ad-level spend/day
   const chartData = useMemo(() => {
-    const map = {};
+    const leadsMap = {};
     for (const c of ghlLeads) {
       if (!c.dateAdded) continue;
       const day = c.dateAdded.slice(0, 10);
       if (cutoff && day < cutoff) continue;
-      map[day] = (map[day] || 0) + 1;
+      leadsMap[day] = (leadsMap[day] || 0) + 1;
     }
-    return Object.entries(map)
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([date, leads]) => ({ date: date.slice(5), leads }));
-  }, [ghlLeads, cutoff]);
+    const spendMap = {};
+    for (const row of adDailyInsights) {
+      const date = row.date_start;
+      if (!date || (cutoff && date < cutoff)) continue;
+      spendMap[date] = (spendMap[date] || 0) + (parseFloat(row.spend) || 0);
+    }
+    const allDates = new Set([...Object.keys(leadsMap), ...Object.keys(spendMap)]);
+    return [...allDates].sort().map(date => ({
+      date:  date.slice(5),
+      leads: leadsMap[date] || 0,
+      spend: +(spendMap[date] || 0).toFixed(2),
+    }));
+  }, [ghlLeads, adDailyInsights, cutoff]);
 
   // Table rows: one per FB ad instance
   const tableRows = useMemo(() =>
     fbInstances.map(a => ({
-      id:       a.id,
+      id:      a.id,
+      adName:  (a.name || '').trim(),
       campaign: a.campaignName || '—',
       adset:    a.adsetName    || '—',
       status:   a.status       || '—',
@@ -165,10 +197,10 @@ function AdDetailModal({ adName, state, allAds, allContacts, sheetByName, accoun
       cpl:      a.results > 0 && parseFloat(a.spend) > 0
                   ? parseFloat((parseFloat(a.spend) / a.results).toFixed(2))
                   : null,
-      cpm:      parseFloat(a.cpm)    || 0,
-      ctr:      parseFloat(a.ctr)    || 0,
-      clicks:   parseInt(a.clicks)   || 0,
-      created:  a.createdTime        || '',
+      cpm:     parseFloat(a.cpm)   || 0,
+      ctr:     parseFloat(a.ctr)   || 0,
+      clicks:  parseInt(a.clicks)  || 0,
+      created: a.createdTime        || '',
     })),
     [fbInstances]
   );
@@ -182,7 +214,6 @@ function AdDetailModal({ adName, state, allAds, allContacts, sheetByName, accoun
     });
   }, [tableRows, sortKey, sortDir]);
 
-  // Totals row
   const totals = useMemo(() => ({
     spend:   tableRows.reduce((s, r) => s + r.spend,   0),
     fbLeads: tableRows.reduce((s, r) => s + r.fbLeads, 0),
@@ -197,11 +228,15 @@ function AdDetailModal({ adName, state, allAds, allContacts, sheetByName, accoun
   function fmtCell(key, val) {
     if (val == null) return '—';
     if (key === 'spend' || key === 'cpl' || key === 'cpm') return `$${val.toFixed(2)}`;
-    if (key === 'ctr')     return `${val.toFixed(2)}%`;
+    if (key === 'ctr') return `${val.toFixed(2)}%`;
     if (key === 'created') return fmtDate(val);
-    if (key === 'status')  return <span style={{ color: val === 'ACTIVE' ? '#22c55e' : '#94a3b8', fontSize: 11, fontWeight: 600 }}>{val}</span>;
+    if (key === 'status') return (
+      <span style={{ color: val === 'ACTIVE' ? '#22c55e' : '#94a3b8', fontSize: 11, fontWeight: 600 }}>{val}</span>
+    );
     return val;
   }
+
+  const activeModalMetric = MODAL_METRICS.find(m => m.key === modalMetric);
 
   return (
     <div className="ad-detail-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
@@ -212,16 +247,55 @@ function AdDetailModal({ adName, state, allAds, allContacts, sheetByName, accoun
             <div className="col-mgr-title">{adName}</div>
             <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
               {accountLabel(state)} ({state}) · {totalLeads} total leads
-              {importedCount > 0 && <span style={{ marginLeft: 8, color: 'var(--text-muted)' }}>({ghlLeads.length} live + {importedCount} imported)</span>}
+              {importedCount > 0 && (
+                <span style={{ marginLeft: 8 }}>({ghlLeads.length} live + {importedCount} imported)</span>
+              )}
             </div>
           </div>
-          <button className="col-mgr-x" onClick={onClose}>×</button>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            {mergeGroup && (
+              <button
+                className="btn btn--sm"
+                style={{ color: '#dc2626' }}
+                onClick={() => onUnmerge(adName)}
+                title="Split back into individual rows"
+              >
+                Unmerge
+              </button>
+            )}
+            <button className="col-mgr-x" onClick={onClose}>×</button>
+          </div>
         </div>
 
-        <div style={{ overflowY: 'auto', flex: 1, padding: '0 20px 20px' }}>
-          {/* Adsets section */}
+        <div style={{ overflowY: 'auto', flex: 1, padding: '0 20px 24px' }}>
+
+          {/* Combined members */}
+          {mergeGroup && (
+            <div style={{ marginTop: 14, marginBottom: 16, padding: '10px 14px', background: 'var(--bg)', borderRadius: 8, border: '1px solid var(--border)' }}>
+              <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)', marginBottom: 8 }}>
+                Combined ads ({mergeGroup.members.length})
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                {mergeGroup.members.map(m => (
+                  <span key={m} style={{
+                    fontSize: 12,
+                    background: m === adName ? '#d1fae5' : 'var(--surface)',
+                    border: '1px solid var(--border)',
+                    borderRadius: 5,
+                    padding: '2px 8px',
+                    color: m === adName ? '#065f46' : 'var(--text)',
+                    fontWeight: m === adName ? 600 : 400,
+                  }}>
+                    {m}{m === adName ? ' (canonical)' : ''}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Adsets */}
           {adsets.length > 0 && (
-            <div style={{ marginTop: 16, marginBottom: 20 }}>
+            <div style={{ marginTop: 14, marginBottom: 18 }}>
               <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)', marginBottom: 8 }}>
                 Adsets ({adsets.length})
               </div>
@@ -236,11 +310,19 @@ function AdDetailModal({ adName, state, allAds, allContacts, sheetByName, accoun
             </div>
           )}
 
-          {/* Per-ad leads chart */}
+          {/* Per-ad chart */}
           <div style={{ marginBottom: 20 }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-              <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)' }}>
-                Leads / Day
+              <div style={{ display: 'flex', gap: 6 }}>
+                {MODAL_METRICS.map(m => (
+                  <button
+                    key={m.key}
+                    className={`btn btn--sm${modalMetric === m.key ? ' btn--primary' : ''}`}
+                    onClick={() => setModalMetric(m.key)}
+                  >
+                    {m.label}{m.key === 'spend' && loadingDaily ? ' …' : ''}
+                  </button>
+                ))}
               </div>
               <div style={{ display: 'flex', gap: 4 }}>
                 {CHART_PERIODS.map(p => (
@@ -253,7 +335,7 @@ function AdDetailModal({ adName, state, allAds, allContacts, sheetByName, accoun
             <div style={{ background: 'var(--surface)', borderRadius: 10, border: '1px solid var(--border)', padding: '16px 8px 8px' }}>
               {chartData.length === 0 ? (
                 <div style={{ textAlign: 'center', padding: '32px 0', color: 'var(--text-muted)', fontSize: 13 }}>
-                  No GHL leads in this period
+                  {loadingDaily && modalMetric === 'spend' ? 'Loading spend data…' : 'No data in this period'}
                 </div>
               ) : (
                 <ResponsiveContainer width="100%" height={180}>
@@ -261,8 +343,8 @@ function AdDetailModal({ adName, state, allAds, allContacts, sheetByName, accoun
                     <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
                     <XAxis dataKey="date" tick={{ fontSize: 10, fill: 'var(--text-muted)' }} />
                     <YAxis tick={{ fontSize: 10, fill: 'var(--text-muted)' }} allowDecimals={false} />
-                    <Tooltip content={<CustomTooltip metricKey="leads" />} />
-                    <Line type="linear" dataKey="leads" stroke="#3a8f5c" dot={false} strokeWidth={2} connectNulls />
+                    <Tooltip content={<CustomTooltip metricKey={modalMetric} />} />
+                    <Line type="linear" dataKey={modalMetric} stroke={activeModalMetric?.color || '#3a8f5c'} dot={false} strokeWidth={2} connectNulls />
                   </LineChart>
                 </ResponsiveContainer>
               )}
@@ -279,6 +361,7 @@ function AdDetailModal({ adName, state, allAds, allContacts, sheetByName, accoun
                 <table className="tracking-grid" style={{ minWidth: 900 }}>
                   <thead>
                     <tr>
+                      {mergeGroup && <th className="tracking-th-state" style={{ whiteSpace: 'nowrap' }}>Ad Name</th>}
                       {AD_DETAIL_TABLE_COLS.map(col => (
                         <th
                           key={col.key}
@@ -295,8 +378,16 @@ function AdDetailModal({ adName, state, allAds, allContacts, sheetByName, accoun
                   <tbody>
                     {sortedRows.map(row => (
                       <tr key={row.id}>
+                        {mergeGroup && (
+                          <td className="tracking-td-cell" style={{ fontSize: 11, maxWidth: 160, whiteSpace: 'normal' }}>
+                            {row.adName}
+                          </td>
+                        )}
                         {AD_DETAIL_TABLE_COLS.map(col => (
-                          <td key={col.key} className="tracking-td-cell" style={{ whiteSpace: col.key === 'campaign' || col.key === 'adset' ? 'normal' : 'nowrap', maxWidth: col.key === 'campaign' || col.key === 'adset' ? 200 : undefined }}>
+                          <td key={col.key} className="tracking-td-cell" style={{
+                            whiteSpace: (col.key === 'campaign' || col.key === 'adset') ? 'normal' : 'nowrap',
+                            maxWidth: (col.key === 'campaign' || col.key === 'adset') ? 200 : undefined,
+                          }}>
                             {fmtCell(col.key, row[col.key])}
                           </td>
                         ))}
@@ -305,6 +396,7 @@ function AdDetailModal({ adName, state, allAds, allContacts, sheetByName, accoun
                   </tbody>
                   <tfoot>
                     <tr>
+                      {mergeGroup && <td className="tracking-tfoot-label" />}
                       <td className="tracking-tfoot-label" colSpan={3}>Total</td>
                       <td className="tracking-td-total tracking-tfoot-label">${totals.spend.toFixed(2)}</td>
                       <td className="tracking-td-total tracking-tfoot-label">{totals.fbLeads}</td>
@@ -331,48 +423,77 @@ function AdDetailModal({ adName, state, allAds, allContacts, sheetByName, accoun
   );
 }
 
+// ── Main Component ────────────────────────────────────────────────────────────
 export default function AdsTracking() {
-  // Persistent data (from IndexedDB)
+  // Persistent data
   const [allContacts, setAllContacts]           = useState([]);
   const [allDailyInsights, setAllDailyInsights] = useState([]);
   const [allAds, setAllAds]                     = useState([]);
   const [sheetImport, setSheetImport]           = useState([]);
-  const [sheetColumns, setSheetColumns]         = useState([]); // [{ key, fullName }]
+  const [sheetColumns, setSheetColumns]         = useState([]);
   const [lastSync, setLastSync]                 = useState(null);
-  const [importing, setImporting]               = useState(false);
-  const [importNote, setImportNote]             = useState('');
 
-  // Sync state
+  // Row management
+  const [deletedAds, setDeletedAds]   = useState(new Set());  // hidden ad names
+  const [mergeGroups, setMergeGroups] = useState([]);          // [{canonical, members}]
+
+  // Import
+  const [importing, setImporting] = useState(false);
+  const [importNote, setImportNote] = useState('');
+
+  // Sync
   const [syncing, setSyncing]     = useState(false);
   const [syncNote, setSyncNote]   = useState('');
   const [syncError, setSyncError] = useState('');
+  const syncingRef = useRef(false);
 
-  // UI state
+  // UI
   const [accountNames, setAccountNames] = useState(() => {
     try { return JSON.parse(localStorage.getItem('trackingAccountNames') || '{}'); }
     catch { return {}; }
   });
   const [editingState, setEditingState] = useState(null);
   const [editValue, setEditValue]       = useState('');
-  const [adDetail, setAdDetail]         = useState(null); // { adName, state }
+  const [adDetail, setAdDetail]         = useState(null);   // { adName, state }
   const [chartMetric, setChartMetric]   = useState('leads');
   const [chartPeriod, setChartPeriod]   = useState('90');
   const [sortKey, setSortKey]           = useState('date');
   const [sortDir, setSortDir]           = useState('asc');
   const [colOrder, setColOrder]         = useState(null);
-  const dragColRef  = useRef(null);
   const [dragOverCol, setDragOverCol]   = useState(null);
-  const syncingRef = useRef(false);
+  const dragColRef = useRef(null);
 
-  // ── Load from IndexedDB ────────────────────────────────────────────────────
+  // Row selection / merge
+  const [selecting, setSelecting]     = useState(false);
+  const [selectedRows, setSelectedRows] = useState(new Set());
+  const [mergeDialog, setMergeDialog]   = useState(null); // { names, canonical }
+
+  // ── Derived merge maps ──────────────────────────────────────────────────────
+  const memberToCanonical = useMemo(() => {
+    const map = {};
+    for (const g of mergeGroups) for (const m of g.members) map[m] = g.canonical;
+    return map;
+  }, [mergeGroups]);
+
+  const absorbedMembers = useMemo(() => {
+    const set = new Set();
+    for (const g of mergeGroups)
+      for (const m of g.members)
+        if (m !== g.canonical) set.add(m);
+    return set;
+  }, [mergeGroups]);
+
+  // ── Load from IndexedDB ─────────────────────────────────────────────────────
   async function loadFromDB() {
-    const [contacts, insights, ads, imported, cols, syncTime] = await Promise.all([
+    const [contacts, insights, ads, imported, cols, syncTime, deleted, merges] = await Promise.all([
       dbGetAll('ghlContacts'),
       dbGetAll('fbDailyInsights'),
       dbGetAll('fbAds'),
       dbGetAll('sheetImport'),
       dbGetMeta('trackingColumns'),
       dbGetMeta('lastSync'),
+      dbGetMeta('deletedAds'),
+      dbGetMeta('mergeGroups'),
     ]);
     setAllContacts(contacts);
     setAllDailyInsights(insights);
@@ -380,9 +501,11 @@ export default function AdsTracking() {
     setSheetImport(imported);
     setSheetColumns(cols || []);
     setLastSync(syncTime);
+    setDeletedAds(new Set(deleted || []));
+    setMergeGroups(merges || []);
   }
 
-  // ── Import from Google Sheet ───────────────────────────────────────────────
+  // ── Import from Google Sheet ────────────────────────────────────────────────
   async function importFromSheet() {
     setImporting(true);
     setImportNote('');
@@ -392,10 +515,7 @@ export default function AdsTracking() {
         dbUpsert('sheetImport', rows),
         dbSetMeta('trackingColumns', columns),
       ]);
-      const [all, cols] = await Promise.all([
-        dbGetAll('sheetImport'),
-        dbGetMeta('trackingColumns'),
-      ]);
+      const [all, cols] = await Promise.all([dbGetAll('sheetImport'), dbGetMeta('trackingColumns')]);
       setSheetImport(all);
       setSheetColumns(cols || []);
       const totalLeads = rows.reduce((s, r) => s + Object.values(r.leads).reduce((a, b) => a + b, 0), 0);
@@ -407,41 +527,34 @@ export default function AdsTracking() {
     }
   }
 
-  // ── Incremental sync ──────────────────────────────────────────────────────
+  // ── Full sync (GHL + FB) ────────────────────────────────────────────────────
   const sync = useCallback(async () => {
     if (syncingRef.current) return;
     syncingRef.current = true;
     setSyncing(true);
     setSyncError('');
     setSyncNote('Starting sync…');
-
     try {
       const lastSyncTime = await dbGetMeta('lastSync');
       const isFirstSync  = !lastSyncTime;
       const now          = new Date().toISOString();
-
-      // 1. GHL contacts: everything since last sync (2 years back on first run)
-      const since = lastSyncTime
+      const since        = lastSyncTime
         ? lastSyncTime
         : new Date(Date.now() - 2 * 365 * 864e5).toISOString();
+
       setSyncNote('Fetching leads…');
       const contacts = await apiFetch(
         `/api/ghl/contacts?start=${encodeURIComponent(since)}&end=${encodeURIComponent(now)}`
       );
       await dbUpsert('ghlContacts', contacts);
 
-      // 2. FB ads: maximum preset to capture all-time ad list
       setSyncNote('Fetching ads…');
       const ads = await apiFetch('/api/facebook/ads?date_preset=maximum');
       await dbUpsert('fbAds', ads);
 
-      // 3. FB daily insights:
-      //    First sync → last 365 days of history
-      //    Incremental → last 14 days (covers FB's 3-day reporting delay)
       setSyncNote('Fetching daily insights…');
-      const preset = isFirstSync ? 'maximum' : 'last_14d';
-      const dailyRaw = await apiFetch(`/api/facebook/daily?date_preset=${preset}`);
-      // Synthetic key: date + campaign id to allow upsert/overwrite
+      const preset     = isFirstSync ? 'maximum' : 'last_14d';
+      const dailyRaw   = await apiFetch(`/api/facebook/daily?date_preset=${preset}`);
       const dailyRecords = dailyRaw.map(r => ({
         ...r,
         id: `${r.date_start}|${r.campaign_id || r.adset_id || r.ad_id || 'agg'}`,
@@ -461,7 +574,7 @@ export default function AdsTracking() {
     }
   }, []);
 
-  // Lightweight lead sync: only GHL contacts since lastSync — always runs on mount
+  // ── Lightweight lead sync (GHL only) — always runs on mount ────────────────
   const syncLeads = useCallback(async () => {
     if (syncingRef.current) return;
     syncingRef.current = true;
@@ -493,13 +606,13 @@ export default function AdsTracking() {
     }
   }, []);
 
-  // On mount: load cache immediately, always sync leads, full sync only if stale (> 6h)
+  // On mount: load cache, then always sync leads / full sync if stale
   useEffect(() => {
     loadFromDB().then(async () => {
       const ts    = await dbGetMeta('lastSync');
       const stale = !ts || (Date.now() - new Date(ts).getTime() > 6 * 3600 * 1000);
-      if (stale) sync(); // full sync (GHL + FB)
-      else syncLeads();   // leads-only sync
+      if (stale) sync();
+      else syncLeads();
     });
   }, []);
 
@@ -515,9 +628,50 @@ export default function AdsTracking() {
     sync();
   }
 
-  // ── Derived data ──────────────────────────────────────────────────────────
+  // ── Delete an ad permanently ────────────────────────────────────────────────
+  async function deleteAd(adName) {
+    if (!window.confirm(`Hide "${adName}" from the grid permanently?\n\nYou can restore it later by clearing tracking data.`)) return;
+    const next = new Set(deletedAds);
+    next.add(adName);
+    setDeletedAds(next);
+    await dbSetMeta('deletedAds', [...next]);
+  }
 
-  // Column keys in sheet order; fall back to GHL-derived states if no import yet
+  // ── Merge selected rows ─────────────────────────────────────────────────────
+  function openMergeDialog() {
+    const names = [...selectedRows];
+    setMergeDialog({ names, canonical: names[0] });
+  }
+
+  async function confirmMerge() {
+    const { names, canonical } = mergeDialog;
+    if (!canonical || !names.includes(canonical)) return;
+    // Remove any existing groups that overlap these names
+    const filtered = mergeGroups.filter(g => !g.members.some(m => names.includes(m)));
+    const next = [...filtered, { canonical, members: names }];
+    setMergeGroups(next);
+    await dbSetMeta('mergeGroups', next);
+    setMergeDialog(null);
+    setSelectedRows(new Set());
+    setSelecting(false);
+  }
+
+  async function unmergeGroup(canonical) {
+    const next = mergeGroups.filter(g => g.canonical !== canonical);
+    setMergeGroups(next);
+    await dbSetMeta('mergeGroups', next);
+  }
+
+  function toggleRowSelect(adName) {
+    setSelectedRows(prev => {
+      const next = new Set(prev);
+      if (next.has(adName)) next.delete(adName);
+      else next.add(adName);
+      return next;
+    });
+  }
+
+  // ── Derived data ────────────────────────────────────────────────────────────
   const states = useMemo(() => {
     if (sheetColumns.length > 0) return sheetColumns.map(c => c.key);
     const set = new Set();
@@ -535,34 +689,41 @@ export default function AdsTracking() {
     return [...existing, ...newOnes];
   }, [states, colOrder]);
 
-  // Lookup map for sheet import: adName → { date, leads: { SC: N, ... } }
-  const sheetByName = useMemo(() => {
-    const map = {};
-    for (const row of sheetImport) map[row.adName] = row;
-    return map;
-  }, [sheetImport]);
-
-  // Ad names: union of FB ads AND sheet import (sheet gives us historical ads)
+  // Ad names: union of FB ads + sheet import, excluding deleted and absorbed members
   const adNames = useMemo(() => {
     const seen  = new Set();
     const names = [];
-    // FB ads first
     for (const a of allAds) {
-      if (a.name && !seen.has(a.name.trim())) {
-        seen.add(a.name.trim());
-        names.push(a.name.trim());
+      const name = (a.name || '').trim();
+      if (name && !seen.has(name) && !deletedAds.has(name) && !absorbedMembers.has(name)) {
+        seen.add(name);
+        names.push(name);
       }
     }
-    // Sheet import ads (may include ads no longer in FB)
     for (const row of sheetImport) {
-      if (row.adName && !seen.has(row.adName)) {
+      if (row.adName && !seen.has(row.adName) && !deletedAds.has(row.adName) && !absorbedMembers.has(row.adName)) {
         seen.add(row.adName);
         names.push(row.adName);
       }
     }
     return names;
-  }, [allAds, sheetImport]);
+  }, [allAds, sheetImport, deletedAds, absorbedMembers]);
 
+  // Sheet lookup: aggregate across merged members
+  const sheetByName = useMemo(() => {
+    const map = {};
+    for (const row of sheetImport) {
+      if (deletedAds.has(row.adName)) continue;
+      const key = memberToCanonical[row.adName] || row.adName;
+      if (!map[key]) map[key] = { adName: key, leads: {} };
+      for (const [st, cnt] of Object.entries(row.leads || {})) {
+        map[key].leads[st] = (map[key].leads[st] || 0) + cnt;
+      }
+    }
+    return map;
+  }, [sheetImport, deletedAds, memberToCanonical]);
+
+  // Grid: GHL contacts mapped to canonical ad name
   const grid = useMemo(() => {
     const map = {};
     for (const adName of adNames) {
@@ -570,24 +731,29 @@ export default function AdsTracking() {
       for (const state of states) map[adName][state] = [];
     }
     for (const c of allContacts) {
-      const state  = extractState(c.utmCampaign);
-      const adName = (c.utmContent || '').trim();
+      const state   = extractState(c.utmCampaign);
+      const rawName = (c.utmContent || '').trim();
+      if (deletedAds.has(rawName)) continue;
+      const adName  = memberToCanonical[rawName] || rawName;
       if (state && adName && map[adName]?.[state] !== undefined) {
         map[adName][state].push(c);
       }
     }
     return map;
-  }, [adNames, states, allContacts]);
+  }, [adNames, states, allContacts, deletedAds, memberToCanonical]);
 
-  // Date derived directly from MMDD prefix in the ad name — single source of truth
+  // First used: earliest date among all members' ad names
   const firstUsed = useMemo(() => {
     const map = {};
-    for (const adName of adNames) {
-      const iso = parseAdNameDate(adName);
-      if (iso) map[adName] = iso;
+    const toCheck = new Set([...adNames, ...mergeGroups.flatMap(g => g.members)]);
+    for (const rawName of toCheck) {
+      const iso = parseAdNameDate(rawName);
+      if (!iso) continue;
+      const canonical = memberToCanonical[rawName] || rawName;
+      if (!map[canonical] || iso < map[canonical]) map[canonical] = iso;
     }
     return map;
-  }, [adNames]);
+  }, [adNames, mergeGroups, memberToCanonical]);
 
   const sortedAdNames = useMemo(() => {
     return [...adNames].sort((a, b) => {
@@ -604,10 +770,10 @@ export default function AdsTracking() {
         bv = (grid[b]?.[sortKey]?.length || 0) + (sheetByName[b]?.leads?.[sortKey] || 0);
       }
       if (av < bv) return sortDir === 'asc' ? -1 : 1;
-      if (av > bv) return sortDir === 'asc' ? 1  : -1;
+      if (av > bv) return sortDir === 'asc' ?  1 : -1;
       return 0;
     });
-  }, [adNames, sortKey, sortDir, grid, firstUsed, states]);
+  }, [adNames, sortKey, sortDir, grid, firstUsed, states, sheetByName]);
 
   function handleSort(key) {
     if (sortKey === key) setSortDir(d => d === 'asc' ? 'desc' : 'asc');
@@ -643,8 +809,7 @@ export default function AdsTracking() {
     const fbMap = {};
     for (const row of allDailyInsights) {
       const date = row.date_start;
-      if (!date) continue;
-      if (cutoffDate && date < cutoffDate) continue;
+      if (!date || (cutoffDate && date < cutoffDate)) continue;
       if (!fbMap[date]) fbMap[date] = { spend: 0, cpm_sum: 0, cpm_count: 0 };
       fbMap[date].spend += parseFloat(row.spend) || 0;
       if (row.cpm) { fbMap[date].cpm_sum += parseFloat(row.cpm); fbMap[date].cpm_count++; }
@@ -675,7 +840,7 @@ export default function AdsTracking() {
 
   const activeMetric = CHART_METRICS.find(m => m.key === chartMetric);
 
-  // ── Render ────────────────────────────────────────────────────────────────
+  // ── Render ──────────────────────────────────────────────────────────────────
   return (
     <div>
       {/* Header */}
@@ -689,8 +854,8 @@ export default function AdsTracking() {
             <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
               Last synced: {lastSync ? timeAgo(lastSync) : 'never'}
             </span>
-            <button className="btn btn--sm" onClick={importFromSheet} disabled={importing || syncing} title="Import lead counts from your Google Sheet">
-              {importing ? 'Importing…' : '📋 Import Sheet'}
+            <button className="btn btn--sm" onClick={importFromSheet} disabled={importing || syncing}>
+              {importing ? 'Importing…' : 'Import Sheet'}
             </button>
             <button className="btn btn--sm btn--primary" onClick={sync} disabled={syncing}>
               {syncing ? 'Syncing…' : 'Sync Now'}
@@ -755,13 +920,21 @@ export default function AdsTracking() {
         </div>
       </div>
 
-      {/* Grid stats */}
-      <div style={{ display: 'flex', alignItems: 'center', marginBottom: 10 }}>
+      {/* Grid stats + row select toggle */}
+      <div style={{ display: 'flex', alignItems: 'center', marginBottom: 10, gap: 10 }}>
         <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
           {allContacts.length.toLocaleString()} live leads
           {sheetImport.length > 0 && ` · ${sheetImport.reduce((s, r) => s + Object.values(r.leads).reduce((a, b) => a + b, 0), 0).toLocaleString()} imported`}
           {' · '}{adNames.length} unique ads
+          {deletedAds.size > 0 && ` · ${deletedAds.size} hidden`}
         </span>
+        <button
+          className={`btn btn--sm${selecting ? ' btn--primary' : ''}`}
+          style={{ marginLeft: 'auto' }}
+          onClick={() => { setSelecting(s => !s); setSelectedRows(new Set()); }}
+        >
+          {selecting ? 'Cancel Select' : 'Select Rows'}
+        </button>
       </div>
 
       {adNames.length === 0 ? (
@@ -777,6 +950,7 @@ export default function AdsTracking() {
           <table className="tracking-grid">
             <thead>
               <tr>
+                {selecting && <th className="tracking-th-state" style={{ width: 32 }} />}
                 <th className="tracking-th-ad tracking-th-sortable" onClick={() => handleSort('name')}>
                   Ad Name {sortKey === 'name' && <SortArrow dir={sortDir} />}
                 </th>
@@ -832,24 +1006,51 @@ export default function AdsTracking() {
             </thead>
             <tbody>
               {sortedAdNames.map(adName => {
-                const row   = grid[adName] || {};
-                const total = orderedStates.reduce((s, st) =>
+                const row        = grid[adName] || {};
+                const mergeGroup = mergeGroups.find(g => g.canonical === adName);
+                const total      = orderedStates.reduce((s, st) =>
                   s + (row[st]?.length || 0) + (sheetByName[adName]?.leads?.[st] || 0), 0);
+                const isSelected = selectedRows.has(adName);
                 return (
-                  <tr key={adName}>
+                  <tr key={adName} className={isSelected ? 'tracking-row-selected' : ''} onClick={selecting ? () => toggleRowSelect(adName) : undefined} style={selecting ? { cursor: 'pointer' } : undefined}>
+                    {selecting && (
+                      <td className="tracking-td-cell" style={{ textAlign: 'center' }}>
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          onChange={() => toggleRowSelect(adName)}
+                          onClick={e => e.stopPropagation()}
+                          style={{ accentColor: 'var(--green)', width: 14, height: 14 }}
+                        />
+                      </td>
+                    )}
                     <td className="tracking-td-ad" title={adName}>
-                      <span className="tracking-ad-name">{adName}</span>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                        <span className="tracking-ad-name">{adName}</span>
+                        {mergeGroup && (
+                          <span className="tracking-merge-badge">{mergeGroup.members.length} ads</span>
+                        )}
+                        {!selecting && (
+                          <button
+                            className="ad-row-delete-btn"
+                            onClick={e => { e.stopPropagation(); deleteAd(adName); }}
+                            title="Hide this ad permanently"
+                          >
+                            ×
+                          </button>
+                        )}
+                      </div>
                     </td>
                     <td className="tracking-td-date">{fmtDate(firstUsed[adName])}</td>
                     <td className="tracking-td-total">{total > 0 ? total : '—'}</td>
                     {orderedStates.map(state => {
-                      const leads      = row[state] || [];
-                      const imported   = sheetByName[adName]?.leads?.[state] || 0;
-                      const cellTotal  = leads.length + imported;
+                      const leads     = row[state] || [];
+                      const imported  = sheetByName[adName]?.leads?.[state] || 0;
+                      const cellTotal = leads.length + imported;
                       return (
                         <td key={state} className="tracking-td-cell">
                           {cellTotal > 0
-                            ? <button className="tracking-cell-btn" onClick={() => setAdDetail({ adName, state })}>{cellTotal}</button>
+                            ? <button className="tracking-cell-btn" onClick={e => { e.stopPropagation(); setAdDetail({ adName, state }); }}>{cellTotal}</button>
                             : <span className="tracking-cell-empty">—</span>
                           }
                         </td>
@@ -861,6 +1062,7 @@ export default function AdsTracking() {
             </tbody>
             <tfoot>
               <tr>
+                {selecting && <td />}
                 <td className="tracking-td-ad tracking-tfoot-label">Total</td>
                 <td className="tracking-td-date tracking-tfoot-label" />
                 <td className="tracking-td-total tracking-tfoot-label">
@@ -878,6 +1080,62 @@ export default function AdsTracking() {
         </div>
       )}
 
+      {/* Floating combine bar */}
+      {selecting && selectedRows.size >= 2 && (
+        <div style={{
+          position: 'fixed', bottom: 24, left: '50%', transform: 'translateX(-50%)',
+          background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 10,
+          padding: '10px 18px', display: 'flex', gap: 12, alignItems: 'center',
+          boxShadow: '0 4px 24px rgba(0,0,0,0.18)', zIndex: 200,
+        }}>
+          <span style={{ fontSize: 13, fontWeight: 600 }}>{selectedRows.size} ads selected</span>
+          <button className="btn btn--sm btn--primary" onClick={openMergeDialog}>
+            Combine
+          </button>
+          <button className="btn btn--sm" onClick={() => { setSelectedRows(new Set()); setSelecting(false); }}>
+            Cancel
+          </button>
+        </div>
+      )}
+
+      {/* Merge dialog */}
+      {mergeDialog && (
+        <div className="col-mgr-overlay" onClick={e => e.target === e.currentTarget && setMergeDialog(null)}>
+          <div className="col-mgr-panel" style={{ width: 440 }}>
+            <div className="col-mgr-head">
+              <div className="col-mgr-title">Combine {mergeDialog.names.length} Ads</div>
+              <button className="col-mgr-x" onClick={() => setMergeDialog(null)}>×</button>
+            </div>
+            <div style={{ padding: '16px 20px' }}>
+              <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 14 }}>
+                Choose which name to display as the canonical (merged) row:
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 2, maxHeight: 320, overflowY: 'auto' }}>
+                {mergeDialog.names.map(name => (
+                  <label key={name} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '7px 8px', borderRadius: 6, cursor: 'pointer', background: mergeDialog.canonical === name ? 'var(--bg)' : 'transparent' }}>
+                    <input
+                      type="radio"
+                      name="mergeCanonical"
+                      value={name}
+                      checked={mergeDialog.canonical === name}
+                      onChange={() => setMergeDialog(d => ({ ...d, canonical: name }))}
+                      style={{ accentColor: 'var(--green)' }}
+                    />
+                    <span style={{ fontSize: 13 }}>{name}</span>
+                  </label>
+                ))}
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 18 }}>
+                <button className="btn btn--sm" onClick={() => setMergeDialog(null)}>Cancel</button>
+                <button className="btn btn--sm btn--primary" onClick={confirmMerge}>
+                  Combine
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Ad Detail Modal */}
       {adDetail && (
         <AdDetailModal
@@ -887,6 +1145,8 @@ export default function AdsTracking() {
           allContacts={allContacts}
           sheetByName={sheetByName}
           accountLabel={accountLabel}
+          mergeGroups={mergeGroups}
+          onUnmerge={unmergeGroup}
           onClose={() => setAdDetail(null)}
         />
       )}
