@@ -19,16 +19,20 @@ const GHL_HEADERS = () => ({
 });
 
 
-// Paginate through all GHL contacts using cursor-based pagination (startAfter / startAfterId)
+// Paginate GHL contacts newest-first, stopping once we pass the startMs cutoff.
+// GHL v2 does not support startDate/endDate filtering — date range must be done client-side.
 async function fetchAllContacts(startMs, endMs) {
   const all = [];
   let startAfter   = null;
   let startAfterId = null;
 
   while (true) {
-    const params = new URLSearchParams({ locationId: locationId(), limit: 100 });
-    if (startMs) params.set('startDate', startMs);
-    if (endMs)   params.set('endDate',   endMs);
+    const params = new URLSearchParams({
+      locationId: locationId(),
+      limit: 100,
+      sortBy: 'dateAdded',
+      sortOrder: 'desc',
+    });
     if (startAfter)   params.set('startAfter',   startAfter);
     if (startAfterId) params.set('startAfterId', startAfterId);
 
@@ -40,16 +44,23 @@ async function fetchAllContacts(startMs, endMs) {
     const json = JSON.parse(text);
 
     const batch = json.contacts || [];
-    all.push(...batch);
+    if (!batch.length) break;
 
-    // GHL returns nextPageUrl or meta with cursor info when there are more pages
+    // Filter to the requested date window
+    for (const c of batch) {
+      const t = c.dateAdded ? new Date(c.dateAdded).getTime() : null;
+      if (endMs   && t && t > endMs)   continue; // newer than window, skip
+      if (startMs && t && t < startMs) { return all; } // past the window, done
+      all.push(c);
+    }
+
     if (batch.length < 100) break;
 
-    // Use the last contact's dateAdded (ms) and id as the cursor for the next page
+    // Advance cursor using last contact in batch
     const last = batch[batch.length - 1];
     startAfter   = last.dateAdded ? new Date(last.dateAdded).getTime() : null;
     startAfterId = last.id || null;
-    if (!startAfter && !startAfterId) break;
+    if (!startAfterId) break;
   }
 
   return all;
