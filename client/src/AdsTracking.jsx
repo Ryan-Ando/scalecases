@@ -768,18 +768,12 @@ export default function AdsTracking() {
   // ── Derived data ────────────────────────────────────────────────────────────
   const states = useMemo(() => {
     const set = new Set();
-    // From GHL contacts
-    for (const c of allContacts) {
-      const s = extractState(c.utmCampaign);
-      if (s) set.add(s);
-    }
-    // From FB ads campaign names (catches states with no GHL leads yet)
     for (const a of allAds) {
       const s = extractState(a.campaignName);
       if (s) set.add(s);
     }
     return [...set].sort();
-  }, [allContacts, allAds]);
+  }, [allAds]);
 
   const orderedStates = useMemo(() => {
     if (!colOrder) return states;
