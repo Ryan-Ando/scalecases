@@ -698,8 +698,16 @@ tfoot .td-name { font-family: var(--sans); font-weight: 700; font-size: 13px; }
 /* ── Ads Tracking Tab ───────────────────────────────────────────────────────── */
 .tracking-grid-wrap {
   overflow-x: auto;
+  overflow-y: auto;
+  max-height: 70vh;
   border: 1px solid var(--border);
   border-radius: var(--radius);
+}
+
+.tracking-grid thead th {
+  position: sticky;
+  top: 0;
+  z-index: 3;
 }
 
 .tracking-grid {

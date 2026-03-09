@@ -135,10 +135,13 @@ function AdDetailModal({ adName, state, allAds, allContacts, sheetByName, accoun
     [mergeGroup, adName]
   );
 
-  // FB instances: all ads matching any effective name
+  // FB instances: ads matching any effective name AND this state
   const fbInstances = useMemo(() =>
-    allAds.filter(a => effectiveNames.includes((a.name || '').trim())),
-    [allAds, effectiveNames]
+    allAds.filter(a =>
+      effectiveNames.includes((a.name || '').trim()) &&
+      extractState(a.campaignName) === state
+    ),
+    [allAds, effectiveNames, state]
   );
 
   // Unique adsets this ad has lived in
@@ -809,27 +812,24 @@ export default function AdsTracking() {
     return names;
   }, [allAds, deletedAds, absorbedMembers]);
 
-  // Sheet data disabled — returns empty so only live GHL leads are counted
-  const sheetByName = useMemo(() => ({}), []);
-
-  // Grid: GHL contacts mapped to canonical ad name
+  // Grid: FB results (leads) per ad per state
   const grid = useMemo(() => {
     const map = {};
     for (const adName of adNames) {
       map[adName] = {};
-      for (const state of states) map[adName][state] = [];
+      for (const state of states) map[adName][state] = 0;
     }
-    for (const c of allContacts) {
-      const state   = extractState(c.utmCampaign);
-      const rawName = (c.utmContent || '').trim();
-      if (deletedAds.has(rawName)) continue;
+    for (const a of allAds) {
+      const rawName = (a.name || '').trim();
+      const state   = extractState(a.campaignName);
+      if (!rawName || !state || deletedAds.has(rawName)) continue;
       const adName  = memberToCanonical[rawName] || rawName;
-      if (state && adName && map[adName]?.[state] !== undefined) {
-        map[adName][state].push(c);
+      if (map[adName]?.[state] !== undefined) {
+        map[adName][state] += a.results || 0;
       }
     }
     return map;
-  }, [adNames, states, allContacts, deletedAds, memberToCanonical]);
+  }, [adNames, states, allAds, deletedAds, memberToCanonical]);
 
   // First used: earliest date among all members' ad names
   const firstUsed = useMemo(() => {
@@ -852,11 +852,11 @@ export default function AdsTracking() {
       } else if (sortKey === 'date') {
         av = firstUsed[a] || '9999'; bv = firstUsed[b] || '9999';
       } else if (sortKey === 'total') {
-        av = states.reduce((s, st) => s + (grid[a]?.[st]?.length || 0) + (sheetByName[a]?.leads?.[st] || 0), 0);
-        bv = states.reduce((s, st) => s + (grid[b]?.[st]?.length || 0) + (sheetByName[b]?.leads?.[st] || 0), 0);
+        av = states.reduce((s, st) => s + (grid[a]?.[st] || 0), 0);
+        bv = states.reduce((s, st) => s + (grid[b]?.[st] || 0), 0);
       } else {
-        av = (grid[a]?.[sortKey]?.length || 0) + (sheetByName[a]?.leads?.[sortKey] || 0);
-        bv = (grid[b]?.[sortKey]?.length || 0) + (sheetByName[b]?.leads?.[sortKey] || 0);
+        av = grid[a]?.[sortKey] || 0;
+        bv = grid[b]?.[sortKey] || 0;
       }
       if (av < bv) return sortDir === 'asc' ? -1 : 1;
       if (av > bv) return sortDir === 'asc' ?  1 : -1;
@@ -1086,8 +1086,7 @@ export default function AdsTracking() {
               {sortedAdNames.map(adName => {
                 const row        = grid[adName] || {};
                 const mergeGroup = mergeGroups.find(g => g.canonical === adName);
-                const total      = orderedStates.reduce((s, st) =>
-                  s + (row[st]?.length || 0) + (sheetByName[adName]?.leads?.[st] || 0), 0);
+                const total      = orderedStates.reduce((s, st) => s + (row[st] || 0), 0);
                 const isSelected = selectedRows.has(adName);
                 return (
                   <tr key={adName} className={isSelected ? 'tracking-row-selected' : ''} onClick={selecting ? () => toggleRowSelect(adName) : undefined} style={selecting ? { cursor: 'pointer' } : undefined}>
@@ -1138,9 +1137,7 @@ export default function AdsTracking() {
                     <td className="tracking-td-date">{fmtDate(firstUsed[adName])}</td>
                     <td className="tracking-td-total">{total > 0 ? total : '—'}</td>
                     {orderedStates.map(state => {
-                      const leads     = row[state] || [];
-                      const imported  = sheetByName[adName]?.leads?.[state] || 0;
-                      const cellTotal = leads.length + imported;
+                      const cellTotal = row[state] || 0;
                       return (
                         <td key={state} className="tracking-td-cell">
                           {cellTotal > 0
@@ -1160,12 +1157,10 @@ export default function AdsTracking() {
                 <td className="tracking-td-ad tracking-tfoot-label">Total</td>
                 <td className="tracking-td-date tracking-tfoot-label" />
                 <td className="tracking-td-total tracking-tfoot-label">
-                  {adNames.reduce((s, a) => s + orderedStates.reduce((s2, st) =>
-                    s2 + (grid[a]?.[st]?.length || 0) + (sheetByName[a]?.leads?.[st] || 0), 0), 0) || '—'}
+                  {adNames.reduce((s, a) => s + orderedStates.reduce((s2, st) => s2 + (grid[a]?.[st] || 0), 0), 0) || '—'}
                 </td>
                 {orderedStates.map(state => {
-                  const total = adNames.reduce((s, a) =>
-                    s + (grid[a]?.[state]?.length || 0) + (sheetByName[a]?.leads?.[state] || 0), 0);
+                  const total = adNames.reduce((s, a) => s + (grid[a]?.[state] || 0), 0);
                   return <td key={state} className="tracking-td-total tracking-tfoot-label">{total > 0 ? total : '—'}</td>;
                 })}
               </tr>
