@@ -117,11 +117,53 @@ function fmtPhone(p) {
   return p;
 }
 
-function AdDetailModal({ adName, state, allAds, allContacts, sheetByName, accountLabel, mergeGroups, allAdDailyInsights, onSyncMax, onDeleteLead, onUnmerge, onClose }) {
+function AdDetailModal({ adName, state, allAds, sheetByName, accountLabel, mergeGroups, allAdDailyInsights, onSyncMax, onUnmerge, onClose }) {
   const [period, setPeriod]   = useState('90');
   const [sortKey, setSortKey] = useState('spend');
   const [sortDir, setSortDir] = useState('desc');
   const [modalMetric, setModalMetric] = useState('leads');
+
+  // GHL contacts — fetched on-demand when modal opens
+  const [ghlContacts, setGhlContacts]   = useState([]);
+  const [loadingGhl, setLoadingGhl]     = useState(false);
+  const [ghlError, setGhlError]         = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+    async function fetchGhl() {
+      setLoadingGhl(true);
+      setGhlError('');
+      try {
+        // Load cached first for instant display
+        const cached = await dbGetAll('ghlContacts');
+        if (!cancelled) setGhlContacts(cached);
+
+        // Check if cache is stale (> 1 hour)
+        const lastGhlSync = await dbGetMeta('lastGhlSync');
+        const stale = !lastGhlSync || (Date.now() - new Date(lastGhlSync).getTime() > 3600 * 1000);
+        if (!stale) { setLoadingGhl(false); return; }
+
+        const since = new Date(Date.now() - 2 * 365 * 864e5).toISOString();
+        const now   = new Date().toISOString();
+        const fresh = await apiFetch(`/api/ghl/contacts?start=${encodeURIComponent(since)}&end=${encodeURIComponent(now)}`);
+        await dbUpsert('ghlContacts', fresh);
+        await dbSetMeta('lastGhlSync', now);
+        const all = await dbGetAll('ghlContacts');
+        if (!cancelled) setGhlContacts(all);
+      } catch (err) {
+        if (!cancelled) setGhlError(err.message);
+      } finally {
+        if (!cancelled) setLoadingGhl(false);
+      }
+    }
+    fetchGhl();
+    return () => { cancelled = true; };
+  }, []);
+
+  async function deleteContact(id) {
+    await dbDelete('ghlContacts', id);
+    setGhlContacts(prev => prev.filter(c => c.id !== id));
+  }
 
   // Merge group this ad belongs to as canonical
   const mergeGroup = useMemo(() =>
@@ -156,11 +198,11 @@ function AdDetailModal({ adName, state, allAds, allContacts, sheetByName, accoun
 
   // GHL leads for this ad (all member names) + state
   const ghlLeads = useMemo(() =>
-    allContacts.filter(c => {
+    ghlContacts.filter(c => {
       const name = (c.utmContent || '').trim();
       return effectiveNames.includes(name) && extractState(c.utmCampaign) === state;
     }),
-    [allContacts, effectiveNames, state]
+    [ghlContacts, effectiveNames, state]
   );
 
   const importedCount = sheetByName[adName]?.leads?.[state] || 0;
@@ -184,7 +226,7 @@ function AdDetailModal({ adName, state, allAds, allContacts, sheetByName, accoun
   // Chart: GHL leads/day + FB ad-level spend/day
   const chartData = useMemo(() => {
     const leadsMap = {};
-    for (const c of ghlLeads) {
+    for (const c of loadingGhl ? [] : ghlLeads) {
       if (!c.dateAdded) continue;
       const day = c.dateAdded.slice(0, 10);
       if (cutoff && day < cutoff) continue;
@@ -454,6 +496,12 @@ function AdDetailModal({ adName, state, allAds, allContacts, sheetByName, accoun
           )}
 
           {/* GHL Leads list with delete */}
+          {loadingGhl && ghlContacts.length === 0 && (
+            <div style={{ padding: '12px 0', fontSize: 12, color: 'var(--text-muted)' }}>Loading cases…</div>
+          )}
+          {ghlError && (
+            <div style={{ padding: '8px 12px', fontSize: 12, color: '#dc2626', background: '#fee2e2', borderRadius: 6, marginTop: 8 }}>{ghlError}</div>
+          )}
           {ghlLeads.length > 0 && (
             <div style={{ marginTop: 20 }}>
               <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)', marginBottom: 8 }}>
@@ -478,7 +526,7 @@ function AdDetailModal({ adName, state, allAds, allContacts, sheetByName, accoun
                         </div>
                       </div>
                       <button
-                        onClick={() => onDeleteLead(c.id)}
+                        onClick={() => deleteContact(c.id)}
                         style={{
                           border: 'none', background: 'none', cursor: 'pointer',
                           color: '#94a3b8', fontSize: 16, padding: '2px 6px',
@@ -508,7 +556,6 @@ function AdDetailModal({ adName, state, allAds, allContacts, sheetByName, accoun
 // ── Main Component ────────────────────────────────────────────────────────────
 export default function AdsTracking() {
   // Persistent data
-  const [allContacts, setAllContacts]           = useState([]);
   const [allDailyInsights, setAllDailyInsights] = useState([]);
   const [allAds, setAllAds]                     = useState([]);
   const [lastSync, setLastSync]                 = useState(null);
@@ -567,8 +614,7 @@ export default function AdsTracking() {
 
   // ── Load from IndexedDB ─────────────────────────────────────────────────────
   async function loadFromDB() {
-    const [contacts, insights, ads, adDaily, syncTime, deleted, merges] = await Promise.all([
-      dbGetAll('ghlContacts'),
+    const [insights, ads, adDaily, syncTime, deleted, merges] = await Promise.all([
       dbGetAll('fbDailyInsights'),
       dbGetAll('fbAds'),
       dbGetAll('adDailyInsights'),
@@ -576,7 +622,6 @@ export default function AdsTracking() {
       dbGetMeta('deletedAds'),
       dbGetMeta('mergeGroups'),
     ]);
-    setAllContacts(contacts);
     setAllDailyInsights(insights);
     setAllAds(ads);
     setAllAdDailyInsights(adDaily);
@@ -586,7 +631,7 @@ export default function AdsTracking() {
   }
 
 
-  // ── Full sync (GHL + FB) ────────────────────────────────────────────────────
+  // ── FB sync ─────────────────────────────────────────────────────────────────
   const sync = useCallback(async () => {
     if (syncingRef.current) return;
     syncingRef.current = true;
@@ -597,15 +642,6 @@ export default function AdsTracking() {
       const lastSyncTime = await dbGetMeta('lastSync');
       const isFirstSync  = !lastSyncTime;
       const now          = new Date().toISOString();
-      const since        = lastSyncTime
-        ? lastSyncTime
-        : new Date(Date.now() - 2 * 365 * 864e5).toISOString();
-
-      setSyncNote('Fetching leads…');
-      const contacts = await apiFetch(
-        `/api/ghl/contacts?start=${encodeURIComponent(since)}&end=${encodeURIComponent(now)}`
-      );
-      await dbUpsert('ghlContacts', contacts);
 
       setSyncNote('Fetching ads…');
       const ads = await apiFetch('/api/facebook/ads?date_preset=maximum');
@@ -622,7 +658,7 @@ export default function AdsTracking() {
 
       await dbSetMeta('lastSync', now);
       await loadFromDB();
-      setSyncNote(`Done · +${contacts.length} new leads`);
+      setSyncNote('Done');
     } catch (err) {
       console.error('Sync error:', err);
       setSyncError(err.message);
@@ -633,39 +669,7 @@ export default function AdsTracking() {
     }
   }, []);
 
-  // ── Lightweight lead sync (GHL only) — always runs on mount ────────────────
-  const syncLeads = useCallback(async () => {
-    if (syncingRef.current) return;
-    syncingRef.current = true;
-    setSyncing(true);
-    setSyncError('');
-    setSyncNote('Fetching new leads…');
-    try {
-      const lastSyncTime = await dbGetMeta('lastSync');
-      const since = lastSyncTime
-        ? lastSyncTime
-        : new Date(Date.now() - 2 * 365 * 864e5).toISOString();
-      const now = new Date().toISOString();
-      const contacts = await apiFetch(
-        `/api/ghl/contacts?start=${encodeURIComponent(since)}&end=${encodeURIComponent(now)}`
-      );
-      await dbUpsert('ghlContacts', contacts);
-      await dbSetMeta('lastSync', now);
-      const all = await dbGetAll('ghlContacts');
-      setAllContacts(all);
-      setLastSync(now);
-      setSyncNote(`+${contacts.length} new leads`);
-    } catch (err) {
-      console.error('Lead sync error:', err);
-      setSyncError(err.message);
-      setSyncNote('');
-    } finally {
-      syncingRef.current = false;
-      setSyncing(false);
-    }
-  }, []);
-
-  // On mount: clear legacy sheet import data, load cache, sync leads
+  // On mount: load cache, sync FB if stale
   useEffect(() => {
     dbClearStore('sheetImport').catch(() => {});
     dbSetMeta('trackingColumns', null).catch(() => {});
@@ -673,14 +677,12 @@ export default function AdsTracking() {
       const ts    = await dbGetMeta('lastSync');
       const stale = !ts || (Date.now() - new Date(ts).getTime() > 6 * 3600 * 1000);
       if (stale) sync();
-      else syncLeads();
     });
   }, []);
 
   async function resetData() {
     if (!window.confirm('Clear all stored tracking data and re-sync from scratch?')) return;
     await dbClearAll();
-    setAllContacts([]);
     setAllDailyInsights([]);
     setAllAds([]);
     setLastSync(null);
@@ -761,12 +763,6 @@ export default function AdsTracking() {
     } finally {
       setSyncingAdMax(false);
     }
-  }
-
-  // Delete a single GHL contact permanently
-  async function deleteContact(id) {
-    await dbDelete('ghlContacts', id);
-    setAllContacts(prev => prev.filter(c => c.id !== id));
   }
 
   function toggleRowSelect(adName) {
@@ -888,12 +884,6 @@ export default function AdsTracking() {
 
   const chartData = useMemo(() => {
     const leadsMap = {};
-    for (const c of allContacts) {
-      if (!c.dateAdded) continue;
-      const day = c.dateAdded.slice(0, 10);
-      if (cutoffDate && day < cutoffDate) continue;
-      leadsMap[day] = (leadsMap[day] || 0) + 1;
-    }
     const fbMap = {};
     for (const row of allDailyInsights) {
       const date = row.date_start;
@@ -911,7 +901,7 @@ export default function AdsTracking() {
       const cpl   = leads > 0 && spend > 0 ? +(spend / leads).toFixed(2) : null;
       return { date: date.slice(5), leads, spend, cpm, cpl };
     });
-  }, [allContacts, allDailyInsights, cutoffDate]);
+  }, [allDailyInsights, cutoffDate]);
 
   function saveAccountName(state, name) {
     const next = { ...accountNames, [state]: name.trim() || state };
@@ -1001,8 +991,7 @@ export default function AdsTracking() {
       {/* Grid stats + row select toggle */}
       <div style={{ display: 'flex', alignItems: 'center', marginBottom: 10, gap: 10 }}>
         <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-          {allContacts.length.toLocaleString()} live leads
-          {' · '}{adNames.length} unique ads
+          {adNames.length} unique ads
           {deletedAds.size > 0 && ` · ${deletedAds.size} hidden`}
         </span>
         <button
@@ -1245,13 +1234,11 @@ export default function AdsTracking() {
           adName={adDetail.adName}
           state={adDetail.state}
           allAds={allAds}
-          allContacts={allContacts}
           sheetByName={sheetByName}
           accountLabel={accountLabel}
           mergeGroups={mergeGroups}
           allAdDailyInsights={allAdDailyInsights}
           onSyncMax={syncAdMax}
-          onDeleteLead={deleteContact}
           onUnmerge={unmergeGroup}
           onClose={() => setAdDetail(null)}
         />
