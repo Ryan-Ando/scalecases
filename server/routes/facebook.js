@@ -67,14 +67,19 @@ function adAccounts() {
 }
 
 // Fetch insights for one account
-async function fetchInsightsForAccount(account, level, datePreset, filters = {}) {
+async function fetchInsightsForAccount(account, level, datePreset, filters = {}, timeRange = null) {
   const params = new URLSearchParams({
     level,
     fields: `${level}_id,${level}_name,${INSIGHTS_FIELDS}`,
-    date_preset: datePreset || 'last_30d',
     access_token: token(),
     limit: 500,
   });
+
+  if (timeRange) {
+    params.set('time_range', JSON.stringify(timeRange));
+  } else {
+    params.set('date_preset', datePreset || 'last_30d');
+  }
 
   if (filters.campaign_id) params.set('filtering', JSON.stringify([{ field: 'campaign.id', operator: 'EQUAL', value: filters.campaign_id }]));
   if (filters.adset_id) params.set('filtering', JSON.stringify([{ field: 'adset.id', operator: 'EQUAL', value: filters.adset_id }]));
@@ -92,9 +97,9 @@ async function fetchInsightsForAccount(account, level, datePreset, filters = {})
 }
 
 // Fetch insights from all accounts and merge
-async function fetchInsights(level, datePreset, filters = {}) {
+async function fetchInsights(level, datePreset, filters = {}, timeRange = null) {
   const accounts = adAccounts();
-  const results = await Promise.all(accounts.map(a => fetchInsightsForAccount(a, level, datePreset, filters)));
+  const results = await Promise.all(accounts.map(a => fetchInsightsForAccount(a, level, datePreset, filters, timeRange)));
   return results.flat();
 }
 
@@ -191,17 +196,18 @@ router.get('/adsets', async (req, res) => {
   }
 });
 
-// GET /api/facebook/ads?adset_id=
+// GET /api/facebook/ads?adset_id=&date_preset=&start=YYYY-MM-DD&end=YYYY-MM-DD
 router.get('/ads', async (req, res) => {
   try {
-    const { date_preset, adset_id } = req.query;
+    const { date_preset, adset_id, start, end } = req.query;
+    const timeRange = start && end ? { since: start, until: end } : null;
 
     const listParams = { fields: 'id,name,status,adset_id,adset{name},campaign_id,campaign{name},creative{id,name,thumbnail_url},created_time' };
     if (adset_id) listParams.adset_id = adset_id;
 
     const [ads, insights] = await Promise.all([
       fetchFromAllAccounts('ads', listParams),
-      fetchInsights('ad', date_preset, adset_id ? { adset_id } : {}),
+      fetchInsights('ad', date_preset, adset_id ? { adset_id } : {}, timeRange),
     ]);
 
     const insightsMap = Object.fromEntries(insights.map(i => [i.ad_id, i]));

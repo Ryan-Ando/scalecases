@@ -588,7 +588,12 @@ export default function AdsTracking() {
   const [chartPeriod, setChartPeriod]   = useState('90');
   const [sortKey, setSortKey]           = useState('date');
   const [sortDir, setSortDir]           = useState('asc');
-  const [activeTab, setActiveTab]       = useState('grid'); // 'grid' | 'daily'
+  // Custom date range for the grid
+  const [rangeStart, setRangeStart]     = useState('');
+  const [rangeEnd, setRangeEnd]         = useState('');
+  const [rangeAds, setRangeAds]         = useState(null);   // null = use allAds
+  const [loadingRange, setLoadingRange] = useState(false);
+  const [rangeError, setRangeError]     = useState('');
   const [colOrder, setColOrder]         = useState(null);
   const [dragOverCol, setDragOverCol]   = useState(null);
   const dragColRef = useRef(null);
@@ -612,6 +617,25 @@ export default function AdsTracking() {
         if (m !== g.canonical) set.add(m);
     return set;
   }, [mergeGroups]);
+
+  // Fetch ads for custom date range; clear rangeAds when range is cleared
+  useEffect(() => {
+    if (!rangeStart || !rangeEnd || rangeStart > rangeEnd) {
+      setRangeAds(null);
+      setRangeError('');
+      return;
+    }
+    let cancelled = false;
+    setLoadingRange(true);
+    setRangeError('');
+    apiFetch(`/api/facebook/ads?start=${rangeStart}&end=${rangeEnd}`)
+      .then(data => { if (!cancelled) { setRangeAds(data); setLoadingRange(false); } })
+      .catch(err  => { if (!cancelled) { setRangeError(err.message); setLoadingRange(false); } });
+    return () => { cancelled = true; };
+  }, [rangeStart, rangeEnd]);
+
+  // Active ads: use rangeAds when a custom range is set, otherwise all-time allAds
+  const activeAds = rangeAds ?? allAds;
 
   // ── Load from IndexedDB ─────────────────────────────────────────────────────
   async function loadFromDB() {
@@ -778,12 +802,12 @@ export default function AdsTracking() {
   // ── Derived data ────────────────────────────────────────────────────────────
   const states = useMemo(() => {
     const set = new Set();
-    for (const a of allAds) {
+    for (const a of activeAds) {
       const s = extractState(a.campaignName);
       if (s) set.add(s);
     }
     return [...set].sort();
-  }, [allAds]);
+  }, [activeAds]);
 
   const orderedStates = useMemo(() => {
     if (!colOrder) return states;
@@ -796,7 +820,7 @@ export default function AdsTracking() {
   const adNames = useMemo(() => {
     const seen  = new Set();
     const names = [];
-    for (const a of allAds) {
+    for (const a of activeAds) {
       const name = (a.name || '').trim();
       if (name && !seen.has(name) && !deletedAds.has(name) && !absorbedMembers.has(name)) {
         seen.add(name);
@@ -804,7 +828,7 @@ export default function AdsTracking() {
       }
     }
     return names;
-  }, [allAds, deletedAds, absorbedMembers]);
+  }, [activeAds, deletedAds, absorbedMembers]);
 
   const sheetByName = {};
 
@@ -815,7 +839,7 @@ export default function AdsTracking() {
       map[adName] = {};
       for (const state of states) map[adName][state] = 0;
     }
-    for (const a of allAds) {
+    for (const a of activeAds) {
       const rawName = (a.name || '').trim();
       const state   = extractState(a.campaignName);
       if (!rawName || !state || deletedAds.has(rawName)) continue;
@@ -825,7 +849,7 @@ export default function AdsTracking() {
       }
     }
     return map;
-  }, [adNames, states, allAds, deletedAds, memberToCanonical]);
+  }, [adNames, states, activeAds, deletedAds, memberToCanonical]);
 
   // First used: earliest date among all members' ad names
   const firstUsed = useMemo(() => {
@@ -913,58 +937,6 @@ export default function AdsTracking() {
     });
   }, [allDailyInsights, cutoffDate]);
 
-  // Daily breakdown rows — all campaign-level daily records sorted newest first
-  // ── Daily grid tab state ────────────────────────────────────────────────────
-  const [dailyDate, setDailyDate]         = useState(() => new Date().toISOString().slice(0, 10));
-  const [dailyRecords, setDailyRecords]   = useState([]);
-  const [loadingDaily, setLoadingDaily]   = useState(false);
-  const [dailyError, setDailyError]       = useState('');
-
-  // Fetch ad-level daily data (with leads) for selected date
-  useEffect(() => {
-    if (activeTab !== 'daily' || !dailyDate) return;
-    let cancelled = false;
-    setLoadingDaily(true);
-    setDailyError('');
-    apiFetch(`/api/facebook/daily?date=${encodeURIComponent(dailyDate)}`)
-      .then(data => { if (!cancelled) { setDailyRecords(data); setLoadingDaily(false); } })
-      .catch(err => { if (!cancelled) { setDailyError(err.message); setLoadingDaily(false); } });
-    return () => { cancelled = true; };
-  }, [activeTab, dailyDate]);
-
-  // Build grid from daily records: adName → state → { leads, spend }
-  const dailyGrid = useMemo(() => {
-    const map = {};
-    for (const r of dailyRecords) {
-      const rawName = (r.ad_name || '').trim();
-      const state   = extractState(r.campaign_name || '');
-      if (!rawName || !state) continue;
-      const adName  = memberToCanonical[rawName] || rawName;
-      if (!map[adName]) map[adName] = {};
-      if (!map[adName][state]) map[adName][state] = { leads: 0, spend: 0 };
-      map[adName][state].leads += extractResults(r).results;
-      map[adName][state].spend += parseFloat(r.spend) || 0;
-    }
-    return map;
-  }, [dailyRecords, memberToCanonical]);
-
-  const dailyAdNames = useMemo(() => {
-    const names = Object.keys(dailyGrid).filter(n => !deletedAds.has(n));
-    return names.sort((a, b) => {
-      const at = firstUsed[a], bt = firstUsed[b];
-      if (at && !bt) return -1; if (!at && bt) return 1; if (!at && !bt) return 0;
-      return at < bt ? -1 : at > bt ? 1 : 0;
-    });
-  }, [dailyGrid, deletedAds, firstUsed]);
-
-  const dailyStates = useMemo(() => {
-    const set = new Set();
-    for (const r of dailyRecords) {
-      const s = extractState(r.campaign_name || '');
-      if (s) set.add(s);
-    }
-    return [...set].sort();
-  }, [dailyRecords]);
 
   function saveAccountName(state, name) {
     const next = { ...accountNames, [state]: name.trim() || state };
@@ -1024,12 +996,33 @@ export default function AdsTracking() {
               </button>
             ))}
           </div>
-          <div style={{ display: 'flex', gap: 4, marginLeft: 'auto' }}>
+          <div style={{ display: 'flex', gap: 4, marginLeft: 'auto', alignItems: 'center', flexWrap: 'wrap' }}>
             {CHART_PERIODS.map(p => (
               <button key={p.key} className={`btn btn--sm${chartPeriod === p.key ? ' btn--primary' : ''}`} onClick={() => setChartPeriod(p.key)}>
                 {p.label}
               </button>
             ))}
+            <span style={{ fontSize: 11, color: 'var(--text-muted)', marginLeft: 4 }}>|</span>
+            <input
+              type="date"
+              value={rangeStart}
+              onChange={e => setRangeStart(e.target.value)}
+              style={{ padding: '4px 8px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text)', fontSize: 12 }}
+              placeholder="Start"
+            />
+            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>—</span>
+            <input
+              type="date"
+              value={rangeEnd}
+              onChange={e => setRangeEnd(e.target.value)}
+              style={{ padding: '4px 8px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text)', fontSize: 12 }}
+              placeholder="End"
+            />
+            {(rangeStart || rangeEnd) && (
+              <button className="btn btn--sm" onClick={() => { setRangeStart(''); setRangeEnd(''); }} title="Clear date range">✕</button>
+            )}
+            {loadingRange && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Loading…</span>}
+            {rangeError  && <span style={{ fontSize: 11, color: '#dc2626' }} title={rangeError}>Range error</span>}
           </div>
         </div>
         <div style={{ background: 'var(--surface)', borderRadius: 12, border: '1px solid var(--border)', padding: '20px 8px 8px' }}>
@@ -1051,108 +1044,31 @@ export default function AdsTracking() {
         </div>
       </div>
 
-      {/* Tab toggle + Grid stats */}
+      {/* Grid stats */}
       <div style={{ display: 'flex', alignItems: 'center', marginBottom: 10, gap: 10 }}>
-        <div style={{ display: 'flex', gap: 4 }}>
-          <button className={`btn btn--sm${activeTab === 'grid' ? ' btn--primary' : ''}`} onClick={() => setActiveTab('grid')}>Grid</button>
-          <button className={`btn btn--sm${activeTab === 'daily' ? ' btn--primary' : ''}`} onClick={() => setActiveTab('daily')}>Daily</button>
-        </div>
         <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
           {adNames.length} unique ads
           {deletedAds.size > 0 && ` · ${deletedAds.size} hidden`}
+          {rangeAds && ` · ${rangeStart} – ${rangeEnd}`}
         </span>
-        {activeTab === 'grid' && (
-          <button
-            className={`btn btn--sm${selecting ? ' btn--primary' : ''}`}
-            style={{ marginLeft: 'auto' }}
-            onClick={() => { setSelecting(s => !s); setSelectedRows(new Set()); }}
-          >
-            {selecting ? 'Cancel Select' : 'Select Rows'}
-          </button>
-        )}
+        <button
+          className={`btn btn--sm${selecting ? ' btn--primary' : ''}`}
+          style={{ marginLeft: 'auto' }}
+          onClick={() => { setSelecting(s => !s); setSelectedRows(new Set()); }}
+        >
+          {selecting ? 'Cancel Select' : 'Select Rows'}
+        </button>
       </div>
 
-      {/* Daily grid — same layout as main grid but for a single selected date */}
-      {activeTab === 'daily' && (
-        <div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
-            <input
-              type="date"
-              value={dailyDate}
-              onChange={e => setDailyDate(e.target.value)}
-              style={{ padding: '6px 10px', borderRadius: 7, border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text)', fontSize: 13 }}
-            />
-            {loadingDaily && <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Loading…</span>}
-            {dailyError && <span style={{ fontSize: 12, color: '#dc2626' }}>{dailyError}</span>}
-            {!loadingDaily && !dailyError && dailyRecords.length > 0 && (
-              <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{dailyAdNames.length} ads · {dailyStates.length} states</span>
-            )}
-          </div>
-          {!loadingDaily && dailyAdNames.length === 0 ? (
-            <div className="empty" style={{ padding: 32 }}>
-              {dailyError ? dailyError : 'No data for this date'}
-            </div>
-          ) : (
-            <div className="tracking-grid-wrap">
-              <table className="tracking-grid">
-                <thead>
-                  <tr>
-                    <th className="tracking-th-ad">Ad Name</th>
-                    <th className="tracking-th-state">Date</th>
-                    <th className="tracking-th-state">Total</th>
-                    {dailyStates.map(st => (
-                      <th key={st} className="tracking-th-state">{st}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {dailyAdNames.map(adName => {
-                    const rowTotal = dailyStates.reduce((s, st) => s + (dailyGrid[adName]?.[st]?.leads || 0), 0);
-                    return (
-                      <tr key={adName} className="tracking-row">
-                        <td className="tracking-td-ad">{adName}</td>
-                        <td className="tracking-td-date">{dailyDate}</td>
-                        <td className="tracking-td-total" style={{ fontWeight: 600 }}>{rowTotal || '—'}</td>
-                        {dailyStates.map(st => {
-                          const cell = dailyGrid[adName]?.[st];
-                          return (
-                            <td key={st} className="tracking-td">
-                              {cell?.leads ? cell.leads : '—'}
-                            </td>
-                          );
-                        })}
-                      </tr>
-                    );
-                  })}
-                </tbody>
-                <tfoot>
-                  <tr>
-                    <td className="tracking-td-ad tracking-tfoot-label">Total</td>
-                    <td className="tracking-td-date tracking-tfoot-label" />
-                    <td className="tracking-td-total tracking-tfoot-label">
-                      {dailyAdNames.reduce((s, a) => s + dailyStates.reduce((s2, st) => s2 + (dailyGrid[a]?.[st]?.leads || 0), 0), 0) || '—'}
-                    </td>
-                    {dailyStates.map(st => {
-                      const total = dailyAdNames.reduce((s, a) => s + (dailyGrid[a]?.[st]?.leads || 0), 0);
-                      return <td key={st} className="tracking-td tracking-tfoot-label">{total || '—'}</td>;
-                    })}
-                  </tr>
-                </tfoot>
-              </table>
-            </div>
-          )}
-        </div>
-      )}
-
-      {activeTab === 'grid' && adNames.length === 0 ? (
+      {adNames.length === 0 ? (
         <div className="empty">
           <div className="empty-icon">📊</div>
-          <div className="empty-title">{syncing ? 'Syncing data…' : 'No data yet'}</div>
+          <div className="empty-title">{syncing || loadingRange ? 'Loading…' : 'No data yet'}</div>
           <div className="empty-desc">
-            {syncing ? 'This may take a moment on first sync.' : 'Click "Sync Now" to load your ads and leads.'}
+            {syncing ? 'This may take a moment on first sync.' : loadingRange ? 'Fetching date range…' : 'Click "Sync Now" to load your ads and leads.'}
           </div>
         </div>
-      ) : activeTab === 'grid' ? (
+      ) : (
         <div className="tracking-grid-wrap">
           <table className="tracking-grid">
             <thead>
@@ -1296,7 +1212,7 @@ export default function AdsTracking() {
             </tfoot>
           </table>
         </div>
-      ) : null}
+      )}
 
       {/* Floating action bar (1+ rows selected) */}
       {selecting && selectedRows.size >= 1 && (
