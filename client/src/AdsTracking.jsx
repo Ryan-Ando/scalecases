@@ -118,10 +118,12 @@ function fmtPhone(p) {
 }
 
 function AdDetailModal({ adName, state, allAds, sheetByName, accountLabel, mergeGroups, allAdDailyInsights, onSyncMax, onUnmerge, onClose }) {
-  const [period, setPeriod]   = useState('90');
-  const [sortKey, setSortKey] = useState('spend');
-  const [sortDir, setSortDir] = useState('desc');
+  const [period, setPeriod]         = useState('90');
+  const [sortKey, setSortKey]       = useState('spend');
+  const [sortDir, setSortDir]       = useState('desc');
   const [modalMetric, setModalMetric] = useState('leads');
+  const [caseSortKey, setCaseSortKey] = useState('dateAdded');
+  const [caseSortDir, setCaseSortDir] = useState('desc');
 
   // GHL contacts — fetched on-demand when modal opens
   const [ghlContacts, setGhlContacts]   = useState([]);
@@ -308,10 +310,7 @@ function AdDetailModal({ adName, state, allAds, sheetByName, accountLabel, merge
           <div>
             <div className="col-mgr-title">{adName}</div>
             <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
-              {accountLabel(state)} ({state}) · {totalLeads} total leads
-              {importedCount > 0 && (
-                <span style={{ marginLeft: 8 }}>({ghlLeads.length} live + {importedCount} imported)</span>
-              )}
+              {accountLabel(state)} ({state}) · {totalLeads} cases
             </div>
           </div>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
@@ -497,52 +496,83 @@ function AdDetailModal({ adName, state, allAds, sheetByName, accountLabel, merge
 
           {/* GHL Leads list with delete */}
           {loadingGhl && ghlContacts.length === 0 && (
-            <div style={{ padding: '12px 0', fontSize: 12, color: 'var(--text-muted)' }}>Loading cases…</div>
+            <div style={{ padding: '16px 0', fontSize: 12, color: 'var(--text-muted)' }}>Loading cases…</div>
           )}
           {ghlError && (
             <div style={{ padding: '8px 12px', fontSize: 12, color: '#dc2626', background: '#fee2e2', borderRadius: 6, marginTop: 8 }}>{ghlError}</div>
           )}
-          {ghlLeads.length > 0 && (
-            <div style={{ marginTop: 20 }}>
-              <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)', marginBottom: 8 }}>
-                GHL Leads ({ghlLeads.length})
+          {ghlLeads.length > 0 && (() => {
+            const CASE_COLS = [
+              { key: 'dateAdded', label: 'Date'    },
+              { key: 'name',      label: 'Name'    },
+              { key: 'phone',     label: 'Phone'   },
+              { key: 'email',     label: 'Email'   },
+            ];
+            const sorted = [...ghlLeads].sort((a, b) => {
+              const av = a[caseSortKey] || '', bv = b[caseSortKey] || '';
+              if (av < bv) return caseSortDir === 'asc' ? -1 : 1;
+              if (av > bv) return caseSortDir === 'asc' ?  1 : -1;
+              return 0;
+            });
+            function handleCaseSort(key) {
+              if (caseSortKey === key) setCaseSortDir(d => d === 'asc' ? 'desc' : 'asc');
+              else { setCaseSortKey(key); setCaseSortDir(key === 'dateAdded' ? 'desc' : 'asc'); }
+            }
+            return (
+              <div style={{ marginTop: 24 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)', marginBottom: 8 }}>
+                  Cases ({ghlLeads.length})
+                  {loadingGhl && <span style={{ fontWeight: 400, marginLeft: 8, textTransform: 'none' }}>refreshing…</span>}
+                </div>
+                <div style={{ overflowX: 'auto' }}>
+                  <table className="tracking-grid" style={{ minWidth: 560 }}>
+                    <thead>
+                      <tr>
+                        {CASE_COLS.map(col => (
+                          <th
+                            key={col.key}
+                            className="tracking-th-state tracking-th-sortable"
+                            onClick={() => handleCaseSort(col.key)}
+                            style={{ whiteSpace: 'nowrap', cursor: 'pointer', textAlign: 'left' }}
+                          >
+                            {col.label}{caseSortKey === col.key && <SortArrow dir={caseSortDir} />}
+                          </th>
+                        ))}
+                        <th className="tracking-th-state" style={{ width: 36 }} />
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {sorted.map(c => (
+                        <tr key={c.id} className="tracking-row">
+                          <td className="tracking-td-cell" style={{ whiteSpace: 'nowrap', fontSize: 12 }}>
+                            {c.dateAdded ? fmtDate(c.dateAdded) : '—'}
+                          </td>
+                          <td className="tracking-td-cell" style={{ fontWeight: 500 }}>
+                            {c.name || '—'}
+                          </td>
+                          <td className="tracking-td-cell" style={{ fontSize: 12 }}>
+                            {fmtPhone(c.phone) || '—'}
+                          </td>
+                          <td className="tracking-td-cell" style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                            {c.email || '—'}
+                          </td>
+                          <td className="tracking-td-cell" style={{ textAlign: 'center', padding: '0 4px' }}>
+                            <button
+                              onClick={() => deleteContact(c.id)}
+                              style={{ border: 'none', background: 'none', cursor: 'pointer', color: '#94a3b8', fontSize: 15, padding: '2px 6px', borderRadius: 4, lineHeight: 1 }}
+                              title="Remove case"
+                              onMouseEnter={e => { e.currentTarget.style.color = '#dc2626'; e.currentTarget.style.background = '#fee2e2'; }}
+                              onMouseLeave={e => { e.currentTarget.style.color = '#94a3b8'; e.currentTarget.style.background = 'none'; }}
+                            >×</button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               </div>
-              <div style={{ border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
-                {[...ghlLeads]
-                  .sort((a, b) => (b.dateAdded || '').localeCompare(a.dateAdded || ''))
-                  .map((c, i) => (
-                    <div key={c.id} style={{
-                      display: 'flex', alignItems: 'center', gap: 10,
-                      padding: '9px 12px',
-                      borderTop: i > 0 ? '1px solid var(--border)' : 'none',
-                      background: 'var(--surface)',
-                    }}>
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontSize: 13, fontWeight: 500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                          {c.name || 'Unknown'}
-                        </div>
-                        <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 1 }}>
-                          {fmtPhone(c.phone)}{c.dateAdded ? ` · ${fmtDate(c.dateAdded)}` : ''}
-                        </div>
-                      </div>
-                      <button
-                        onClick={() => deleteContact(c.id)}
-                        style={{
-                          border: 'none', background: 'none', cursor: 'pointer',
-                          color: '#94a3b8', fontSize: 16, padding: '2px 6px',
-                          borderRadius: 4, flexShrink: 0, lineHeight: 1,
-                        }}
-                        title="Delete this lead"
-                        onMouseEnter={e => { e.target.style.color = '#dc2626'; e.target.style.background = '#fee2e2'; }}
-                        onMouseLeave={e => { e.target.style.color = '#94a3b8'; e.target.style.background = 'none'; }}
-                      >
-                        ×
-                      </button>
-                    </div>
-                  ))}
-              </div>
-            </div>
-          )}
+            );
+          })()}
 
           {fbInstances.length === 0 && ghlLeads.length === 0 && (
             <div className="empty" style={{ padding: 48 }}>No data found for this ad</div>
