@@ -79,6 +79,26 @@ export async function dbSetMeta(key, value) {
   });
 }
 
+export async function dbDelete(storeName, id) {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(storeName, 'readwrite');
+    tx.objectStore(storeName).delete(id);
+    tx.oncomplete = resolve;
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+export async function dbClearStore(storeName) {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(storeName, 'readwrite');
+    tx.objectStore(storeName).clear();
+    tx.oncomplete = resolve;
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
 // Clears sync data (GHL contacts, FB data, meta) but preserves sheet import.
 // Pass clearImport=true to also wipe the sheet import.
 export async function dbClearAll(clearImport = false) {

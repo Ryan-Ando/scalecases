@@ -2,7 +2,7 @@ import { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from 'recharts';
-import { dbGetAll, dbUpsert, dbGetMeta, dbSetMeta, dbClearAll } from './db.js';
+import { dbGetAll, dbUpsert, dbGetMeta, dbSetMeta, dbClearAll, dbDelete, dbClearStore } from './db.js';
 
 const BASE = import.meta.env.VITE_API_URL || 'http://localhost:3001';
 
@@ -97,7 +97,14 @@ const AD_DETAIL_TABLE_COLS = [
 ];
 
 // ── Ad Detail Modal ───────────────────────────────────────────────────────────
-function AdDetailModal({ adName, state, allAds, allContacts, sheetByName, accountLabel, mergeGroups, allAdDailyInsights, onSyncMax, onUnmerge, onClose }) {
+function fmtPhone(p) {
+  const d = (p || '').replace(/\D/g, '');
+  if (d.length === 11 && d[0] === '1') return `(${d.slice(1,4)}) ${d.slice(4,7)}-${d.slice(7)}`;
+  if (d.length === 10) return `(${d.slice(0,3)}) ${d.slice(3,6)}-${d.slice(6)}`;
+  return p;
+}
+
+function AdDetailModal({ adName, state, allAds, allContacts, sheetByName, accountLabel, mergeGroups, allAdDailyInsights, onSyncMax, onDeleteLead, onUnmerge, onClose }) {
   const [period, setPeriod]   = useState('90');
   const [sortKey, setSortKey] = useState('spend');
   const [sortDir, setSortDir] = useState('desc');
@@ -430,6 +437,49 @@ function AdDetailModal({ adName, state, allAds, allContacts, sheetByName, accoun
             </div>
           )}
 
+          {/* GHL Leads list with delete */}
+          {ghlLeads.length > 0 && (
+            <div style={{ marginTop: 20 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)', marginBottom: 8 }}>
+                GHL Leads ({ghlLeads.length})
+              </div>
+              <div style={{ border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
+                {[...ghlLeads]
+                  .sort((a, b) => (b.dateAdded || '').localeCompare(a.dateAdded || ''))
+                  .map((c, i) => (
+                    <div key={c.id} style={{
+                      display: 'flex', alignItems: 'center', gap: 10,
+                      padding: '9px 12px',
+                      borderTop: i > 0 ? '1px solid var(--border)' : 'none',
+                      background: 'var(--surface)',
+                    }}>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 13, fontWeight: 500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                          {c.name || 'Unknown'}
+                        </div>
+                        <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 1 }}>
+                          {fmtPhone(c.phone)}{c.dateAdded ? ` · ${fmtDate(c.dateAdded)}` : ''}
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => onDeleteLead(c.id)}
+                        style={{
+                          border: 'none', background: 'none', cursor: 'pointer',
+                          color: '#94a3b8', fontSize: 16, padding: '2px 6px',
+                          borderRadius: 4, flexShrink: 0, lineHeight: 1,
+                        }}
+                        title="Delete this lead"
+                        onMouseEnter={e => { e.target.style.color = '#dc2626'; e.target.style.background = '#fee2e2'; }}
+                        onMouseLeave={e => { e.target.style.color = '#94a3b8'; e.target.style.background = 'none'; }}
+                      >
+                        ×
+                      </button>
+                    </div>
+                  ))}
+              </div>
+            </div>
+          )}
+
           {fbInstances.length === 0 && ghlLeads.length === 0 && (
             <div className="empty" style={{ padding: 48 }}>No data found for this ad</div>
           )}
@@ -445,7 +495,6 @@ export default function AdsTracking() {
   const [allContacts, setAllContacts]           = useState([]);
   const [allDailyInsights, setAllDailyInsights] = useState([]);
   const [allAds, setAllAds]                     = useState([]);
-  const [sheetImport, setSheetImport]           = useState([]);
   const [sheetColumns, setSheetColumns]         = useState([]);
   const [lastSync, setLastSync]                 = useState(null);
 
@@ -458,9 +507,6 @@ export default function AdsTracking() {
   const [syncingAdMax, setSyncingAdMax]             = useState(false);
   const [adMaxNote, setAdMaxNote]                   = useState('');
 
-  // Import
-  const [importing, setImporting] = useState(false);
-  const [importNote, setImportNote] = useState('');
 
   // Sync
   const [syncing, setSyncing]     = useState(false);
@@ -506,11 +552,10 @@ export default function AdsTracking() {
 
   // ── Load from IndexedDB ─────────────────────────────────────────────────────
   async function loadFromDB() {
-    const [contacts, insights, ads, imported, adDaily, cols, syncTime, deleted, merges] = await Promise.all([
+    const [contacts, insights, ads, adDaily, cols, syncTime, deleted, merges] = await Promise.all([
       dbGetAll('ghlContacts'),
       dbGetAll('fbDailyInsights'),
       dbGetAll('fbAds'),
-      dbGetAll('sheetImport'),
       dbGetAll('adDailyInsights'),
       dbGetMeta('trackingColumns'),
       dbGetMeta('lastSync'),
@@ -520,7 +565,6 @@ export default function AdsTracking() {
     setAllContacts(contacts);
     setAllDailyInsights(insights);
     setAllAds(ads);
-    setSheetImport(imported);
     setAllAdDailyInsights(adDaily);
     setSheetColumns(cols || []);
     setLastSync(syncTime);
@@ -528,27 +572,6 @@ export default function AdsTracking() {
     setMergeGroups(merges || []);
   }
 
-  // ── Import from Google Sheet ────────────────────────────────────────────────
-  async function importFromSheet() {
-    setImporting(true);
-    setImportNote('');
-    try {
-      const { columns, rows } = await apiFetch('/api/sheets/tracking-import');
-      await Promise.all([
-        dbUpsert('sheetImport', rows),
-        dbSetMeta('trackingColumns', columns),
-      ]);
-      const [all, cols] = await Promise.all([dbGetAll('sheetImport'), dbGetMeta('trackingColumns')]);
-      setSheetImport(all);
-      setSheetColumns(cols || []);
-      const totalLeads = rows.reduce((s, r) => s + Object.values(r.leads).reduce((a, b) => a + b, 0), 0);
-      setImportNote(`Imported ${rows.length} ads · ${columns.length} accounts · ${totalLeads} historical leads`);
-    } catch (err) {
-      setImportNote(`Import failed: ${err.message.slice(0, 80)}`);
-    } finally {
-      setImporting(false);
-    }
-  }
 
   // ── Full sync (GHL + FB) ────────────────────────────────────────────────────
   const sync = useCallback(async () => {
@@ -629,8 +652,9 @@ export default function AdsTracking() {
     }
   }, []);
 
-  // On mount: load cache, then always sync leads / full sync if stale
+  // On mount: clear legacy sheet import data, load cache, sync leads
   useEffect(() => {
+    dbClearStore('sheetImport').catch(() => {});
     loadFromDB().then(async () => {
       const ts    = await dbGetMeta('lastSync');
       const stale = !ts || (Date.now() - new Date(ts).getTime() > 6 * 3600 * 1000);
@@ -725,6 +749,12 @@ export default function AdsTracking() {
     }
   }
 
+  // Delete a single GHL contact permanently
+  async function deleteContact(id) {
+    await dbDelete('ghlContacts', id);
+    setAllContacts(prev => prev.filter(c => c.id !== id));
+  }
+
   function toggleRowSelect(adName) {
     setSelectedRows(prev => {
       const next = new Set(prev);
@@ -752,7 +782,7 @@ export default function AdsTracking() {
     return [...existing, ...newOnes];
   }, [states, colOrder]);
 
-  // Ad names: union of FB ads + sheet import, excluding deleted and absorbed members
+  // Ad names: from FB ads only, excluding deleted and absorbed members
   const adNames = useMemo(() => {
     const seen  = new Set();
     const names = [];
@@ -763,28 +793,11 @@ export default function AdsTracking() {
         names.push(name);
       }
     }
-    for (const row of sheetImport) {
-      if (row.adName && !seen.has(row.adName) && !deletedAds.has(row.adName) && !absorbedMembers.has(row.adName)) {
-        seen.add(row.adName);
-        names.push(row.adName);
-      }
-    }
     return names;
-  }, [allAds, sheetImport, deletedAds, absorbedMembers]);
+  }, [allAds, deletedAds, absorbedMembers]);
 
-  // Sheet lookup: aggregate across merged members
-  const sheetByName = useMemo(() => {
-    const map = {};
-    for (const row of sheetImport) {
-      if (deletedAds.has(row.adName)) continue;
-      const key = memberToCanonical[row.adName] || row.adName;
-      if (!map[key]) map[key] = { adName: key, leads: {} };
-      for (const [st, cnt] of Object.entries(row.leads || {})) {
-        map[key].leads[st] = (map[key].leads[st] || 0) + cnt;
-      }
-    }
-    return map;
-  }, [sheetImport, deletedAds, memberToCanonical]);
+  // Sheet data disabled — returns empty so only live GHL leads are counted
+  const sheetByName = useMemo(() => ({}), []);
 
   // Grid: GHL contacts mapped to canonical ad name
   const grid = useMemo(() => {
@@ -917,9 +930,6 @@ export default function AdsTracking() {
             <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
               Last synced: {lastSync ? timeAgo(lastSync) : 'never'}
             </span>
-            <button className="btn btn--sm" onClick={importFromSheet} disabled={importing || syncing}>
-              {importing ? 'Importing…' : 'Import Sheet'}
-            </button>
             <button className="btn btn--sm btn--primary" onClick={sync} disabled={syncing}>
               {syncing ? 'Syncing…' : 'Sync Now'}
             </button>
@@ -932,11 +942,6 @@ export default function AdsTracking() {
           )}
           {!syncing && syncNote && !syncError && (
             <span style={{ fontSize: 11, color: 'var(--green-dark)' }}>{syncNote}</span>
-          )}
-          {importNote && (
-            <span style={{ fontSize: 11, color: importNote.startsWith('Import failed') ? '#dc2626' : 'var(--green-dark)' }}>
-              {importNote}
-            </span>
           )}
           {syncError && (
             <span style={{ fontSize: 11, color: '#dc2626' }} title={syncError}>
@@ -987,7 +992,6 @@ export default function AdsTracking() {
       <div style={{ display: 'flex', alignItems: 'center', marginBottom: 10, gap: 10 }}>
         <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
           {allContacts.length.toLocaleString()} live leads
-          {sheetImport.length > 0 && ` · ${sheetImport.reduce((s, r) => s + Object.values(r.leads).reduce((a, b) => a + b, 0), 0).toLocaleString()} imported`}
           {' · '}{adNames.length} unique ads
           {deletedAds.size > 0 && ` · ${deletedAds.size} hidden`}
         </span>
@@ -1242,6 +1246,7 @@ export default function AdsTracking() {
           mergeGroups={mergeGroups}
           allAdDailyInsights={allAdDailyInsights}
           onSyncMax={syncAdMax}
+          onDeleteLead={deleteContact}
           onUnmerge={unmergeGroup}
           onClose={() => setAdDetail(null)}
         />
