@@ -655,6 +655,7 @@ export default function AdsTracking() {
   // On mount: clear legacy sheet import data, load cache, sync leads
   useEffect(() => {
     dbClearStore('sheetImport').catch(() => {});
+    dbSetMeta('trackingColumns', null).catch(() => {});
     loadFromDB().then(async () => {
       const ts    = await dbGetMeta('lastSync');
       const stale = !ts || (Date.now() - new Date(ts).getTime() > 6 * 3600 * 1000);
@@ -766,14 +767,19 @@ export default function AdsTracking() {
 
   // ── Derived data ────────────────────────────────────────────────────────────
   const states = useMemo(() => {
-    if (sheetColumns.length > 0) return sheetColumns.map(c => c.key);
     const set = new Set();
+    // From GHL contacts
     for (const c of allContacts) {
       const s = extractState(c.utmCampaign);
       if (s) set.add(s);
     }
+    // From FB ads campaign names (catches states with no GHL leads yet)
+    for (const a of allAds) {
+      const s = extractState(a.campaignName);
+      if (s) set.add(s);
+    }
     return [...set].sort();
-  }, [sheetColumns, allContacts]);
+  }, [allContacts, allAds]);
 
   const orderedStates = useMemo(() => {
     if (!colOrder) return states;
@@ -909,9 +915,7 @@ export default function AdsTracking() {
   }
 
   function accountLabel(state) {
-    if (accountNames[state]) return accountNames[state];
-    const col = sheetColumns.find(c => c.key === state);
-    return col?.fullName || state;
+    return accountNames[state] || state;
   }
 
   const activeMetric = CHART_METRICS.find(m => m.key === chartMetric);
