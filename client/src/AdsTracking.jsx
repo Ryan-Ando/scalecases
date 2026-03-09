@@ -588,6 +588,7 @@ export default function AdsTracking() {
   const [chartPeriod, setChartPeriod]   = useState('90');
   const [sortKey, setSortKey]           = useState('date');
   const [sortDir, setSortDir]           = useState('asc');
+  const [activeTab, setActiveTab]       = useState('grid'); // 'grid' | 'daily'
   const [colOrder, setColOrder]         = useState(null);
   const [dragOverCol, setDragOverCol]   = useState(null);
   const dragColRef = useRef(null);
@@ -841,11 +842,20 @@ export default function AdsTracking() {
 
   const sortedAdNames = useMemo(() => {
     return [...adNames].sort((a, b) => {
+      // Ads with no date always sink to the bottom regardless of sort direction
+      if (sortKey === 'date') {
+        const aHas = !!firstUsed[a], bHas = !!firstUsed[b];
+        if (aHas && !bHas) return -1;
+        if (!aHas && bHas) return 1;
+        if (!aHas && !bHas) return 0;
+        const av = firstUsed[a], bv = firstUsed[b];
+        if (av < bv) return sortDir === 'asc' ? -1 : 1;
+        if (av > bv) return sortDir === 'asc' ?  1 : -1;
+        return 0;
+      }
       let av, bv;
       if (sortKey === 'name') {
         av = a.toLowerCase(); bv = b.toLowerCase();
-      } else if (sortKey === 'date') {
-        av = firstUsed[a] || '9999'; bv = firstUsed[b] || '9999';
       } else if (sortKey === 'total') {
         av = states.reduce((s, st) => s + (grid[a]?.[st] || 0), 0);
         bv = states.reduce((s, st) => s + (grid[b]?.[st] || 0), 0);
@@ -902,6 +912,26 @@ export default function AdsTracking() {
       return { date: date.slice(5), leads, spend, cpm, cpl };
     });
   }, [allDailyInsights, cutoffDate]);
+
+  // Daily breakdown rows — all campaign-level daily records sorted newest first
+  const dailyRows = useMemo(() => {
+    return [...allDailyInsights]
+      .filter(r => r.date_start)
+      .sort((a, b) => b.date_start.localeCompare(a.date_start));
+  }, [allDailyInsights]);
+
+  // Daily totals per date for the daily table
+  const dailyTotals = useMemo(() => {
+    const map = {};
+    for (const r of allDailyInsights) {
+      if (!r.date_start) continue;
+      if (!map[r.date_start]) map[r.date_start] = { spend: 0, impressions: 0, cpm_sum: 0, cpm_count: 0 };
+      map[r.date_start].spend       += parseFloat(r.spend)       || 0;
+      map[r.date_start].impressions += parseInt(r.impressions)   || 0;
+      if (r.cpm) { map[r.date_start].cpm_sum += parseFloat(r.cpm); map[r.date_start].cpm_count++; }
+    }
+    return map;
+  }, [allDailyInsights]);
 
   function saveAccountName(state, name) {
     const next = { ...accountNames, [state]: name.trim() || state };
@@ -988,22 +1018,86 @@ export default function AdsTracking() {
         </div>
       </div>
 
-      {/* Grid stats + row select toggle */}
+      {/* Tab toggle + Grid stats */}
       <div style={{ display: 'flex', alignItems: 'center', marginBottom: 10, gap: 10 }}>
+        <div style={{ display: 'flex', gap: 4 }}>
+          <button className={`btn btn--sm${activeTab === 'grid' ? ' btn--primary' : ''}`} onClick={() => setActiveTab('grid')}>Grid</button>
+          <button className={`btn btn--sm${activeTab === 'daily' ? ' btn--primary' : ''}`} onClick={() => setActiveTab('daily')}>Daily</button>
+        </div>
         <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
           {adNames.length} unique ads
           {deletedAds.size > 0 && ` · ${deletedAds.size} hidden`}
         </span>
-        <button
-          className={`btn btn--sm${selecting ? ' btn--primary' : ''}`}
-          style={{ marginLeft: 'auto' }}
-          onClick={() => { setSelecting(s => !s); setSelectedRows(new Set()); }}
-        >
-          {selecting ? 'Cancel Select' : 'Select Rows'}
-        </button>
+        {activeTab === 'grid' && (
+          <button
+            className={`btn btn--sm${selecting ? ' btn--primary' : ''}`}
+            style={{ marginLeft: 'auto' }}
+            onClick={() => { setSelecting(s => !s); setSelectedRows(new Set()); }}
+          >
+            {selecting ? 'Cancel Select' : 'Select Rows'}
+          </button>
+        )}
       </div>
 
-      {adNames.length === 0 ? (
+      {/* Daily breakdown table */}
+      {activeTab === 'daily' && (
+        <div style={{ overflowX: 'auto' }}>
+          {dailyRows.length === 0 ? (
+            <div className="empty" style={{ padding: 32 }}>No daily data — click Sync Now</div>
+          ) : (
+            <table className="tracking-grid" style={{ minWidth: 700 }}>
+              <thead>
+                <tr>
+                  <th className="tracking-th" style={{ textAlign: 'left', minWidth: 90 }}>Date</th>
+                  <th className="tracking-th" style={{ textAlign: 'left', minWidth: 200 }}>Campaign</th>
+                  <th className="tracking-th" style={{ textAlign: 'right', minWidth: 90 }}>Spend</th>
+                  <th className="tracking-th" style={{ textAlign: 'right', minWidth: 100 }}>Impressions</th>
+                  <th className="tracking-th" style={{ textAlign: 'right', minWidth: 80 }}>CPM</th>
+                </tr>
+              </thead>
+              <tbody>
+                {dailyRows.map((r, i) => {
+                  const isFirstForDate = i === 0 || dailyRows[i - 1].date_start !== r.date_start;
+                  const tot = dailyTotals[r.date_start] || {};
+                  return (
+                    <tr key={r.id || i} className="tracking-row">
+                      <td className="tracking-td" style={{ fontWeight: isFirstForDate ? 600 : 400 }}>
+                        {isFirstForDate ? r.date_start : ''}
+                      </td>
+                      <td className="tracking-td" style={{ fontSize: 12, maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {r.campaign_name || r.adset_name || r.ad_name || '—'}
+                      </td>
+                      <td className="tracking-td" style={{ textAlign: 'right' }}>
+                        ${(parseFloat(r.spend) || 0).toFixed(2)}
+                      </td>
+                      <td className="tracking-td" style={{ textAlign: 'right' }}>
+                        {(parseInt(r.impressions) || 0).toLocaleString()}
+                      </td>
+                      <td className="tracking-td" style={{ textAlign: 'right' }}>
+                        {r.cpm ? `$${parseFloat(r.cpm).toFixed(2)}` : '—'}
+                      </td>
+                    </tr>
+                  );
+                })}
+                {/* Daily totals footer grouped by date */}
+                {Object.entries(dailyTotals).sort((a, b) => b[0].localeCompare(a[0])).map(([date, t]) => (
+                  <tr key={`tot-${date}`} style={{ background: 'var(--surface-2, #f8fafc)', fontWeight: 600, fontSize: 12 }}>
+                    <td className="tracking-td" style={{ color: 'var(--text-muted)' }}>{date} total</td>
+                    <td className="tracking-td" />
+                    <td className="tracking-td" style={{ textAlign: 'right' }}>${t.spend.toFixed(2)}</td>
+                    <td className="tracking-td" style={{ textAlign: 'right' }}>{t.impressions.toLocaleString()}</td>
+                    <td className="tracking-td" style={{ textAlign: 'right' }}>
+                      {t.cpm_count > 0 ? `$${(t.cpm_sum / t.cpm_count).toFixed(2)}` : '—'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
+
+      {activeTab === 'grid' && adNames.length === 0 ? (
         <div className="empty">
           <div className="empty-icon">📊</div>
           <div className="empty-title">{syncing ? 'Syncing data…' : 'No data yet'}</div>
@@ -1011,7 +1105,7 @@ export default function AdsTracking() {
             {syncing ? 'This may take a moment on first sync.' : 'Click "Sync Now" to load your ads and leads.'}
           </div>
         </div>
-      ) : (
+      ) : activeTab === 'grid' ? (
         <div className="tracking-grid-wrap">
           <table className="tracking-grid">
             <thead>
@@ -1155,7 +1249,7 @@ export default function AdsTracking() {
             </tfoot>
           </table>
         </div>
-      )}
+      ) : null}
 
       {/* Floating action bar (1+ rows selected) */}
       {selecting && selectedRows.size >= 1 && (
