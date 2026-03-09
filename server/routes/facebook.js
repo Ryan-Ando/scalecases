@@ -79,10 +79,16 @@ async function fetchInsightsForAccount(account, level, datePreset, filters = {})
   if (filters.campaign_id) params.set('filtering', JSON.stringify([{ field: 'campaign.id', operator: 'EQUAL', value: filters.campaign_id }]));
   if (filters.adset_id) params.set('filtering', JSON.stringify([{ field: 'adset.id', operator: 'EQUAL', value: filters.adset_id }]));
 
-  const res = await fetch(`${FB_API}/${account}/insights?${params}`);
-  const json = await res.json();
-  if (json.error) throw new Error(`[${account}] ${json.error.message}`);
-  return json.data || [];
+  const all = [];
+  let url = `${FB_API}/${account}/insights?${params}`;
+  while (url) {
+    const res = await fetch(url);
+    const json = await res.json();
+    if (json.error) throw new Error(`[${account}] ${json.error.message}`);
+    all.push(...(json.data || []));
+    url = json.paging?.next || null;
+  }
+  return all;
 }
 
 // Fetch insights from all accounts and merge
@@ -96,11 +102,16 @@ async function fetchInsights(level, datePreset, filters = {}) {
 async function fetchFromAllAccounts(path, queryParams) {
   const accounts = adAccounts();
   const results = await Promise.all(accounts.map(async account => {
-    const params = new URLSearchParams({ ...queryParams, access_token: token(), limit: 500 });
-    const res = await fetch(`${FB_API}/${account}/${path}?${params}`);
-    const json = await res.json();
-    if (json.error) throw new Error(`[${account}] ${json.error.message}`);
-    return json.data || [];
+    const all = [];
+    let url = `${FB_API}/${account}/${path}?${new URLSearchParams({ ...queryParams, access_token: token(), limit: 500 })}`;
+    while (url) {
+      const res = await fetch(url);
+      const json = await res.json();
+      if (json.error) throw new Error(`[${account}] ${json.error.message}`);
+      all.push(...(json.data || []));
+      url = json.paging?.next || null;
+    }
+    return all;
   }));
   return results.flat();
 }
