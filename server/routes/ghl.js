@@ -19,15 +19,18 @@ const GHL_HEADERS = () => ({
 });
 
 
-// Paginate through all GHL contacts for the sub-account, optionally filtered by date range
+// Paginate through all GHL contacts using cursor-based pagination (startAfter / startAfterId)
 async function fetchAllContacts(startMs, endMs) {
   const all = [];
-  let page = 1;
+  let startAfter   = null;
+  let startAfterId = null;
 
   while (true) {
-    const params = new URLSearchParams({ locationId: locationId(), limit: 100, page });
+    const params = new URLSearchParams({ locationId: locationId(), limit: 100 });
     if (startMs) params.set('startDate', startMs);
     if (endMs)   params.set('endDate',   endMs);
+    if (startAfter)   params.set('startAfter',   startAfter);
+    if (startAfterId) params.set('startAfterId', startAfterId);
 
     const res = await fetch(`${GHL_API}/contacts/?${params}`, {
       headers: GHL_HEADERS(),
@@ -39,8 +42,14 @@ async function fetchAllContacts(startMs, endMs) {
     const batch = json.contacts || [];
     all.push(...batch);
 
+    // GHL returns nextPageUrl or meta with cursor info when there are more pages
     if (batch.length < 100) break;
-    page++;
+
+    // Use the last contact's dateAdded (ms) and id as the cursor for the next page
+    const last = batch[batch.length - 1];
+    startAfter   = last.dateAdded ? new Date(last.dateAdded).getTime() : null;
+    startAfterId = last.id || null;
+    if (!startAfter && !startAfterId) break;
   }
 
   return all;
