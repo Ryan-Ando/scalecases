@@ -696,82 +696,124 @@ tfoot .td-name { font-family: var(--sans); font-weight: 700; font-size: 13px; }
 .empty-desc { font-size: 13px; }
 
 /* ── Ads Tracking Tab ───────────────────────────────────────────────────────── */
+/* ── Ads Tracking Grid ──────────────────────────────────────────────────────── */
+
 .tracking-grid-wrap {
   overflow-x: auto;
   overflow-y: auto;
-  max-height: 70vh;
+  max-height: 72vh;
   border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border-radius: 10px;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.06);
 }
 
+.tracking-grid {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 13px;
+}
+
+/* Sticky header */
 .tracking-grid thead th {
   position: sticky;
   top: 0;
   z-index: 3;
 }
 
-.tracking-grid {
-  border-collapse: collapse;
-  width: 100%;
-  font-size: 12px;
-}
+/* ── Header cells ─────────────────────────────────────────────────────────── */
 
 .tracking-th-ad {
   text-align: left;
-  padding: 10px 14px;
-  background: var(--bg);
+  padding: 12px 16px;
+  background: #f8faf9;
   border-bottom: 2px solid var(--border);
   font-size: 11px;
-  font-weight: 600;
-  color: var(--text-muted);
+  font-weight: 700;
+  color: #64748b;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.06em;
   min-width: 240px;
   position: sticky;
   left: 0;
   z-index: 4;
 }
 
+/* Summary columns (Spend / CPL / CPC / Total) — slightly tinted bg */
 .tracking-th-state {
   text-align: center;
-  padding: 8px 12px;
-  background: var(--bg);
+  padding: 10px 12px;
+  background: #f8faf9;
   border-bottom: 2px solid var(--border);
   border-left: 1px solid var(--border);
   min-width: 80px;
   white-space: nowrap;
   position: relative;
+  font-size: 11px;
+  font-weight: 700;
+  color: #64748b;
+  letter-spacing: 0.03em;
 }
 
+.tracking-th-sortable { cursor: pointer; user-select: none; }
+.tracking-th-sortable:hover { background: #eef3f0; }
+.tracking-th-drag-over { background: var(--green-light) !important; border-left: 2px solid var(--green) !important; }
+
+/* Account name (editable) inside state header */
 .tracking-acct-name {
   border: none;
   background: none;
   cursor: pointer;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
   color: var(--text);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  padding: 2px 4px;
-  border-radius: 4px;
+  letter-spacing: 0.02em;
+  padding: 2px 6px;
+  border-radius: 5px;
+  transition: background 0.1s;
 }
 .tracking-acct-name:hover { background: var(--green-light); color: var(--green-dark); }
 
 .tracking-name-input {
-  width: 64px;
-  padding: 2px 6px;
-  font-size: 11px;
+  width: 70px;
+  padding: 3px 7px;
+  font-size: 12px;
   font-weight: 700;
-  text-transform: uppercase;
-  border: 1px solid var(--green);
-  border-radius: 4px;
+  border: 1.5px solid var(--green);
+  border-radius: 5px;
   background: var(--surface);
   color: var(--text);
   outline: none;
 }
 
+/* State abbreviation label */
+.tracking-state-key {
+  font-size: 10px;
+  font-weight: 600;
+  color: #94a3b8;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+/* Sort button inside column header */
+.tracking-sort-btn {
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-size: 10px;
+  color: #94a3b8;
+  padding: 2px 6px;
+  border-radius: 4px;
+  line-height: 1.4;
+  transition: background 0.1s, color 0.1s;
+}
+.tracking-sort-btn:hover { background: rgba(0,0,0,0.06); color: var(--text); }
+.tracking-sort-btn--active { color: var(--green-dark); font-weight: 700; }
+
+/* ── Body cells ───────────────────────────────────────────────────────────── */
+
+/* Ad name (sticky left) */
 .tracking-td-ad {
-  padding: 9px 14px;
+  padding: 10px 16px;
   border-bottom: 1px solid var(--border);
   background: var(--surface);
   position: sticky;
@@ -782,130 +824,153 @@ tfoot .td-name { font-family: var(--sans); font-weight: 700; font-size: 13px; }
 
 .tracking-ad-name {
   display: block;
-  max-width: 240px;
+  max-width: 260px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 500;
+  color: var(--text);
+  line-height: 1.4;
 }
 
+/* Date cell */
+.tracking-td-date {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  border-left: 1px solid var(--border);
+  font-size: 12px;
+  color: #64748b;
+  font-family: var(--mono);
+  white-space: nowrap;
+  background: var(--surface);
+  text-align: center;
+}
+
+/* Summary column cells (Spend / CPL / CPC / Total) */
+.tracking-td-total {
+  text-align: center;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  border-left: 1px solid var(--border);
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 600;
+  background: #fafbfa;
+  min-width: 64px;
+}
+
+/* State data cells */
 .tracking-td-cell {
   text-align: center;
-  padding: 8px 10px;
+  padding: 6px 8px;
   border-bottom: 1px solid var(--border);
   border-left: 1px solid var(--border);
   background: var(--surface);
 }
 
+/* The clickable number button inside a state cell */
 .tracking-cell-btn {
   border: none;
-  background: var(--green-light);
-  color: var(--green-dark);
-  font-weight: 700;
-  font-size: 12px;
-  font-family: var(--mono);
-  padding: 3px 10px;
-  border-radius: 12px;
+  background: none;
   cursor: pointer;
-  transition: background 0.1s;
+  border-radius: 7px;
+  padding: 6px 10px;
+  transition: background 0.12s;
+  min-width: 52px;
 }
-.tracking-cell-btn:hover { background: #b6dfc7; }
+.tracking-cell-btn:hover { background: #e8f5ee; }
+
+/* Leads number */
+.cell-leads {
+  font-size: 15px;
+  font-weight: 700;
+  font-family: var(--mono);
+  color: var(--text);
+  line-height: 1;
+}
+
+/* Pipe separator */
+.cell-sep {
+  font-size: 12px;
+  color: #cbd5e1;
+  font-weight: 300;
+  line-height: 1;
+}
+
+/* Cases number */
+.cell-cases {
+  font-size: 15px;
+  font-weight: 700;
+  font-family: var(--mono);
+  color: #3b82f6;
+  line-height: 1;
+}
+
+.cell-zero { opacity: 0.28; }
 
 .tracking-cell-empty {
-  color: var(--text-muted);
-  font-size: 11px;
+  color: #cbd5e1;
+  font-size: 13px;
 }
 
-.tracking-td-total {
-  text-align: center;
-  padding: 9px 10px;
-  border-bottom: 1px solid var(--border);
-  border-left: 1px solid var(--border);
-  font-family: var(--mono);
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text-muted);
-  background: var(--bg);
-  min-width: 64px;
-}
-
+/* Footer row */
 .tracking-tfoot-label {
   font-weight: 700;
   color: var(--text);
   border-top: 2px solid var(--border);
-  background: #f8f9fa;
+  background: #f4f7f5;
 }
 
-.tracking-th-sortable {
-  cursor: pointer;
-  user-select: none;
-}
-.tracking-th-sortable:hover { background: #eef2f0; }
-
-.tracking-th-drag-over {
-  background: var(--green-light) !important;
-  border-left: 2px solid var(--green) !important;
-}
-
-.tracking-td-date {
-  padding: 9px 12px;
-  border-bottom: 1px solid var(--border);
-  border-left: 1px solid var(--border);
-  font-size: 11px;
-  color: var(--text-muted);
-  font-family: var(--mono);
-  white-space: nowrap;
-  background: var(--surface);
-}
-
-.tracking-sort-btn {
-  border: none;
-  background: none;
-  cursor: pointer;
-  font-size: 10px;
-  color: var(--text-muted);
-  padding: 1px 4px;
-  border-radius: 3px;
-  line-height: 1;
-}
-.tracking-sort-btn:hover { background: rgba(0,0,0,0.06); color: var(--text); }
-.tracking-sort-btn--active { color: var(--green-dark); font-weight: 700; }
-
-.tracking-state-key {
-  font-size: 9px;
-  font-weight: 700;
-  color: var(--text-muted);
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  opacity: 0.7;
-}
-
+/* Row hover highlight */
 .tracking-grid tbody tr:hover .tracking-td-ad,
 .tracking-grid tbody tr:hover .tracking-td-cell,
-.tracking-grid tbody tr:hover .tracking-td-total {
-  background: #f5faf7;
-}
+.tracking-grid tbody tr:hover .tracking-td-total,
+.tracking-grid tbody tr:hover .tracking-td-date { background: #f2faf6; }
 
-/* Sync button — hidden until row hover */
+/* Selected row */
+.tracking-row-selected .tracking-td-ad,
+.tracking-row-selected .tracking-td-cell,
+.tracking-row-selected .tracking-td-total,
+.tracking-row-selected .tracking-td-date { background: #ecfdf5; }
+
+/* ── Row / column action buttons ──────────────────────────────────────────── */
+
 .ad-row-sync-btn {
   border: none;
   background: none;
   cursor: pointer;
   color: #94a3b8;
-  font-size: 14px;
-  padding: 0 3px;
-  border-radius: 3px;
+  font-size: 15px;
+  padding: 2px 4px;
+  border-radius: 4px;
   line-height: 1;
   opacity: 0;
-  transition: opacity 0.1s;
+  transition: opacity 0.12s;
   flex-shrink: 0;
 }
 .tracking-grid tbody tr:hover .ad-row-sync-btn { opacity: 1; }
 .ad-row-sync-btn:hover { color: #6366f1; background: #ede9fe; }
-.ad-row-sync-btn:disabled { cursor: not-allowed; opacity: 0.4 !important; }
+.ad-row-sync-btn:disabled { cursor: not-allowed; opacity: 0.3 !important; }
 
-/* Synced indicator badge */
+.ad-row-delete-btn {
+  border: none;
+  background: none;
+  cursor: pointer;
+  color: #94a3b8;
+  font-size: 16px;
+  padding: 2px 4px;
+  border-radius: 4px;
+  line-height: 1;
+  opacity: 0;
+  transition: opacity 0.12s;
+  flex-shrink: 0;
+}
+.tracking-grid tbody tr:hover .ad-row-delete-btn { opacity: 1; }
+.ad-row-delete-btn:hover { color: #dc2626; background: #fee2e2; }
+
+/* ── Badges ───────────────────────────────────────────────────────────────── */
+
 .tracking-synced-badge {
   font-size: 9px;
   font-weight: 700;
@@ -913,77 +978,53 @@ tfoot .td-name { font-family: var(--sans); font-weight: 700; font-size: 13px; }
   flex-shrink: 0;
 }
 
-/* Delete button — hidden until row hover */
-.ad-row-delete-btn {
-  border: none;
-  background: none;
-  cursor: pointer;
-  color: #94a3b8;
-  font-size: 15px;
-  padding: 0 3px;
-  border-radius: 3px;
-  line-height: 1;
-  opacity: 0;
-  transition: opacity 0.1s;
-  flex-shrink: 0;
-}
-.tracking-grid tbody tr:hover .ad-row-delete-btn { opacity: 1; }
-.ad-row-delete-btn:hover { color: #dc2626; background: #fee2e2; }
-
-/* Merge badge */
 .tracking-merge-badge {
-  font-size: 9px;
-  font-weight: 700;
-  background: #e0f2fe;
-  color: #0369a1;
-  border-radius: 4px;
-  padding: 1px 5px;
+  font-size: 10px;
+  font-weight: 600;
+  background: #dbeafe;
+  color: #1d4ed8;
+  border-radius: 5px;
+  padding: 1px 6px;
   white-space: nowrap;
   flex-shrink: 0;
 }
 
-/* Selected row highlight */
-.tracking-row-selected .tracking-td-ad,
-.tracking-row-selected .tracking-td-cell,
-.tracking-row-selected .tracking-td-total,
-.tracking-row-selected .tracking-td-date {
-  background: #f0fdf4;
-}
+/* ── Resize handles ───────────────────────────────────────────────────────── */
 
-/* Column + row resize handles */
 .col-resize-handle {
   position: absolute;
-  right: 0;
-  top: 0;
-  bottom: 0;
+  right: 0; top: 0; bottom: 0;
   width: 5px;
   cursor: col-resize;
   user-select: none;
   z-index: 4;
 }
-.col-resize-handle:hover, .col-resize-handle:active { background: var(--green); opacity: 0.5; }
+.col-resize-handle:hover, .col-resize-handle:active { background: var(--green); opacity: 0.45; }
 
 .row-resize-handle {
   position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
+  left: 0; right: 0; bottom: 0;
   height: 4px;
   cursor: row-resize;
   user-select: none;
   z-index: 2;
 }
-.row-resize-handle:hover, .row-resize-handle:active { background: var(--green); opacity: 0.5; }
+.row-resize-handle:hover, .row-resize-handle:active { background: var(--green); opacity: 0.45; }
 
-/* Cell stats (spend / CPL / CPC inside state cell) */
-.cell-stats {
+/* Column header stat block */
+.col-stat-block {
+  margin-top: 6px;
   display: flex;
-  gap: 4px;
-  font-size: 10px;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  padding: 5px 8px;
+  background: rgba(0,0,0,0.03);
+  border-radius: 6px;
   font-family: var(--mono);
-  justify-content: center;
-  margin-top: 2px;
-  opacity: 0.85;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.4;
 }
 
 @media (max-width: 900px) {

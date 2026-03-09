@@ -1344,8 +1344,8 @@ export default function AdsTracking() {
                         Sort {sortKey === state && <SortArrow dir={sortDir} />}
                       </button>
                       {colSpend > 0 && (
-                        <div style={{ marginTop: 4, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2, fontSize: 10, fontFamily: 'var(--mono)' }}>
-                          <span style={{ color: '#94a3b8' }}>${colSpend.toLocaleString('en-US', { maximumFractionDigits: 0 })}</span>
+                        <div className="col-stat-block">
+                          <span style={{ color: '#64748b' }}>${colSpend.toLocaleString('en-US', { maximumFractionDigits: 0 })}</span>
                           {colLeads > 0 && <span style={{ color: '#16a34a' }}>CPL ${(colSpend / colLeads).toFixed(0)}</span>}
                           {colCases > 0 && <span style={{ color: '#3b82f6' }}>CPC ${(colSpend / colCases).toFixed(0)}</span>}
                         </div>
@@ -1440,11 +1440,11 @@ export default function AdsTracking() {
                               <button
                                 className="tracking-cell-btn"
                                 onClick={e => { e.stopPropagation(); setAdDetail({ adName, state }); }}
-                                style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 3, padding: '4px 6px', width: '100%', fontWeight: 600 }}
+                                style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5 }}
                               >
-                                <span>{leads > 0 ? leads : <span style={{ color: 'var(--text-muted)' }}>0</span>}</span>
-                                <span style={{ color: '#cbd5e1', fontSize: 10 }}>|</span>
-                                <span style={{ color: '#3b82f6' }}>{cases > 0 ? cases : <span style={{ opacity: 0.4 }}>0</span>}</span>
+                                <span className={`cell-leads${leads === 0 ? ' cell-zero' : ''}`}>{leads}</span>
+                                <span className="cell-sep">|</span>
+                                <span className={`cell-cases${cases === 0 ? ' cell-zero' : ''}`}>{cases}</span>
                               </button>
                             )
                             : <span className="tracking-cell-empty">—</span>
@@ -1486,10 +1486,10 @@ export default function AdsTracking() {
                   return (
                     <td key={state} className="tracking-td-total tracking-tfoot-label">
                       {(leads > 0 || cases > 0) ? (
-                        <span style={{ display: 'flex', alignItems: 'center', gap: 3, justifyContent: 'center' }}>
-                          <span>{leads}</span>
-                          <span style={{ color: '#cbd5e1', fontSize: 10 }}>|</span>
-                          <span style={{ color: '#3b82f6' }}>{cases}</span>
+                        <span style={{ display: 'flex', alignItems: 'center', gap: 5, justifyContent: 'center' }}>
+                          <span className="cell-leads">{leads}</span>
+                          <span className="cell-sep">|</span>
+                          <span className="cell-cases">{cases}</span>
                         </span>
                       ) : '—'}
                     </td>
