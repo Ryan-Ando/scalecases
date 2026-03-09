@@ -23,14 +23,16 @@ async function getAuthClient() {
 }
 
 // GET /api/sheets/cases?start=ISO&end=ISO
-// Reads name (col A), phone (col B), date (col F) from the sheet.
-// Optionally filters by date range. Returns [{ name, phone, date }].
+// Reads name (col A), phone (col B), state (col D), date (col F) from the sheet.
+// Optionally filters by date range. Returns [{ name, phone, state, date }].
+// Uses SHEETS_ID + SHEETS_TAB_NAME env vars (already configured).
 router.get('/cases', async (req, res) => {
   try {
-    const { sheetId, tabName } = getSheetConfig();
+    const { sheetId } = getSheetConfig();
     const auth = await getAuthClient();
     const sheets = google.sheets({ version: 'v4', auth });
 
+    const tabName = process.env.SHEETS_TAB_NAME || 'Sheet1';
     const response = await sheets.spreadsheets.values.get({
       spreadsheetId: sheetId,
       range: `${tabName}!A2:F`,

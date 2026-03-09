@@ -122,49 +122,58 @@ function AdDetailModal({ adName, state, allAds, sheetByName, accountLabel, merge
   const [sortKey, setSortKey]       = useState('spend');
   const [sortDir, setSortDir]       = useState('desc');
   const [modalMetric, setModalMetric] = useState('leads');
-  const [caseSortKey, setCaseSortKey] = useState('dateAdded');
+  const [caseSortKey, setCaseSortKey] = useState('date');
   const [caseSortDir, setCaseSortDir] = useState('desc');
 
-  // GHL contacts — fetched on-demand when modal opens
-  const [ghlContacts, setGhlContacts]   = useState([]);
-  const [loadingGhl, setLoadingGhl]     = useState(false);
-  const [ghlError, setGhlError]         = useState('');
+  // GHL contacts + sheet cases — fetched on-demand when modal opens
+  const [ghlContacts, setGhlContacts] = useState([]);
+  const [sheetCases, setSheetCases]   = useState([]);
+  const [loadingGhl, setLoadingGhl]   = useState(false);
+  const [ghlError, setGhlError]       = useState('');
 
   useEffect(() => {
     let cancelled = false;
-    async function fetchGhl() {
+    async function fetchData() {
       setLoadingGhl(true);
       setGhlError('');
       try {
-        // Load cached first for instant display
+        // Load cached GHL contacts first for instant display
         const cached = await dbGetAll('ghlContacts');
         if (!cancelled) setGhlContacts(cached);
 
-        // Check if cache is stale (> 1 hour)
+        // Determine if GHL cache is stale (> 1 hour)
         const lastGhlSync = await dbGetMeta('lastGhlSync');
         const stale = !lastGhlSync || (Date.now() - new Date(lastGhlSync).getTime() > 3600 * 1000);
-        if (!stale) { setLoadingGhl(false); return; }
 
         const since = new Date(Date.now() - 2 * 365 * 864e5).toISOString();
         const now   = new Date().toISOString();
-        const fresh = await apiFetch(`/api/ghl/contacts?start=${encodeURIComponent(since)}&end=${encodeURIComponent(now)}`);
-        await dbUpsert('ghlContacts', fresh);
-        await dbSetMeta('lastGhlSync', now);
-        const all = await dbGetAll('ghlContacts');
-        if (!cancelled) setGhlContacts(all);
+
+        const [freshGhl, sheetData] = await Promise.all([
+          stale
+            ? apiFetch(`/api/ghl/contacts?start=${encodeURIComponent(since)}&end=${encodeURIComponent(now)}`)
+            : Promise.resolve(null),
+          apiFetch('/api/sheets/cases'),
+        ]);
+
+        if (freshGhl && !cancelled) {
+          await dbUpsert('ghlContacts', freshGhl);
+          await dbSetMeta('lastGhlSync', now);
+          const all = await dbGetAll('ghlContacts');
+          if (!cancelled) setGhlContacts(all);
+        }
+        if (!cancelled) setSheetCases(sheetData);
       } catch (err) {
         if (!cancelled) setGhlError(err.message);
       } finally {
         if (!cancelled) setLoadingGhl(false);
       }
     }
-    fetchGhl();
+    fetchData();
     return () => { cancelled = true; };
   }, []);
 
-  async function deleteContact(id) {
-    await dbDelete('ghlContacts', id);
-    setGhlContacts(prev => prev.filter(c => c.id !== id));
+  function normalizePhone(p) {
+    return (p || '').replace(/\D/g, '').slice(-10);
   }
 
   // Merge group this ad belongs to as canonical
@@ -198,17 +207,41 @@ function AdDetailModal({ adName, state, allAds, sheetByName, accountLabel, merge
     }).map(a => ({ id: a.adsetId, name: a.adsetName, campaign: a.campaignName }));
   }, [fbInstances]);
 
-  // GHL leads for this ad (all member names) + state
-  const ghlLeads = useMemo(() =>
-    ghlContacts.filter(c => {
-      const name = (c.utmContent || '').trim();
-      return effectiveNames.includes(name) && extractState(c.utmCampaign) === state;
-    }),
-    [ghlContacts, effectiveNames, state]
+  // Build phone → GHL contact lookup (for UTM attribution)
+  const ghlByPhone = useMemo(() => {
+    const map = {};
+    for (const c of ghlContacts) {
+      const key = normalizePhone(c.phone);
+      if (key) map[key] = c;
+    }
+    return map;
+  }, [ghlContacts]);
+
+  // Enrich sheet cases with UTM data from matching GHL contact (by phone)
+  const attributedCases = useMemo(() =>
+    sheetCases
+      .map(sc => {
+        const contact = ghlByPhone[normalizePhone(sc.phone)];
+        return contact
+          ? { ...sc, utmCampaign: contact.utmCampaign, utmContent: contact.utmContent }
+          : null;
+      })
+      .filter(Boolean),
+    [sheetCases, ghlByPhone]
   );
 
-  const importedCount = sheetByName[adName]?.leads?.[state] || 0;
-  const totalLeads    = ghlLeads.length + importedCount;
+  // Cases for this specific ad + state
+  const cases = useMemo(() =>
+    attributedCases.filter(c => {
+      const an = (c.utmContent || '').toLowerCase().trim();
+      const matchesAd    = effectiveNames.some(n => n.toLowerCase().trim() === an);
+      const matchesState = (c.state || '').toUpperCase() === state;
+      return matchesAd && matchesState;
+    }),
+    [attributedCases, effectiveNames, state]
+  );
+
+  const totalLeads = cases.length;
 
   // Use stored ad-level daily insights (populated by syncAdMax)
   const fbAdIds = useMemo(() => new Set(fbInstances.map(a => a.id).filter(Boolean)), [fbInstances]);
@@ -228,9 +261,9 @@ function AdDetailModal({ adName, state, allAds, sheetByName, accountLabel, merge
   // Chart: GHL leads/day + FB ad-level spend/day
   const chartData = useMemo(() => {
     const leadsMap = {};
-    for (const c of loadingGhl ? [] : ghlLeads) {
-      if (!c.dateAdded) continue;
-      const day = c.dateAdded.slice(0, 10);
+    for (const c of loadingGhl ? [] : cases) {
+      if (!c.date) continue;
+      const day = c.date.slice(0, 10);
       if (cutoff && day < cutoff) continue;
       leadsMap[day] = (leadsMap[day] || 0) + 1;
     }
@@ -246,7 +279,7 @@ function AdDetailModal({ adName, state, allAds, sheetByName, accountLabel, merge
       leads: leadsMap[date] || 0,
       spend: +(spendMap[date] || 0).toFixed(2),
     }));
-  }, [ghlLeads, adDailyInsights, cutoff]);
+  }, [cases, adDailyInsights, cutoff]);
 
   // Table rows: one per FB ad instance
   const tableRows = useMemo(() =>
@@ -501,14 +534,13 @@ function AdDetailModal({ adName, state, allAds, sheetByName, accountLabel, merge
           {ghlError && (
             <div style={{ padding: '8px 12px', fontSize: 12, color: '#dc2626', background: '#fee2e2', borderRadius: 6, marginTop: 8 }}>{ghlError}</div>
           )}
-          {ghlLeads.length > 0 && (() => {
+          {cases.length > 0 && (() => {
             const CASE_COLS = [
-              { key: 'dateAdded', label: 'Date'    },
-              { key: 'name',      label: 'Name'    },
-              { key: 'phone',     label: 'Phone'   },
-              { key: 'email',     label: 'Email'   },
+              { key: 'date',  label: 'Date'  },
+              { key: 'name',  label: 'Name'  },
+              { key: 'phone', label: 'Phone' },
             ];
-            const sorted = [...ghlLeads].sort((a, b) => {
+            const sorted = [...cases].sort((a, b) => {
               const av = a[caseSortKey] || '', bv = b[caseSortKey] || '';
               if (av < bv) return caseSortDir === 'asc' ? -1 : 1;
               if (av > bv) return caseSortDir === 'asc' ?  1 : -1;
@@ -516,12 +548,12 @@ function AdDetailModal({ adName, state, allAds, sheetByName, accountLabel, merge
             });
             function handleCaseSort(key) {
               if (caseSortKey === key) setCaseSortDir(d => d === 'asc' ? 'desc' : 'asc');
-              else { setCaseSortKey(key); setCaseSortDir(key === 'dateAdded' ? 'desc' : 'asc'); }
+              else { setCaseSortKey(key); setCaseSortDir(key === 'date' ? 'desc' : 'asc'); }
             }
             return (
               <div style={{ marginTop: 24 }}>
                 <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)', marginBottom: 8 }}>
-                  Cases ({ghlLeads.length})
+                  Cases ({cases.length})
                   {loadingGhl && <span style={{ fontWeight: 400, marginLeft: 8, textTransform: 'none' }}>refreshing…</span>}
                 </div>
                 <div style={{ overflowX: 'auto' }}>
@@ -538,32 +570,19 @@ function AdDetailModal({ adName, state, allAds, sheetByName, accountLabel, merge
                             {col.label}{caseSortKey === col.key && <SortArrow dir={caseSortDir} />}
                           </th>
                         ))}
-                        <th className="tracking-th-state" style={{ width: 36 }} />
                       </tr>
                     </thead>
                     <tbody>
-                      {sorted.map(c => (
-                        <tr key={c.id} className="tracking-row">
+                      {sorted.map((c, i) => (
+                        <tr key={c.phone + i} className="tracking-row">
                           <td className="tracking-td-cell" style={{ whiteSpace: 'nowrap', fontSize: 12 }}>
-                            {c.dateAdded ? fmtDate(c.dateAdded) : '—'}
+                            {c.date ? fmtDate(c.date) : '—'}
                           </td>
                           <td className="tracking-td-cell" style={{ fontWeight: 500 }}>
                             {c.name || '—'}
                           </td>
                           <td className="tracking-td-cell" style={{ fontSize: 12 }}>
                             {fmtPhone(c.phone) || '—'}
-                          </td>
-                          <td className="tracking-td-cell" style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                            {c.email || '—'}
-                          </td>
-                          <td className="tracking-td-cell" style={{ textAlign: 'center', padding: '0 4px' }}>
-                            <button
-                              onClick={() => deleteContact(c.id)}
-                              style={{ border: 'none', background: 'none', cursor: 'pointer', color: '#94a3b8', fontSize: 15, padding: '2px 6px', borderRadius: 4, lineHeight: 1 }}
-                              title="Remove case"
-                              onMouseEnter={e => { e.currentTarget.style.color = '#dc2626'; e.currentTarget.style.background = '#fee2e2'; }}
-                              onMouseLeave={e => { e.currentTarget.style.color = '#94a3b8'; e.currentTarget.style.background = 'none'; }}
-                            >×</button>
                           </td>
                         </tr>
                       ))}
@@ -574,7 +593,7 @@ function AdDetailModal({ adName, state, allAds, sheetByName, accountLabel, merge
             );
           })()}
 
-          {fbInstances.length === 0 && ghlLeads.length === 0 && (
+          {fbInstances.length === 0 && cases.length === 0 && (
             <div className="empty" style={{ padding: 48 }}>No data found for this ad</div>
           )}
         </div>
@@ -627,6 +646,14 @@ export default function AdsTracking() {
   const [colOrder, setColOrder]         = useState(null);
   const [dragOverCol, setDragOverCol]   = useState(null);
   const dragColRef = useRef(null);
+
+  // Cases toggle
+  const [viewMode, setViewMode]       = useState('leads'); // 'leads' | 'cases'
+  const [ghlContacts, setGhlContacts] = useState([]);
+  const [sheetCases, setSheetCases]   = useState([]);
+  const [loadingCases, setLoadingCases] = useState(false);
+  const [casesError, setCasesError]   = useState('');
+  const casesLoadedRef = useRef(false);
 
   // Row selection / merge
   const [selecting, setSelecting]     = useState(false);
@@ -685,6 +712,44 @@ export default function AdsTracking() {
     setMergeGroups(merges || []);
   }
 
+  // ── Cases fetch (lazy, on first toggle to Cases view) ───────────────────────
+  async function loadCases() {
+    if (casesLoadedRef.current) return;
+    casesLoadedRef.current = true;
+    setLoadingCases(true);
+    setCasesError('');
+    try {
+      const cached = await dbGetAll('ghlContacts');
+      setGhlContacts(cached);
+
+      const lastGhlSync = await dbGetMeta('lastGhlSync');
+      const stale = !lastGhlSync || (Date.now() - new Date(lastGhlSync).getTime() > 3600 * 1000);
+      const since = new Date(Date.now() - 2 * 365 * 864e5).toISOString();
+      const now   = new Date().toISOString();
+
+      const [freshGhl, sheetData] = await Promise.all([
+        stale ? apiFetch(`/api/ghl/contacts?start=${encodeURIComponent(since)}&end=${encodeURIComponent(now)}`) : Promise.resolve(null),
+        apiFetch('/api/sheets/cases'),
+      ]);
+
+      if (freshGhl) {
+        await dbUpsert('ghlContacts', freshGhl);
+        await dbSetMeta('lastGhlSync', now);
+        const all = await dbGetAll('ghlContacts');
+        setGhlContacts(all);
+      }
+      setSheetCases(sheetData);
+    } catch (err) {
+      setCasesError(err.message);
+      casesLoadedRef.current = false; // allow retry
+    } finally {
+      setLoadingCases(false);
+    }
+  }
+
+  useEffect(() => {
+    if (viewMode === 'cases') loadCases();
+  }, [viewMode]);
 
   // ── FB sync ─────────────────────────────────────────────────────────────────
   const sync = useCallback(async () => {
@@ -881,6 +946,48 @@ export default function AdsTracking() {
     return map;
   }, [adNames, states, activeAds, deletedAds, memberToCanonical]);
 
+  // ── Cases grid (sheet cases attributed via GHL UTM) ────────────────────────
+  const ghlByPhone = useMemo(() => {
+    const map = {};
+    for (const c of ghlContacts) {
+      const key = (c.phone || '').replace(/\D/g, '').slice(-10);
+      if (key) map[key] = c;
+    }
+    return map;
+  }, [ghlContacts]);
+
+  const attributedCases = useMemo(() =>
+    sheetCases
+      .map(sc => {
+        const key = (sc.phone || '').replace(/\D/g, '').slice(-10);
+        const contact = ghlByPhone[key];
+        return contact
+          ? { ...sc, utmContent: contact.utmContent }
+          : null;
+      })
+      .filter(Boolean),
+    [sheetCases, ghlByPhone]
+  );
+
+  const caseGrid = useMemo(() => {
+    const map = {};
+    for (const adName of adNames) {
+      map[adName] = {};
+      for (const st of states) map[adName][st] = 0;
+    }
+    for (const c of attributedCases) {
+      const rawAdName = (c.utmContent || '').trim();
+      const canonical = memberToCanonical[rawAdName] || rawAdName;
+      const st = (c.state || '').toUpperCase();
+      if (map[canonical]?.[st] !== undefined) {
+        map[canonical][st]++;
+      }
+    }
+    return map;
+  }, [adNames, states, attributedCases, memberToCanonical]);
+
+  const activeGrid = viewMode === 'cases' ? caseGrid : grid;
+
   // First used: earliest date among all members' ad names
   const firstUsed = useMemo(() => {
     const map = {};
@@ -911,17 +1018,17 @@ export default function AdsTracking() {
       if (sortKey === 'name') {
         av = a.toLowerCase(); bv = b.toLowerCase();
       } else if (sortKey === 'total') {
-        av = states.reduce((s, st) => s + (grid[a]?.[st] || 0), 0);
-        bv = states.reduce((s, st) => s + (grid[b]?.[st] || 0), 0);
+        av = states.reduce((s, st) => s + (activeGrid[a]?.[st] || 0), 0);
+        bv = states.reduce((s, st) => s + (activeGrid[b]?.[st] || 0), 0);
       } else {
-        av = grid[a]?.[sortKey] || 0;
-        bv = grid[b]?.[sortKey] || 0;
+        av = activeGrid[a]?.[sortKey] || 0;
+        bv = activeGrid[b]?.[sortKey] || 0;
       }
       if (av < bv) return sortDir === 'asc' ? -1 : 1;
       if (av > bv) return sortDir === 'asc' ?  1 : -1;
       return 0;
     });
-  }, [adNames, sortKey, sortDir, grid, firstUsed, states]);
+  }, [adNames, sortKey, sortDir, activeGrid, firstUsed, states]);
 
   function handleSort(key) {
     if (sortKey === key) setSortDir(d => d === 'asc' ? 'desc' : 'asc');
@@ -1075,12 +1182,31 @@ export default function AdsTracking() {
       </div>
 
       {/* Grid stats */}
-      <div style={{ display: 'flex', alignItems: 'center', marginBottom: 10, gap: 10 }}>
+      <div style={{ display: 'flex', alignItems: 'center', marginBottom: 10, gap: 10, flexWrap: 'wrap' }}>
         <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
           {adNames.length} unique ads
           {deletedAds.size > 0 && ` · ${deletedAds.size} hidden`}
           {rangeAds && ` · ${rangeStart} – ${rangeEnd}`}
         </span>
+        <div style={{ display: 'flex', gap: 2, background: 'var(--border)', borderRadius: 7, padding: 2 }}>
+          <button
+            className={`btn btn--sm${viewMode === 'leads' ? ' btn--primary' : ''}`}
+            style={{ borderRadius: 5 }}
+            onClick={() => setViewMode('leads')}
+          >Leads</button>
+          <button
+            className={`btn btn--sm${viewMode === 'cases' ? ' btn--primary' : ''}`}
+            style={{ borderRadius: 5 }}
+            onClick={() => setViewMode('cases')}
+          >Cases</button>
+        </div>
+        {viewMode === 'cases' && loadingCases && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Loading cases…</span>}
+        {viewMode === 'cases' && casesError && <span style={{ fontSize: 11, color: '#dc2626' }}>{casesError}</span>}
+        {viewMode === 'cases' && !loadingCases && !casesError && (
+          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+            {sheetCases.length} sheet cases · {attributedCases.length} attributed
+          </span>
+        )}
         <button
           className={`btn btn--sm${selecting ? ' btn--primary' : ''}`}
           style={{ marginLeft: 'auto' }}
@@ -1159,7 +1285,7 @@ export default function AdsTracking() {
             </thead>
             <tbody>
               {sortedAdNames.map(adName => {
-                const row        = grid[adName] || {};
+                const row        = activeGrid[adName] || {};
                 const mergeGroup = mergeGroups.find(g => g.canonical === adName);
                 const total      = orderedStates.reduce((s, st) => s + (row[st] || 0), 0);
                 const isSelected = selectedRows.has(adName);
@@ -1232,10 +1358,10 @@ export default function AdsTracking() {
                 <td className="tracking-td-ad tracking-tfoot-label">Total</td>
                 <td className="tracking-td-date tracking-tfoot-label" />
                 <td className="tracking-td-total tracking-tfoot-label">
-                  {adNames.reduce((s, a) => s + orderedStates.reduce((s2, st) => s2 + (grid[a]?.[st] || 0), 0), 0) || '—'}
+                  {adNames.reduce((s, a) => s + orderedStates.reduce((s2, st) => s2 + (activeGrid[a]?.[st] || 0), 0), 0) || '—'}
                 </td>
                 {orderedStates.map(state => {
-                  const total = adNames.reduce((s, a) => s + (grid[a]?.[state] || 0), 0);
+                  const total = adNames.reduce((s, a) => s + (activeGrid[a]?.[state] || 0), 0);
                   return <td key={state} className="tracking-td-total tracking-tfoot-label">{total > 0 ? total : '—'}</td>;
                 })}
               </tr>
