@@ -19,8 +19,8 @@ const GHL_HEADERS = () => ({
 });
 
 
-// Paginate GHL contacts newest-first, stopping once we pass the startMs cutoff.
-// GHL v2 does not support startDate/endDate filtering — date range must be done client-side.
+// Paginate all GHL contacts and filter by date range client-side.
+// GHL v2 does not support date filtering params; sortOrder is not accepted.
 async function fetchAllContacts(startMs, endMs) {
   const all = [];
   let startAfter   = null;
@@ -30,8 +30,7 @@ async function fetchAllContacts(startMs, endMs) {
     const params = new URLSearchParams({
       locationId: locationId(),
       limit: 100,
-      sortBy: 'dateAdded',
-      sortOrder: 'desc',
+      sortBy: 'date_added',
     });
     if (startAfter)   params.set('startAfter',   startAfter);
     if (startAfterId) params.set('startAfterId', startAfterId);
@@ -46,17 +45,15 @@ async function fetchAllContacts(startMs, endMs) {
     const batch = json.contacts || [];
     if (!batch.length) break;
 
-    // Filter to the requested date window
     for (const c of batch) {
       const t = c.dateAdded ? new Date(c.dateAdded).getTime() : null;
-      if (endMs   && t && t > endMs)   continue; // newer than window, skip
-      if (startMs && t && t < startMs) { return all; } // past the window, done
+      if (startMs && t && t < startMs) continue;
+      if (endMs   && t && t > endMs)   continue;
       all.push(c);
     }
 
     if (batch.length < 100) break;
 
-    // Advance cursor using last contact in batch
     const last = batch[batch.length - 1];
     startAfter   = last.dateAdded ? new Date(last.dateAdded).getTime() : null;
     startAfterId = last.id || null;
