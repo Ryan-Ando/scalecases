@@ -15,9 +15,22 @@ async function apiFetch(path) {
   return res.json();
 }
 
+const US_STATES = new Set([
+  'AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA','HI','ID','IL','IN','IA',
+  'KS','KY','LA','ME','MD','MA','MI','MN','MS','MO','MT','NE','NV','NH','NJ',
+  'NM','NY','NC','ND','OH','OK','OR','PA','RI','SC','SD','TN','TX','UT','VT',
+  'VA','WA','WV','WI','WY','DC',
+]);
+
+// Split campaign name on separators and return the last token that is a valid US state.
 function extractState(campaignName) {
-  const m = (campaignName || '').match(/[-–\s]([A-Z]{2})\s*$/i);
-  return m ? m[1].toUpperCase() : null;
+  if (!campaignName) return null;
+  const tokens = campaignName.trim().split(/[-–—\s_/|]+/);
+  for (let i = tokens.length - 1; i >= 0; i--) {
+    const t = tokens[i].toUpperCase();
+    if (US_STATES.has(t)) return t;
+  }
+  return null;
 }
 
 function fmtDate(iso) {
