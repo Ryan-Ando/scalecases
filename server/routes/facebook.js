@@ -230,26 +230,34 @@ router.get('/ads', async (req, res) => {
   }
 });
 
-// GET /api/facebook/daily?date_preset=&level=campaign&ad_ids=id1,id2
-// Returns per-day spend/impressions/CPM — paginates through all cursor pages.
-// When ad_ids is provided (comma-separated), filters to only those ad IDs (level=ad implied).
+// GET /api/facebook/daily?date_preset=&level=campaign&ad_ids=id1,id2&date=YYYY-MM-DD
+// Returns per-day spend/impressions/CPM/leads — paginates through all cursor pages.
+// When ad_ids is provided, filters to those ad IDs (level=ad implied).
+// When date=YYYY-MM-DD is provided, fetches a single day (level=ad with actions).
 router.get('/daily', async (req, res) => {
   try {
-    const { date_preset, ad_ids } = req.query;
+    const { date_preset, ad_ids, date } = req.query;
     const adIdList = ad_ids ? ad_ids.split(',').filter(Boolean) : null;
-    const level = adIdList?.length ? 'ad' : (req.query.level || 'campaign');
+    const level = (adIdList?.length || date) ? 'ad' : (req.query.level || 'campaign');
+    const fields = level === 'ad'
+      ? `ad_id,ad_name,campaign_name,spend,impressions,cpm,actions,date_start,date_stop`
+      : `campaign_id,campaign_name,spend,impressions,cpm,date_start,date_stop`;
 
     const accounts = adAccounts();
     const all = [];
     await Promise.all(accounts.map(async account => {
       const params = new URLSearchParams({
         level,
-        fields: `${level}_id,${level}_name,spend,impressions,cpm,date_start,date_stop`,
-        date_preset: date_preset || 'last_30d',
+        fields,
         time_increment: 1,
         access_token: token(),
         limit: 500,
       });
+      if (date) {
+        params.set('time_range', JSON.stringify({ since: date, until: date }));
+      } else {
+        params.set('date_preset', date_preset || 'last_30d');
+      }
       if (adIdList?.length) {
         params.set('filtering', JSON.stringify([{ field: 'ad.id', operator: 'IN', value: adIdList }]));
       }

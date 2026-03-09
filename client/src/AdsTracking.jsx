@@ -914,24 +914,57 @@ export default function AdsTracking() {
   }, [allDailyInsights, cutoffDate]);
 
   // Daily breakdown rows — all campaign-level daily records sorted newest first
-  const dailyRows = useMemo(() => {
-    return [...allDailyInsights]
-      .filter(r => r.date_start)
-      .sort((a, b) => b.date_start.localeCompare(a.date_start));
-  }, [allDailyInsights]);
+  // ── Daily grid tab state ────────────────────────────────────────────────────
+  const [dailyDate, setDailyDate]         = useState(() => new Date().toISOString().slice(0, 10));
+  const [dailyRecords, setDailyRecords]   = useState([]);
+  const [loadingDaily, setLoadingDaily]   = useState(false);
+  const [dailyError, setDailyError]       = useState('');
 
-  // Daily totals per date for the daily table
-  const dailyTotals = useMemo(() => {
+  // Fetch ad-level daily data (with leads) for selected date
+  useEffect(() => {
+    if (activeTab !== 'daily' || !dailyDate) return;
+    let cancelled = false;
+    setLoadingDaily(true);
+    setDailyError('');
+    apiFetch(`/api/facebook/daily?date=${encodeURIComponent(dailyDate)}`)
+      .then(data => { if (!cancelled) { setDailyRecords(data); setLoadingDaily(false); } })
+      .catch(err => { if (!cancelled) { setDailyError(err.message); setLoadingDaily(false); } });
+    return () => { cancelled = true; };
+  }, [activeTab, dailyDate]);
+
+  // Build grid from daily records: adName → state → { leads, spend }
+  const dailyGrid = useMemo(() => {
     const map = {};
-    for (const r of allDailyInsights) {
-      if (!r.date_start) continue;
-      if (!map[r.date_start]) map[r.date_start] = { spend: 0, impressions: 0, cpm_sum: 0, cpm_count: 0 };
-      map[r.date_start].spend       += parseFloat(r.spend)       || 0;
-      map[r.date_start].impressions += parseInt(r.impressions)   || 0;
-      if (r.cpm) { map[r.date_start].cpm_sum += parseFloat(r.cpm); map[r.date_start].cpm_count++; }
+    for (const r of dailyRecords) {
+      const rawName = (r.ad_name || '').trim();
+      const state   = extractState(r.campaign_name || '');
+      if (!rawName || !state) continue;
+      const adName  = memberToCanonical[rawName] || rawName;
+      if (!map[adName]) map[adName] = {};
+      if (!map[adName][state]) map[adName][state] = { leads: 0, spend: 0 };
+      map[adName][state].leads += extractResults(r).results;
+      map[adName][state].spend += parseFloat(r.spend) || 0;
     }
     return map;
-  }, [allDailyInsights]);
+  }, [dailyRecords, memberToCanonical]);
+
+  const dailyAdNames = useMemo(() => {
+    const names = Object.keys(dailyGrid).filter(n => !deletedAds.has(n));
+    return names.sort((a, b) => {
+      const at = firstUsed[a], bt = firstUsed[b];
+      if (at && !bt) return -1; if (!at && bt) return 1; if (!at && !bt) return 0;
+      return at < bt ? -1 : at > bt ? 1 : 0;
+    });
+  }, [dailyGrid, deletedAds, firstUsed]);
+
+  const dailyStates = useMemo(() => {
+    const set = new Set();
+    for (const r of dailyRecords) {
+      const s = extractState(r.campaign_name || '');
+      if (s) set.add(s);
+    }
+    return [...set].sort();
+  }, [dailyRecords]);
 
   function saveAccountName(state, name) {
     const next = { ...accountNames, [state]: name.trim() || state };
@@ -1039,60 +1072,74 @@ export default function AdsTracking() {
         )}
       </div>
 
-      {/* Daily breakdown table */}
+      {/* Daily grid — same layout as main grid but for a single selected date */}
       {activeTab === 'daily' && (
-        <div style={{ overflowX: 'auto' }}>
-          {dailyRows.length === 0 ? (
-            <div className="empty" style={{ padding: 32 }}>No daily data — click Sync Now</div>
+        <div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+            <input
+              type="date"
+              value={dailyDate}
+              onChange={e => setDailyDate(e.target.value)}
+              style={{ padding: '6px 10px', borderRadius: 7, border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text)', fontSize: 13 }}
+            />
+            {loadingDaily && <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Loading…</span>}
+            {dailyError && <span style={{ fontSize: 12, color: '#dc2626' }}>{dailyError}</span>}
+            {!loadingDaily && !dailyError && dailyRecords.length > 0 && (
+              <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{dailyAdNames.length} ads · {dailyStates.length} states</span>
+            )}
+          </div>
+          {!loadingDaily && dailyAdNames.length === 0 ? (
+            <div className="empty" style={{ padding: 32 }}>
+              {dailyError ? dailyError : 'No data for this date'}
+            </div>
           ) : (
-            <table className="tracking-grid" style={{ minWidth: 700 }}>
-              <thead>
-                <tr>
-                  <th className="tracking-th" style={{ textAlign: 'left', minWidth: 90 }}>Date</th>
-                  <th className="tracking-th" style={{ textAlign: 'left', minWidth: 200 }}>Campaign</th>
-                  <th className="tracking-th" style={{ textAlign: 'right', minWidth: 90 }}>Spend</th>
-                  <th className="tracking-th" style={{ textAlign: 'right', minWidth: 100 }}>Impressions</th>
-                  <th className="tracking-th" style={{ textAlign: 'right', minWidth: 80 }}>CPM</th>
-                </tr>
-              </thead>
-              <tbody>
-                {dailyRows.map((r, i) => {
-                  const isFirstForDate = i === 0 || dailyRows[i - 1].date_start !== r.date_start;
-                  const tot = dailyTotals[r.date_start] || {};
-                  return (
-                    <tr key={r.id || i} className="tracking-row">
-                      <td className="tracking-td" style={{ fontWeight: isFirstForDate ? 600 : 400 }}>
-                        {isFirstForDate ? r.date_start : ''}
-                      </td>
-                      <td className="tracking-td" style={{ fontSize: 12, maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                        {r.campaign_name || r.adset_name || r.ad_name || '—'}
-                      </td>
-                      <td className="tracking-td" style={{ textAlign: 'right' }}>
-                        ${(parseFloat(r.spend) || 0).toFixed(2)}
-                      </td>
-                      <td className="tracking-td" style={{ textAlign: 'right' }}>
-                        {(parseInt(r.impressions) || 0).toLocaleString()}
-                      </td>
-                      <td className="tracking-td" style={{ textAlign: 'right' }}>
-                        {r.cpm ? `$${parseFloat(r.cpm).toFixed(2)}` : '—'}
-                      </td>
-                    </tr>
-                  );
-                })}
-                {/* Daily totals footer grouped by date */}
-                {Object.entries(dailyTotals).sort((a, b) => b[0].localeCompare(a[0])).map(([date, t]) => (
-                  <tr key={`tot-${date}`} style={{ background: 'var(--surface-2, #f8fafc)', fontWeight: 600, fontSize: 12 }}>
-                    <td className="tracking-td" style={{ color: 'var(--text-muted)' }}>{date} total</td>
-                    <td className="tracking-td" />
-                    <td className="tracking-td" style={{ textAlign: 'right' }}>${t.spend.toFixed(2)}</td>
-                    <td className="tracking-td" style={{ textAlign: 'right' }}>{t.impressions.toLocaleString()}</td>
-                    <td className="tracking-td" style={{ textAlign: 'right' }}>
-                      {t.cpm_count > 0 ? `$${(t.cpm_sum / t.cpm_count).toFixed(2)}` : '—'}
-                    </td>
+            <div className="tracking-grid-wrap">
+              <table className="tracking-grid">
+                <thead>
+                  <tr>
+                    <th className="tracking-th-ad">Ad Name</th>
+                    <th className="tracking-th-state">Date</th>
+                    <th className="tracking-th-state">Total</th>
+                    {dailyStates.map(st => (
+                      <th key={st} className="tracking-th-state">{st}</th>
+                    ))}
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {dailyAdNames.map(adName => {
+                    const rowTotal = dailyStates.reduce((s, st) => s + (dailyGrid[adName]?.[st]?.leads || 0), 0);
+                    return (
+                      <tr key={adName} className="tracking-row">
+                        <td className="tracking-td-ad">{adName}</td>
+                        <td className="tracking-td-date">{dailyDate}</td>
+                        <td className="tracking-td-total" style={{ fontWeight: 600 }}>{rowTotal || '—'}</td>
+                        {dailyStates.map(st => {
+                          const cell = dailyGrid[adName]?.[st];
+                          return (
+                            <td key={st} className="tracking-td">
+                              {cell?.leads ? cell.leads : '—'}
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    );
+                  })}
+                </tbody>
+                <tfoot>
+                  <tr>
+                    <td className="tracking-td-ad tracking-tfoot-label">Total</td>
+                    <td className="tracking-td-date tracking-tfoot-label" />
+                    <td className="tracking-td-total tracking-tfoot-label">
+                      {dailyAdNames.reduce((s, a) => s + dailyStates.reduce((s2, st) => s2 + (dailyGrid[a]?.[st]?.leads || 0), 0), 0) || '—'}
+                    </td>
+                    {dailyStates.map(st => {
+                      const total = dailyAdNames.reduce((s, a) => s + (dailyGrid[a]?.[st]?.leads || 0), 0);
+                      return <td key={st} className="tracking-td tracking-tfoot-label">{total || '—'}</td>;
+                    })}
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
           )}
         </div>
       )}
