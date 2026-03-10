@@ -222,13 +222,14 @@ function AdDetailModal({ adName, state, allAds, sheetByName, accountLabel, merge
     return map;
   }, [ghlContacts]);
 
-  // Enrich sheet cases with UTM data from matching GHL contact (by phone)
+  // Enrich sheet cases with UTM data — prefer already-written sheet values, fall back to GHL match
   const attributedCases = useMemo(() =>
     sheetCases
       .map(sc => {
+        if (sc.utmContent) return sc;
         const contact = ghlByPhone[normalizePhone(sc.phone)];
         return contact
-          ? { ...sc, utmCampaign: contact.utmCampaign, utmContent: contact.utmContent }
+          ? { ...sc, utmCampaign: contact.utmCampaign, utmMedium: contact.utmMedium, utmContent: contact.utmContent, utmTerm: contact.utmTerm }
           : null;
       })
       .filter(Boolean),
@@ -998,15 +999,35 @@ export default function AdsTracking() {
   const attributedCases = useMemo(() =>
     sheetCases
       .map(sc => {
+        // Already enriched in sheet — use directly, no GHL lookup needed
+        if (sc.utmContent) return sc;
+        // Try GHL phone match
         const key = (sc.phone || '').replace(/\D/g, '').slice(-10);
         const contact = ghlByPhone[key];
         return contact
-          ? { ...sc, utmContent: contact.utmContent }
+          ? { ...sc, utmCampaign: contact.utmCampaign, utmMedium: contact.utmMedium, utmContent: contact.utmContent, utmTerm: contact.utmTerm }
           : null;
       })
       .filter(Boolean),
     [sheetCases, ghlByPhone]
   );
+
+  // Write UTM data back to sheet for newly matched rows (those without it in sheet)
+  useEffect(() => {
+    const toEnrich = attributedCases.filter(c => !sheetCases.find(sc => sc.rowIndex === c.rowIndex)?.utmContent);
+    if (toEnrich.length === 0) return;
+    fetch(`${BASE}/api/sheets/enrich-utm`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(toEnrich.map(c => ({
+        rowIndex:    c.rowIndex,
+        utmCampaign: c.utmCampaign || '',
+        utmMedium:   c.utmMedium   || '',
+        utmContent:  c.utmContent  || '',
+        utmTerm:     c.utmTerm     || '',
+      }))),
+    }).catch(err => console.warn('UTM enrich error:', err.message));
+  }, [attributedCases]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const caseGrid = useMemo(() => {
     const map = {};

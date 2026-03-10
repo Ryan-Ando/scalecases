@@ -25,9 +25,8 @@ async function getAuthClient(write = false) {
 }
 
 // GET /api/sheets/cases?start=ISO&end=ISO
-// Reads name (col A), phone (col B), state (col D), date (col F) from the sheet.
-// Optionally filters by date range. Returns [{ name, phone, state, date }].
-// Uses SHEETS_ID + SHEETS_TAB_NAME env vars (already configured).
+// Reads A–J: name, phone, state (D), date (F), utmCampaign (G), utmMedium (H),
+// utmContent (I), utmTerm (J). Returns rowIndex (1-based sheet row) with each case.
 router.get('/cases', async (req, res) => {
   try {
     const { sheetId } = getSheetConfig();
@@ -37,7 +36,7 @@ router.get('/cases', async (req, res) => {
     const tabName = process.env.SHEETS_TAB_NAME || 'Sheet1';
     const response = await sheets.spreadsheets.values.get({
       spreadsheetId: sheetId,
-      range: `${tabName}!A2:F`,
+      range: `${tabName}!A2:J`,
     });
 
     const rows = response.data.values || [];
@@ -46,7 +45,8 @@ router.get('/cases', async (req, res) => {
     const end   = req.query.end   ? new Date(req.query.end)   : null;
 
     const cases = [];
-    for (const row of rows) {
+    for (let i = 0; i < rows.length; i++) {
+      const row   = rows[i];
       const name  = (row[0] || '').trim();
       const phone = (row[1] || '').trim();
       const date  = row[5] ? new Date(row[5]) : null;
@@ -57,12 +57,53 @@ router.get('/cases', async (req, res) => {
       if (end   && date && date > end)   continue;
 
       const state = (row[3] || '').trim().toUpperCase();
-      cases.push({ name, phone, state, date: date ? date.toISOString() : null });
+      cases.push({
+        rowIndex:    i + 2, // +2: 1-based + header row
+        name, phone, state,
+        date:        date ? date.toISOString() : null,
+        utmCampaign: (row[6] || '').trim(),
+        utmMedium:   (row[7] || '').trim(),
+        utmContent:  (row[8] || '').trim(),
+        utmTerm:     (row[9] || '').trim(),
+      });
     }
 
     res.json(cases);
   } catch (err) {
     console.error('Sheets cases error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/sheets/enrich-utm
+// Body: [{ rowIndex, utmCampaign, utmMedium, utmContent, utmTerm }]
+// Writes UTM fields to columns G–J for the given rows in the master sheet.
+// Returns { updated }.
+router.post('/enrich-utm', async (req, res) => {
+  try {
+    const rows = req.body;
+    if (!Array.isArray(rows) || rows.length === 0) return res.json({ updated: 0 });
+
+    const sheetId = process.env.SHEETS_ID;
+    const tabName = process.env.SHEETS_TAB_NAME || 'Sheet1';
+    if (!sheetId) return res.status(503).json({ error: 'SHEETS_ID not set' });
+
+    const auth   = await getAuthClient(true);
+    const sheets = google.sheets({ version: 'v4', auth });
+
+    const data = rows.map(({ rowIndex, utmCampaign, utmMedium, utmContent, utmTerm }) => ({
+      range: `${tabName}!G${rowIndex}:J${rowIndex}`,
+      values: [[utmCampaign || '', utmMedium || '', utmContent || '', utmTerm || '']],
+    }));
+
+    await sheets.spreadsheets.values.batchUpdate({
+      spreadsheetId: sheetId,
+      requestBody: { valueInputOption: 'USER_ENTERED', data },
+    });
+
+    res.json({ updated: rows.length });
+  } catch (err) {
+    console.error('Sheets enrich-utm error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
