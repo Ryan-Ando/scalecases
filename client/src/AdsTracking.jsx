@@ -1000,7 +1000,6 @@ export default function AdsTracking() {
   useEffect(() => {
     if (!ghlContacts.length || !sheetCases.length) return;
     const toEnrich = sheetCases
-      .filter(sc => !sc.utmContent) // not yet in sheet
       .map(sc => {
         const key = (sc.phone || '').replace(/\D/g, '').slice(-10);
         const contact = ghlByPhone[key];
