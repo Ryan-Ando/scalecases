@@ -229,7 +229,7 @@ function AdDetailModal({ adName, state, allAds, sheetByName, accountLabel, merge
         if (sc.utmContent) return sc;
         const contact = ghlByPhone[normalizePhone(sc.phone)];
         return contact
-          ? { ...sc, utmCampaign: contact.utmCampaign, utmMedium: contact.utmMedium, utmContent: contact.utmContent, utmTerm: contact.utmTerm }
+          ? { ...sc, utmContent: contact.utmContent }
           : null;
       })
       .filter(Boolean),
@@ -1005,7 +1005,7 @@ export default function AdsTracking() {
         const key = (sc.phone || '').replace(/\D/g, '').slice(-10);
         const contact = ghlByPhone[key];
         return contact
-          ? { ...sc, utmCampaign: contact.utmCampaign, utmMedium: contact.utmMedium, utmContent: contact.utmContent, utmTerm: contact.utmTerm }
+          ? { ...sc, utmContent: contact.utmContent }
           : null;
       })
       .filter(Boolean),
@@ -1020,11 +1020,8 @@ export default function AdsTracking() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(toEnrich.map(c => ({
-        rowIndex:    c.rowIndex,
-        utmCampaign: c.utmCampaign || '',
-        utmMedium:   c.utmMedium   || '',
-        utmContent:  c.utmContent  || '',
-        utmTerm:     c.utmTerm     || '',
+        rowIndex:   c.rowIndex,
+        utmContent: c.utmContent || '',
       }))),
     }).catch(err => console.warn('UTM enrich error:', err.message));
   }, [attributedCases]); // eslint-disable-line react-hooks/exhaustive-deps
