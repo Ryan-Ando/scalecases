@@ -19,6 +19,28 @@ const GHL_HEADERS = () => ({
 });
 
 
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+// Fetch one page with automatic retry on 429 (up to 5 attempts).
+async function fetchPage(url) {
+  const MAX_RETRIES = 5;
+  let delay = 2000;
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    const res  = await fetch(url, { headers: GHL_HEADERS() });
+    const text = await res.text();
+    if (res.status === 429) {
+      const retryAfter = parseInt(res.headers.get('Retry-After') || '0') * 1000 || delay;
+      console.warn(`[GHL] 429 rate limit — waiting ${retryAfter}ms (attempt ${attempt}/${MAX_RETRIES})`);
+      if (attempt === MAX_RETRIES) throw new Error(`GHL API error 429: ${text.slice(0, 200)}`);
+      await sleep(retryAfter);
+      delay = Math.min(delay * 2, 30000);
+      continue;
+    }
+    if (!res.ok) throw new Error(`GHL API error ${res.status}: ${text.slice(0, 200)}`);
+    return JSON.parse(text);
+  }
+}
+
 // Paginate all GHL contacts and filter by date range client-side.
 // GHL v2 does not support date filtering params; sortOrder is not accepted.
 async function fetchAllContacts(startMs, endMs) {
@@ -35,13 +57,7 @@ async function fetchAllContacts(startMs, endMs) {
     if (startAfter)   params.set('startAfter',   startAfter);
     if (startAfterId) params.set('startAfterId', startAfterId);
 
-    const res = await fetch(`${GHL_API}/contacts/?${params}`, {
-      headers: GHL_HEADERS(),
-    });
-    const text = await res.text();
-    if (!res.ok) throw new Error(`GHL API error ${res.status}: ${text.slice(0, 200)}`);
-    const json = JSON.parse(text);
-
+    const json = await fetchPage(`${GHL_API}/contacts/?${params}`);
     console.log('[GHL] page keys:', Object.keys(json), '| contacts:', (json.contacts||[]).length, '| meta:', JSON.stringify(json.meta || json.pagination || null));
 
     const batch = json.contacts || [];
