@@ -649,7 +649,10 @@ export default function AdsTracking() {
   const [rangeAds, setRangeAds]         = useState(null);   // null = use allAds
   const [loadingRange, setLoadingRange] = useState(false);
   const [rangeError, setRangeError]     = useState('');
-  const [colOrder, setColOrder]         = useState(null);
+  const [colOrder, setColOrder]         = useState(() => {
+    try { const s = localStorage.getItem('trackingColOrder'); return s ? JSON.parse(s) : null; }
+    catch { return null; }
+  });
   const [dragOverCol, setDragOverCol]   = useState(null);
   const dragColRef = useRef(null);
 
@@ -1200,6 +1203,7 @@ export default function AdsTracking() {
     const [moved] = next.splice(dragColRef.current, 1);
     next.splice(i, 0, moved);
     setColOrder(next);
+    localStorage.setItem('trackingColOrder', JSON.stringify(next));
     dragColRef.current = null; setDragOverCol(null);
   }
 
@@ -1400,7 +1404,7 @@ export default function AdsTracking() {
               <col style={{ width: colWidths.cpc   ?? 70 }} />
               <col style={{ width: colWidths.total      ?? 65 }} />
               <col style={{ width: colWidths.totalCases ?? 65 }} />
-              {orderedStates.map(st => <col key={st} style={{ width: colWidths[st] ?? 110 }} />)}
+              {orderedStates.map(st => <col key={st} style={{ width: colWidths[st] ?? 75 }} />)}
             </colgroup>
             <thead>
               <tr>
@@ -1484,7 +1488,7 @@ export default function AdsTracking() {
                         </div>
                       )}
                     </div>
-                    <div className="col-resize-handle" onMouseDown={e => startColResize(state, 110, e)} />
+                    <div className="col-resize-handle" onMouseDown={e => startColResize(state, 75, e)} />
                   </th>
                   );
                 })}
