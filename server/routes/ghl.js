@@ -104,8 +104,8 @@ router.get('/contacts', async (req, res) => {
     const raw = await fetchAllContacts(startMs, endMs);
 
     const campaignFieldId = process.env.GHL_FIELD_UTM_CAMPAIGN;
-    const mediumFieldId   = process.env.GHL_FIELD_UTM_MEDIUM;
-    const contentFieldId  = process.env.GHL_FIELD_UTM_CONTENT;
+    const mediumFieldId   = 'DsiFBjELrBDfPKQ2tlH0';
+    const contentFieldId  = '2m1yjxI758bRlzTOv7J0';
     const termFieldId     = process.env.GHL_FIELD_UTM_TERM;
 
     function getCustomField(c, fieldId) {
@@ -121,8 +121,8 @@ router.get('/contacts', async (req, res) => {
       email:       c.email  || '',
       dateAdded:   c.dateAdded,
       utmCampaign:  getCustomField(c, campaignFieldId) || (c.utmCampaign || '').trim(),
-      utmMedium:    getCustomField(c, contentFieldId)  || (c.utmMedium   || '').trim(),
-      utmContent:   getCustomField(c, mediumFieldId)   || (c.utmContent  || '').trim(),
+      utmMedium:    getCustomField(c, mediumFieldId)   || (c.utmMedium   || '').trim(),
+      utmContent:   getCustomField(c, contentFieldId)  || (c.utmContent  || '').trim(),
       utmTerm:      getCustomField(c, termFieldId) || (c.utmTerm || '').trim(),
       customFields: c.customFields || [],
     }));
