@@ -845,10 +845,15 @@ export default function AdsTracking() {
     await dbClearAll();
     setAllDailyInsights([]);
     setAllAds([]);
+    setGhlContacts([]);
+    setSheetCases([]);
     setLastSync(null);
     setSyncNote('');
     setSyncError('');
+    casesLoadedRef.current = false;
+    importRanRef.current = false;
     sync();
+    loadCases();
   }
 
   // ── Delete an ad permanently ────────────────────────────────────────────────
