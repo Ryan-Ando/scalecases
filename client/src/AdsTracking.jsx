@@ -38,6 +38,11 @@ function fmtDate(iso) {
   return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
+function fmtDateNum(iso) {
+  if (!iso) return '—';
+  return new Date(iso).toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' });
+}
+
 function parseAdNameDate(adName) {
   const m = (adName || '').match(/^(\d{2})(\d{2})[-\s]/);
   if (!m) return null;
@@ -636,7 +641,7 @@ export default function AdsTracking() {
   const [chartMetric, setChartMetric]   = useState('leads');
   const [chartPeriod, setChartPeriod]   = useState('90');
   const [sortKey, setSortKey]           = useState('date');
-  const [sortDir, setSortDir]           = useState('asc');
+  const [sortDir, setSortDir]           = useState('desc');
   // Custom date range for the grid
   const [rangeStart, setRangeStart]     = useState('');
   const [rangeEnd, setRangeEnd]         = useState('');
@@ -1035,6 +1040,9 @@ export default function AdsTracking() {
       let av, bv;
       if (sortKey === 'name') {
         av = a.toLowerCase(); bv = b.toLowerCase();
+        if (av < bv) return sortDir === 'asc' ? -1 : 1;
+        if (av > bv) return sortDir === 'asc' ?  1 : -1;
+        return 0;
       } else if (sortKey === 'spend') {
         av = states.reduce((s, st) => s + (spendGrid[a]?.[st] || 0), 0);
         bv = states.reduce((s, st) => s + (spendGrid[b]?.[st] || 0), 0);
@@ -1059,6 +1067,11 @@ export default function AdsTracking() {
         av = grid[a]?.[sortKey] || 0;
         bv = grid[b]?.[sortKey] || 0;
       }
+      // Zeros always sink to the bottom regardless of sort direction
+      const aZero = av === 0 || av === Infinity;
+      const bZero = bv === 0 || bv === Infinity;
+      if (aZero && !bZero) return 1;
+      if (!aZero && bZero) return -1;
       if (av < bv) return sortDir === 'asc' ? -1 : 1;
       if (av > bv) return sortDir === 'asc' ?  1 : -1;
       return 0;
@@ -1085,7 +1098,7 @@ export default function AdsTracking() {
 
   function handleSort(key) {
     if (sortKey === key) setSortDir(d => d === 'asc' ? 'desc' : 'asc');
-    else { setSortKey(key); setSortDir(key === 'date' || key === 'name' ? 'asc' : 'desc'); }
+    else { setSortKey(key); setSortDir(key === 'name' ? 'asc' : 'desc'); }
   }
 
   function onColDragStart(i) { dragColRef.current = i; }
@@ -1107,20 +1120,27 @@ export default function AdsTracking() {
   }, [chartPeriod]);
 
   const chartData = useMemo(() => {
-    const leadsMap = {};
+    const LEAD_TYPES = ['lead','onsite_conversion.lead_grouped','offsite_conversion.fb_pixel_lead','contact','schedule','submit_application'];
+    function actionsLeads(actions = []) {
+      for (const type of LEAD_TYPES) {
+        const a = actions.find(x => x.action_type === type);
+        if (a) return parseInt(a.value, 10) || 0;
+      }
+      return 0;
+    }
     const fbMap = {};
     for (const row of allDailyInsights) {
       const date = row.date_start;
       if (!date || (cutoffDate && date < cutoffDate)) continue;
-      if (!fbMap[date]) fbMap[date] = { spend: 0, cpm_sum: 0, cpm_count: 0 };
+      if (!fbMap[date]) fbMap[date] = { spend: 0, leads: 0, cpm_sum: 0, cpm_count: 0 };
       fbMap[date].spend += parseFloat(row.spend) || 0;
+      fbMap[date].leads += actionsLeads(row.actions || []);
       if (row.cpm) { fbMap[date].cpm_sum += parseFloat(row.cpm); fbMap[date].cpm_count++; }
     }
-    const allDates = new Set([...Object.keys(leadsMap), ...Object.keys(fbMap)]);
-    return [...allDates].sort().map(date => {
-      const fb    = fbMap[date] || {};
-      const leads = leadsMap[date] || 0;
-      const spend = +(fb.spend || 0).toFixed(2);
+    return Object.keys(fbMap).sort().map(date => {
+      const fb    = fbMap[date];
+      const leads = fb.leads;
+      const spend = +(fb.spend).toFixed(2);
       const cpm   = fb.cpm_count > 0 ? +(fb.cpm_sum / fb.cpm_count).toFixed(2) : null;
       const cpl   = leads > 0 && spend > 0 ? +(spend / leads).toFixed(2) : null;
       return { date: date.slice(5), leads, spend, cpm, cpl };
@@ -1281,7 +1301,7 @@ export default function AdsTracking() {
                   <div className="col-resize-handle" onMouseDown={e => startColResize('adName', 240, e)} />
                 </th>
                 <th className="tracking-th-state tracking-th-sortable" onClick={() => handleSort('date')}>
-                  First Used {sortKey === 'date' && <SortArrow dir={sortDir} />}
+                  Date Created {sortKey === 'date' && <SortArrow dir={sortDir} />}
                   <div className="col-resize-handle" onMouseDown={e => startColResize('date', 90, e)} />
                 </th>
                 <th className="tracking-th-state tracking-th-sortable" onClick={() => handleSort('spend')} style={{ color: '#94a3b8' }}>
@@ -1416,7 +1436,7 @@ export default function AdsTracking() {
                       </div>
                       <div className="row-resize-handle" onMouseDown={e => startRowResize(adName, e)} />
                     </td>
-                    <td className="tracking-td-date">{fmtDate(firstUsed[adName])}</td>
+                    <td className="tracking-td-date">{fmtDateNum(firstUsed[adName])}</td>
                     <td className="tracking-td-total" style={{ color: '#94a3b8', fontSize: 12 }}>
                       {totalSpend > 0 ? `$${totalSpend.toLocaleString('en-US', { maximumFractionDigits: 0 })}` : '—'}
                     </td>

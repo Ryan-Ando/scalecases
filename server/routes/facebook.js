@@ -247,7 +247,7 @@ router.get('/daily', async (req, res) => {
     const level = (adIdList?.length || date) ? 'ad' : (req.query.level || 'campaign');
     const fields = level === 'ad'
       ? `ad_id,ad_name,campaign_name,spend,impressions,cpm,actions,date_start,date_stop`
-      : `campaign_id,campaign_name,spend,impressions,cpm,date_start,date_stop`;
+      : `campaign_id,campaign_name,spend,impressions,cpm,actions,date_start,date_stop`;
 
     const accounts = adAccounts();
     const all = [];
