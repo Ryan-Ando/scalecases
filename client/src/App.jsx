@@ -676,7 +676,7 @@ function SettingsTab() {
 const TABS = ['Campaigns', 'Ad Sets', 'Ads', 'Ads Tracking', 'Reports', 'Sources', 'Settings'];
 
 export default function App() {
-  const [tab, setTab] = useState('Campaigns');
+  const [tab, setTab] = useState('Ads Tracking');
   const [timeframe, setTimeframe] = useState('Last 30 Days');
   const [customStart, setCustomStart] = useState(null);
   const [customEnd, setCustomEnd] = useState(null);
