@@ -121,8 +121,8 @@ router.get('/contacts', async (req, res) => {
       email:       c.email  || '',
       dateAdded:   c.dateAdded,
       utmCampaign:  getCustomField(c, campaignFieldId) || (c.utmCampaign || '').trim(),
-      utmMedium:    getCustomField(c, mediumFieldId)   || (c.utmMedium   || '').trim(),
-      utmContent:   getCustomField(c, contentFieldId)  || (c.utmContent  || '').trim(),
+      utmMedium:    getCustomField(c, contentFieldId)  || (c.utmMedium   || '').trim(),
+      utmContent:   getCustomField(c, mediumFieldId)   || (c.utmContent  || '').trim(),
       utmTerm:      getCustomField(c, termFieldId) || (c.utmTerm || '').trim(),
       customFields: c.customFields || [],
     }));
