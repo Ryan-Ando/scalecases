@@ -1566,14 +1566,17 @@ export default function AdsTracking() {
                       {totalCases > 0 ? totalCases : '—'}
                     </td>
                     {orderedStates.map(state => {
-                      const leads   = row[state]     || 0;
-                      const cases   = caseRow[state] || 0;
-                      const hasData = leads > 0 || cases > 0;
+                      const leads    = row[state]     || 0;
+                      const cases    = caseRow[state] || 0;
+                      const everUsed = activeAds.some(a => {
+                        const canonical = memberToCanonical[(a.name || '').trim()] || (a.name || '').trim();
+                        return canonical === adName && extractState(a.campaignName) === state;
+                      });
                       const status  = cellStatus[adName]?.[state];
                       const cellBg  = status === 'solo' ? 'rgba(34,197,94,0.12)' : status === 'shared' ? 'rgba(59,130,246,0.12)' : undefined;
                       return (
                         <td key={state} className="tracking-td-cell" style={cellBg ? { background: cellBg } : undefined}>
-                          {hasData
+                          {everUsed
                             ? (
                               <button
                                 className="tracking-cell-btn"
