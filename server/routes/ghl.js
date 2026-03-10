@@ -129,4 +129,23 @@ router.get('/contacts', async (req, res) => {
   }
 });
 
+// GET /api/ghl/field-debug — shows sample values from both UTM field IDs
+router.get('/field-debug', async (req, res) => {
+  try {
+    if (!token() || !locationId()) return res.status(503).json({ error: 'GHL not configured' });
+    const raw = await fetchAllContacts(0, Date.now());
+    const fieldA = 'DsiFBjELrBDfPKQ2tlH0';
+    const fieldB = '2m1yjxI758bRlzTOv7J0';
+    function get(c, id) {
+      const f = (c.customFields || []).find(f => f.id === id);
+      return (f?.value || '').trim();
+    }
+    const aVals = [...new Set(raw.map(c => get(c, fieldA)).filter(Boolean))].slice(0, 30);
+    const bVals = [...new Set(raw.map(c => get(c, fieldB)).filter(Boolean))].slice(0, 30);
+    res.json({ [fieldA]: aVals, [fieldB]: bVals });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 export default router;
