@@ -115,7 +115,8 @@ router.get('/contacts', async (req, res) => {
       phone:       c.phone  || '',
       email:       c.email  || '',
       dateAdded:   c.dateAdded,
-      utmContent:  getCustomField(c, '2m1yjxI758bRlzTOv7J0'),
+      utmContent:  getCustomField(c, 'DsiFBjELrBDfPKQ2tlH0'),
+      utmMedium:   getCustomField(c, '2m1yjxI758bRlzTOv7J0'),
       customFields: c.customFields || [],
     }));
 

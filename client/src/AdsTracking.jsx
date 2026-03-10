@@ -229,7 +229,7 @@ function AdDetailModal({ adName, state, allAds, sheetByName, accountLabel, merge
         if (sc.utmContent) return sc;
         const contact = ghlByPhone[normalizePhone(sc.phone)];
         return contact
-          ? { ...sc, utmContent: contact.utmContent }
+          ? { ...sc, utmContent: contact.utmContent, utmMedium: contact.utmMedium }
           : null;
       })
       .filter(Boolean),
@@ -1005,7 +1005,7 @@ export default function AdsTracking() {
         const key = (sc.phone || '').replace(/\D/g, '').slice(-10);
         const contact = ghlByPhone[key];
         return contact
-          ? { ...sc, utmContent: contact.utmContent }
+          ? { ...sc, utmContent: contact.utmContent, utmMedium: contact.utmMedium }
           : null;
       })
       .filter(Boolean),
@@ -1022,6 +1022,7 @@ export default function AdsTracking() {
       body: JSON.stringify(toEnrich.map(c => ({
         rowIndex:   c.rowIndex,
         utmContent: c.utmContent || '',
+        utmMedium:  c.utmMedium  || '',
       }))),
     }).catch(err => console.warn('UTM enrich error:', err.message));
   }, [attributedCases]); // eslint-disable-line react-hooks/exhaustive-deps

@@ -36,7 +36,7 @@ router.get('/cases', async (req, res) => {
     const tabName = process.env.SHEETS_TAB_NAME || 'Sheet1';
     const response = await sheets.spreadsheets.values.get({
       spreadsheetId: sheetId,
-      range: `${tabName}!A2:G`,
+      range: `${tabName}!A2:H`,
     });
 
     const rows = response.data.values || [];
@@ -62,6 +62,7 @@ router.get('/cases', async (req, res) => {
         name, phone, state,
         date:       date ? date.toISOString() : null,
         utmContent: (row[6] || '').trim(),
+        utmMedium:  (row[7] || '').trim(),
       });
     }
 
@@ -88,9 +89,9 @@ router.post('/enrich-utm', async (req, res) => {
     const auth   = await getAuthClient(true);
     const sheets = google.sheets({ version: 'v4', auth });
 
-    const data = rows.map(({ rowIndex, utmContent }) => ({
-      range: `${tabName}!G${rowIndex}`,
-      values: [[utmContent || '']],
+    const data = rows.map(({ rowIndex, utmContent, utmMedium }) => ({
+      range: `${tabName}!G${rowIndex}:H${rowIndex}`,
+      values: [[utmContent || '', utmMedium || '']],
     }));
 
     await sheets.spreadsheets.values.batchUpdate({
