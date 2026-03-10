@@ -1096,6 +1096,9 @@ export default function AdsTracking() {
       } else if (sortKey === 'total') {
         av = states.reduce((s, st) => s + (grid[a]?.[st] || 0), 0);
         bv = states.reduce((s, st) => s + (grid[b]?.[st] || 0), 0);
+      } else if (sortKey === 'totalCases') {
+        av = states.reduce((s, st) => s + (caseGrid[a]?.[st] || 0), 0);
+        bv = states.reduce((s, st) => s + (caseGrid[b]?.[st] || 0), 0);
       } else {
         av = grid[a]?.[sortKey] || 0;
         bv = grid[b]?.[sortKey] || 0;
@@ -1342,7 +1345,8 @@ export default function AdsTracking() {
               <col style={{ width: colWidths.spend ?? 80 }} />
               <col style={{ width: colWidths.cpl   ?? 70 }} />
               <col style={{ width: colWidths.cpc   ?? 70 }} />
-              <col style={{ width: colWidths.total ?? 65 }} />
+              <col style={{ width: colWidths.total      ?? 65 }} />
+              <col style={{ width: colWidths.totalCases ?? 65 }} />
               {orderedStates.map(st => <col key={st} style={{ width: colWidths[st] ?? 110 }} />)}
             </colgroup>
             <thead>
@@ -1371,6 +1375,10 @@ export default function AdsTracking() {
                 <th className="tracking-th-state tracking-th-sortable" onClick={() => handleSort('total')}>
                   Total {sortKey === 'total' && <SortArrow dir={sortDir} />}
                   <div className="col-resize-handle" onMouseDown={e => startColResize('total', 65, e)} />
+                </th>
+                <th className="tracking-th-state tracking-th-sortable" onClick={() => handleSort('totalCases')} style={{ color: '#3b82f6' }}>
+                  Cases {sortKey === 'totalCases' && <SortArrow dir={sortDir} />}
+                  <div className="col-resize-handle" onMouseDown={e => startColResize('totalCases', 65, e)} />
                 </th>
                 {orderedStates.map((state, i) => {
                   const colSpend = adNames.reduce((s, a) => s + (spendGrid[a]?.[state] || 0), 0);
@@ -1501,6 +1509,9 @@ export default function AdsTracking() {
                     <td className="tracking-td-total" style={{ fontWeight: 700 }}>
                       {totalLeads > 0 ? totalLeads : '—'}
                     </td>
+                    <td className="tracking-td-total" style={{ fontWeight: 700, color: '#3b82f6' }}>
+                      {totalCases > 0 ? totalCases : '—'}
+                    </td>
                     {orderedStates.map(state => {
                       const leads   = row[state]     || 0;
                       const cases   = caseRow[state] || 0;
@@ -1549,6 +1560,9 @@ export default function AdsTracking() {
                     </td>
                     <td className="tracking-td-total tracking-tfoot-label" style={{ fontWeight: 700 }}>
                       {totLeads > 0 ? totLeads : '—'}
+                    </td>
+                    <td className="tracking-td-total tracking-tfoot-label" style={{ fontWeight: 700, color: '#3b82f6' }}>
+                      {totCases > 0 ? totCases : '—'}
                     </td>
                   </>);
                 })()}
