@@ -1069,6 +1069,34 @@ export default function AdsTracking() {
     return map;
   }, [adNames, states, activeAds, deletedAds, memberToCanonical]);
 
+  // Adset sizes: how many ads are in each adset (across all states)
+  const adsetSizes = useMemo(() => {
+    const map = {};
+    for (const a of activeAds) {
+      if (a.adsetId) map[a.adsetId] = (map[a.adsetId] || 0) + 1;
+    }
+    return map;
+  }, [activeAds]);
+
+  // Cell status per adName × state: 'solo' (green) | 'shared' (blue) | 'off' (none)
+  const cellStatus = useMemo(() => {
+    const map = {};
+    for (const adName of adNames) {
+      map[adName] = {};
+      for (const st of states) {
+        const instances = activeAds.filter(a => {
+          const canonical = memberToCanonical[(a.name || '').trim()] || (a.name || '').trim();
+          return canonical === adName && extractState(a.campaignName) === st;
+        });
+        const active = instances.filter(a => a.status === 'ACTIVE');
+        if (!active.length) { map[adName][st] = 'off'; continue; }
+        const hasSolo = active.some(a => (adsetSizes[a.adsetId] || 1) === 1);
+        map[adName][st] = hasSolo ? 'solo' : 'shared';
+      }
+    }
+    return map;
+  }, [adNames, states, activeAds, memberToCanonical, adsetSizes]);
+
   // First used: earliest date among all members' ad names
   const firstUsed = useMemo(() => {
     const map = {};
@@ -1541,8 +1569,10 @@ export default function AdsTracking() {
                       const leads   = row[state]     || 0;
                       const cases   = caseRow[state] || 0;
                       const hasData = leads > 0 || cases > 0;
+                      const status  = cellStatus[adName]?.[state];
+                      const cellBg  = status === 'solo' ? 'rgba(34,197,94,0.12)' : status === 'shared' ? 'rgba(59,130,246,0.12)' : undefined;
                       return (
-                        <td key={state} className="tracking-td-cell">
+                        <td key={state} className="tracking-td-cell" style={cellBg ? { background: cellBg } : undefined}>
                           {hasData
                             ? (
                               <button
