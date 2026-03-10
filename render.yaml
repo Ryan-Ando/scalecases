@@ -25,6 +25,10 @@ services:
         sync: false
       - key: SHEETS_STATE_COL
         sync: false
+      - key: MONTHLY_CASES_SHEET_ID
+        sync: false  # Spreadsheet ID containing monthly tabs
+      - key: MONTHLY_CASES_TAB
+        sync: false  # Tab name to import, e.g. "March Signed Cases"
 
   # React frontend (static site)
   - type: web

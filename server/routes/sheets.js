@@ -11,13 +11,15 @@ function getSheetConfig() {
   };
 }
 
-async function getAuthClient() {
+async function getAuthClient(write = false) {
   const raw = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
   if (!raw) throw new Error('GOOGLE_SERVICE_ACCOUNT_JSON not set');
   const credentials = JSON.parse(raw);
   const auth = new google.auth.GoogleAuth({
     credentials,
-    scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
+    scopes: [write
+      ? 'https://www.googleapis.com/auth/spreadsheets'
+      : 'https://www.googleapis.com/auth/spreadsheets.readonly'],
   });
   return auth.getClient();
 }
@@ -135,6 +137,67 @@ router.get('/tracking-import', async (req, res) => {
     res.json({ columns, rows: Object.values(byName) });
   } catch (err) {
     console.error('Tracking import error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/sheets/import-month
+// Reads MONTHLY_CASES_SHEET_ID + MONTHLY_CASES_TAB and appends rows that don't
+// already exist in the master sheet (SHEETS_ID + SHEETS_TAB_NAME).
+// Deduplication key: normalised name + normalised phone (last 10 digits).
+// Returns { added, skipped }.
+router.post('/import-month', async (req, res) => {
+  try {
+    const monthlySheetId = process.env.MONTHLY_CASES_SHEET_ID;
+    const monthlyTab     = process.env.MONTHLY_CASES_TAB;
+    if (!monthlySheetId) return res.status(503).json({ error: 'MONTHLY_CASES_SHEET_ID not set' });
+    if (!monthlyTab)     return res.status(503).json({ error: 'MONTHLY_CASES_TAB not set' });
+
+    const masterSheetId = process.env.SHEETS_ID;
+    const masterTab     = process.env.SHEETS_TAB_NAME || 'Sheet1';
+    if (!masterSheetId) return res.status(503).json({ error: 'SHEETS_ID not set' });
+
+    const auth   = await getAuthClient(true); // write scope
+    const sheets = google.sheets({ version: 'v4', auth });
+
+    // Read master sheet to build dedupe set
+    const masterRes = await sheets.spreadsheets.values.get({
+      spreadsheetId: masterSheetId,
+      range: `${masterTab}!A2:F`,
+    });
+    const masterRows = masterRes.data.values || [];
+    const existing = new Set(
+      masterRows.map(r => `${(r[0]||'').trim().toLowerCase()}|${(r[1]||'').replace(/\D/g,'').slice(-10)}`)
+    );
+
+    // Read monthly tab
+    const monthRes = await sheets.spreadsheets.values.get({
+      spreadsheetId: monthlySheetId,
+      range: `${monthlyTab}!A2:F`,
+    });
+    const monthRows = monthRes.data.values || [];
+
+    // Filter to new rows only
+    const toAppend = monthRows.filter(r => {
+      const phone = (r[1] || '').replace(/\D/g, '').slice(-10);
+      if (!phone) return false;
+      const key = `${(r[0]||'').trim().toLowerCase()}|${phone}`;
+      return !existing.has(key);
+    });
+
+    if (toAppend.length > 0) {
+      await sheets.spreadsheets.values.append({
+        spreadsheetId: masterSheetId,
+        range: `${masterTab}!A:F`,
+        valueInputOption: 'USER_ENTERED',
+        insertDataOption: 'INSERT_ROWS',
+        requestBody: { values: toAppend },
+      });
+    }
+
+    res.json({ added: toAppend.length, skipped: monthRows.length - toAppend.length });
+  } catch (err) {
+    console.error('Sheet import-month error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });

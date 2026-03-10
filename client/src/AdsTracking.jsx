@@ -663,6 +663,11 @@ export default function AdsTracking() {
   const [casesError, setCasesError]   = useState('');
   const casesLoadedRef = useRef(false);
 
+  const [importing, setImporting]         = useState(false);
+  const [importResult, setImportResult]   = useState(null); // { added, skipped }
+  const [importError, setImportError]     = useState('');
+  const importRanRef = useRef(false);
+
   // Row selection / merge
   const [selecting, setSelecting]     = useState(false);
   const [selectedRows, setSelectedRows] = useState(new Set());
@@ -756,6 +761,34 @@ export default function AdsTracking() {
   }
 
   useEffect(() => { loadCases(); }, []);
+
+  // ── Monthly sheet import ─────────────────────────────────────────────────────
+  async function importMonth() {
+    if (importing) return;
+    setImporting(true);
+    setImportError('');
+    setImportResult(null);
+    try {
+      const res = await fetch(`${BASE}/api/sheets/import-month`, { method: 'POST' });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || res.statusText);
+      setImportResult(json);
+      // Reload cases so new rows appear immediately
+      casesLoadedRef.current = false;
+      await loadCases();
+    } catch (err) {
+      setImportError(err.message);
+    } finally {
+      setImporting(false);
+    }
+  }
+
+  // Auto-run import once on mount (after cases load)
+  useEffect(() => {
+    if (importRanRef.current) return;
+    importRanRef.current = true;
+    importMonth();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── FB sync ─────────────────────────────────────────────────────────────────
   const sync = useCallback(async () => {
@@ -1263,6 +1296,25 @@ export default function AdsTracking() {
         </span>
         {loadingCases && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Loading cases…</span>}
         {casesError && <span style={{ fontSize: 11, color: '#dc2626' }}>{casesError}</span>}
+        {importing && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Importing monthly cases…</span>}
+        {!importing && importResult && (
+          <span style={{ fontSize: 11, color: 'var(--green-dark)' }}>
+            Imported: +{importResult.added} new · {importResult.skipped} already present
+          </span>
+        )}
+        {importError && (
+          <span style={{ fontSize: 11, color: '#dc2626' }} title={importError}>
+            Import failed — {importError.slice(0, 60)}
+          </span>
+        )}
+        <button
+          className="btn btn--sm"
+          onClick={importMonth}
+          disabled={importing}
+          title="Import current month's cases into the master sheet"
+        >
+          {importing ? 'Importing…' : 'Import Month'}
+        </button>
         <button
           className={`btn btn--sm${selecting ? ' btn--primary' : ''}`}
           style={{ marginLeft: 'auto' }}
