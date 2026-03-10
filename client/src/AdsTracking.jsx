@@ -996,10 +996,37 @@ export default function AdsTracking() {
     return map;
   }, [ghlContacts]);
 
-  // Cases are matched directly from column I (ad name) already in the sheet
+  // Write GHL UTM data to sheet for rows that don't have column I populated yet
+  useEffect(() => {
+    if (!ghlContacts.length || !sheetCases.length) return;
+    const toEnrich = sheetCases
+      .filter(sc => !sc.utmContent) // not yet in sheet
+      .map(sc => {
+        const key = (sc.phone || '').replace(/\D/g, '').slice(-10);
+        const contact = ghlByPhone[key];
+        return contact ? { rowIndex: sc.rowIndex, utmCampaign: contact.utmCampaign, utmAdset: contact.utmAdset, utmContent: contact.utmContent, utmTerm: contact.utmTerm } : null;
+      })
+      .filter(Boolean);
+    if (!toEnrich.length) return;
+    fetch(`${BASE}/api/sheets/enrich-utm`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(toEnrich),
+    }).catch(err => console.warn('UTM enrich error:', err.message));
+  }, [ghlContacts, sheetCases]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Match cases from column I (ad name) — populated by sheet or just-enriched GHL data
   const attributedCases = useMemo(() =>
-    sheetCases.filter(sc => sc.utmContent),
-    [sheetCases]
+    sheetCases
+      .map(sc => {
+        if (sc.utmContent) return sc;
+        // Fall back to GHL match for rows not yet written to sheet
+        const key = (sc.phone || '').replace(/\D/g, '').slice(-10);
+        const contact = ghlByPhone[key];
+        return contact ? { ...sc, utmContent: contact.utmContent } : null;
+      })
+      .filter(sc => sc?.utmContent),
+    [sheetCases, ghlByPhone]
   );
 
   const caseGrid = useMemo(() => {

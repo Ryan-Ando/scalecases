@@ -115,8 +115,10 @@ router.get('/contacts', async (req, res) => {
       phone:       c.phone  || '',
       email:       c.email  || '',
       dateAdded:   c.dateAdded,
-      utmContent:  getCustomField(c, 'DsiFBjELrBDfPKQ2tlH0'),
-      utmMedium:   getCustomField(c, '2m1yjxI758bRlzTOv7J0'),
+      utmCampaign: getCustomField(c, process.env.GHL_FIELD_UTM_CAMPAIGN),
+      utmAdset:    getCustomField(c, '2m1yjxI758bRlzTOv7J0'), // col H
+      utmContent:  getCustomField(c, 'DsiFBjELrBDfPKQ2tlH0'), // col I — used for matching
+      utmTerm:     getCustomField(c, process.env.GHL_FIELD_UTM_TERM),
       customFields: c.customFields || [],
     }));
 

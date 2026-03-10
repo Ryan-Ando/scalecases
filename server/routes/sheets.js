@@ -89,9 +89,9 @@ router.post('/enrich-utm', async (req, res) => {
     const auth   = await getAuthClient(true);
     const sheets = google.sheets({ version: 'v4', auth });
 
-    const data = rows.map(({ rowIndex, utmContent, utmMedium }) => ({
-      range: `${tabName}!G${rowIndex}:H${rowIndex}`,
-      values: [[utmContent || '', utmMedium || '']],
+    const data = rows.map(({ rowIndex, utmCampaign, utmAdset, utmContent, utmTerm }) => ({
+      range: `${tabName}!G${rowIndex}:J${rowIndex}`,
+      values: [[utmCampaign || '', utmAdset || '', utmContent || '', utmTerm || '']],
     }));
 
     await sheets.spreadsheets.values.batchUpdate({
