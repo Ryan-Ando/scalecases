@@ -996,36 +996,11 @@ export default function AdsTracking() {
     return map;
   }, [ghlContacts]);
 
+  // Cases are matched directly from column I (ad name) already in the sheet
   const attributedCases = useMemo(() =>
-    sheetCases
-      .map(sc => {
-        // Already enriched in sheet — use directly, no GHL lookup needed
-        if (sc.utmContent) return sc;
-        // Try GHL phone match
-        const key = (sc.phone || '').replace(/\D/g, '').slice(-10);
-        const contact = ghlByPhone[key];
-        return contact
-          ? { ...sc, utmContent: contact.utmContent, utmMedium: contact.utmMedium }
-          : null;
-      })
-      .filter(Boolean),
-    [sheetCases, ghlByPhone]
+    sheetCases.filter(sc => sc.utmContent),
+    [sheetCases]
   );
-
-  // Write UTM data back to sheet for newly matched rows (those without it in sheet)
-  useEffect(() => {
-    const toEnrich = attributedCases.filter(c => !sheetCases.find(sc => sc.rowIndex === c.rowIndex)?.utmContent);
-    if (toEnrich.length === 0) return;
-    fetch(`${BASE}/api/sheets/enrich-utm`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(toEnrich.map(c => ({
-        rowIndex:   c.rowIndex,
-        utmContent: c.utmContent || '',
-        utmMedium:  c.utmMedium  || '',
-      }))),
-    }).catch(err => console.warn('UTM enrich error:', err.message));
-  }, [attributedCases]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const caseGrid = useMemo(() => {
     const map = {};
