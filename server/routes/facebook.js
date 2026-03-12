@@ -259,7 +259,7 @@ router.get('/daily', async (req, res) => {
 
     const accounts = adAccounts();
     const all = [];
-    await Promise.all(accounts.map(async account => {
+    await Promise.allSettled(accounts.map(async account => {
       const params = new URLSearchParams({
         level,
         fields,
@@ -283,6 +283,8 @@ router.get('/daily', async (req, res) => {
         all.push(...(json.data || []));
         url = json.paging?.next || null;
       }
+    })).then(results => results.forEach(r => {
+      if (r.status === 'rejected') console.warn('FB daily skipped account:', r.reason?.message);
     }));
     res.json(all);
   } catch (err) {
