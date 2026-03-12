@@ -1107,7 +1107,9 @@ export default function AdsTracking() {
           const canonical = memberToCanonical[(a.name || '').trim()] || (a.name || '').trim();
           return canonical === adName && extractState(a.campaignName) === st;
         });
-        const active = instances.filter(a => a.status === 'ACTIVE');
+        const active = instances.filter(a =>
+          (a.effectiveStatus || a.status) === 'ACTIVE' && a.adsetStatus === 'ACTIVE'
+        );
         if (!active.length) { map[adName][st] = 'off'; continue; }
         const hasSolo = active.some(a => (adsetSizes[a.adsetId] || 1) === 1);
         map[adName][st] = hasSolo ? 'solo' : 'shared';
@@ -1496,13 +1498,13 @@ export default function AdsTracking() {
                       >
                         Sort {sortKey === state && <SortArrow dir={sortDir} />}
                       </button>
-                      {colSpend > 0 && (
-                        <div className="col-stat-block">
-                          <span style={{ color: '#64748b' }}>${colSpend.toLocaleString('en-US', { maximumFractionDigits: 0 })}</span>
-                          {colLeads > 0 && <span style={{ color: '#16a34a' }}>CPL ${(colSpend / colLeads).toFixed(0)}</span>}
-                          {colCases > 0 && <span style={{ color: '#3b82f6' }}>CPC ${(colSpend / colCases).toFixed(0)}</span>}
-                        </div>
-                      )}
+                      <div className="col-stat-block">
+                        {colLeads > 0 && <span style={{ color: '#16a34a', fontWeight: 700 }}>{colLeads} leads</span>}
+                        {colCases > 0 && <span style={{ color: '#3b82f6', fontWeight: 700 }}>{colCases} cases</span>}
+                        {colSpend > 0 && <span style={{ color: '#64748b' }}>${colSpend.toLocaleString('en-US', { maximumFractionDigits: 0 })}</span>}
+                        {colSpend > 0 && colLeads > 0 && <span style={{ color: '#16a34a' }}>CPL ${(colSpend / colLeads).toFixed(0)}</span>}
+                        {colSpend > 0 && colCases > 0 && <span style={{ color: '#3b82f6' }}>CPC ${(colSpend / colCases).toFixed(0)}</span>}
+                      </div>
                     </div>
                     <div className="col-resize-handle" onMouseDown={e => startColResize(state, 75, e)} />
                   </th>

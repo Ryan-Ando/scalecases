@@ -202,7 +202,7 @@ router.get('/ads', async (req, res) => {
     const { date_preset, adset_id, start, end } = req.query;
     const timeRange = start && end ? { since: start, until: end } : null;
 
-    const listParams = { fields: 'id,name,status,adset_id,adset{name},campaign_id,campaign{name},creative{id,name,thumbnail_url},created_time' };
+    const listParams = { fields: 'id,name,status,effective_status,adset_id,adset{name,status,effective_status},campaign_id,campaign{name},creative{id,name,thumbnail_url},created_time' };
     if (adset_id) listParams.adset_id = adset_id;
 
     const [ads, insights] = await Promise.all([
@@ -218,8 +218,10 @@ router.get('/ads', async (req, res) => {
         id: a.id,
         name: a.name,
         status: a.status,
+        effectiveStatus: a.effective_status,
         adsetId: a.adset_id,
         adsetName: a.adset?.name || '',
+        adsetStatus: a.adset?.effective_status || a.adset?.status || '',
         campaignId: a.campaign_id,
         campaignName: a.campaign?.name || '',
         creative: a.creative,
