@@ -96,17 +96,20 @@ async function fetchInsightsForAccount(account, level, datePreset, filters = {},
   return all;
 }
 
-// Fetch insights from all accounts and merge
+// Fetch insights from all accounts and merge — skips accounts that error
 async function fetchInsights(level, datePreset, filters = {}, timeRange = null) {
   const accounts = adAccounts();
-  const results = await Promise.all(accounts.map(a => fetchInsightsForAccount(a, level, datePreset, filters, timeRange)));
-  return results.flat();
+  const settled = await Promise.allSettled(accounts.map(a => fetchInsightsForAccount(a, level, datePreset, filters, timeRange)));
+  return settled.flatMap(r => {
+    if (r.status === 'rejected') { console.warn('FB insights skipped account:', r.reason?.message); return []; }
+    return r.value;
+  });
 }
 
-// Fetch a list endpoint (campaigns/adsets/ads) from all accounts and merge
+// Fetch a list endpoint (campaigns/adsets/ads) from all accounts and merge — skips accounts that error
 async function fetchFromAllAccounts(path, queryParams) {
   const accounts = adAccounts();
-  const results = await Promise.all(accounts.map(async account => {
+  const settled = await Promise.allSettled(accounts.map(async account => {
     const all = [];
     let url = `${FB_API}/${account}/${path}?${new URLSearchParams({ ...queryParams, access_token: token(), limit: 500 })}`;
     while (url) {
@@ -118,7 +121,10 @@ async function fetchFromAllAccounts(path, queryParams) {
     }
     return all;
   }));
-  return results.flat();
+  return settled.flatMap(r => {
+    if (r.status === 'rejected') { console.warn('FB list skipped account:', r.reason?.message); return []; }
+    return r.value;
+  });
 }
 
 // GET /api/facebook/campaigns
