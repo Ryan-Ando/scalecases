@@ -1011,7 +1011,16 @@ export default function AdsTracking() {
       .map(sc => {
         const key = (sc.phone || '').replace(/\D/g, '').slice(-10);
         const contact = ghlByPhone[key];
-        return contact ? { rowIndex: sc.rowIndex, utmCampaign: contact.utmCampaign, utmAdset: contact.utmAdset, utmContent: contact.utmContent, utmTerm: contact.utmTerm } : null;
+        if (!contact) return null;
+        const missingDate = !sc.date && contact.dateAdded;
+        return {
+          rowIndex:    sc.rowIndex,
+          utmCampaign: contact.utmCampaign,
+          utmAdset:    contact.utmAdset,
+          utmContent:  contact.utmContent,
+          utmTerm:     contact.utmTerm,
+          date:        missingDate ? new Date(contact.dateAdded).toLocaleDateString('en-US') : undefined,
+        };
       })
       .filter(Boolean);
     if (!toEnrich.length) return;
