@@ -23,51 +23,6 @@ const US_STATES = new Set([
   'VA','WA','WV','WI','WY','DC',
 ]);
 
-// Lead action types in priority order (mirrors server extractResults)
-const LEAD_ACTION_TYPES = [
-  'lead', 'onsite_conversion.lead_grouped', 'offsite_conversion.fb_pixel_lead',
-  'contact', 'schedule', 'submit_application',
-];
-
-function extractLeadsFromActions(actions = []) {
-  for (const type of LEAD_ACTION_TYPES) {
-    const action = (actions || []).find(a => a.action_type === type);
-    if (action) return parseInt(action.value, 10) || 0;
-  }
-  return 0;
-}
-
-// Aggregate ad-level daily rows into per-ad metrics, merged with allAds metadata.
-// Deduplication: adDailyInsights rows use id = `${date_start}|${ad_id}` as the IndexedDB key,
-// so put() semantics guarantee no duplicate rows can exist in the store.
-function aggregateFromDaily(dailyRows, allAds) {
-  const byAdId = {};
-  for (const row of dailyRows) {
-    if (!row.ad_id) continue;
-    if (!byAdId[row.ad_id]) byAdId[row.ad_id] = { spend: 0, results: 0, impressions: 0, uniqueClicks: 0 };
-    byAdId[row.ad_id].spend        += parseFloat(row.spend)         || 0;
-    byAdId[row.ad_id].impressions  += parseFloat(row.impressions)   || 0;
-    byAdId[row.ad_id].uniqueClicks += parseFloat(row.unique_clicks) || 0;
-    byAdId[row.ad_id].results      += extractLeadsFromActions(row.actions);
-  }
-  return allAds.map(a => {
-    const agg = byAdId[a.id];
-    if (!agg) return { ...a, spend: '0', results: 0, resultType: 'Leads' };
-    const { spend, results, impressions, uniqueClicks } = agg;
-    return {
-      ...a,
-      spend:                 spend.toFixed(2),
-      results,
-      resultType:            'Leads',
-      impressions,
-      unique_clicks:         uniqueClicks,
-      cpm:                   impressions > 0 ? (spend / impressions * 1000).toFixed(2) : undefined,
-      cost_per_result:       results > 0     ? (spend / results).toFixed(2)            : undefined,
-      cost_per_unique_click: uniqueClicks > 0 ? (spend / uniqueClicks).toFixed(2)      : undefined,
-    };
-  });
-}
-
 // Split campaign name on separators and return the last token that is a valid US state.
 function extractState(campaignName) {
   if (!campaignName) return null;
@@ -391,13 +346,17 @@ function AdDetailModal({ adName, state, allAds, sheetByName, accountLabel, merge
     [mergeGroup, adName]
   );
 
-  // Compute cell date range from cached daily data — instant, no network call
+  // When a table date range is selected, fetch fresh ad stats for just this cell
   useEffect(() => {
     if (!tableStart || !tableEnd) { setRangeAds(null); setRangeError(''); return; }
-    const rangeDaily = allAdDailyInsights.filter(r => r.date_start >= tableStart && r.date_start <= tableEnd);
-    setRangeAds(aggregateFromDaily(rangeDaily, allAds));
+    let cancelled = false;
+    setLoadingRange(true);
     setRangeError('');
-  }, [tableStart, tableEnd, allAdDailyInsights, allAds]);
+    apiFetch(`/api/facebook/ads?start=${tableStart}&end=${tableEnd}`)
+      .then(data => { if (!cancelled) { setRangeAds(data); setLoadingRange(false); } })
+      .catch(err => { if (!cancelled) { setRangeError(err.message); setLoadingRange(false); } });
+    return () => { cancelled = true; };
+  }, [tableStart, tableEnd]);
 
   // FB instances: ads matching any effective name AND this state
   const fbInstances = useMemo(() =>
@@ -964,17 +923,21 @@ export default function AdsTracking() {
     return set;
   }, [mergeGroups]);
 
-  // Compute range from cached daily data — instant, no network call
+  // Fetch ads for custom date range; clear rangeAds when range is cleared
   useEffect(() => {
     if (!rangeStart || !rangeEnd || rangeStart > rangeEnd) {
       setRangeAds(null);
       setRangeError('');
       return;
     }
-    const rangeDaily = allAdDailyInsights.filter(r => r.date_start >= rangeStart && r.date_start <= rangeEnd);
-    setRangeAds(aggregateFromDaily(rangeDaily, allAds));
+    let cancelled = false;
+    setLoadingRange(true);
     setRangeError('');
-  }, [rangeStart, rangeEnd, allAdDailyInsights, allAds]);
+    apiFetch(`/api/facebook/ads?start=${rangeStart}&end=${rangeEnd}`)
+      .then(data => { if (!cancelled) { setRangeAds(data); setLoadingRange(false); } })
+      .catch(err  => { if (!cancelled) { setRangeError(err.message); setLoadingRange(false); } });
+    return () => { cancelled = true; };
+  }, [rangeStart, rangeEnd]);
 
   // Active ads: use rangeAds when a custom range is set, otherwise all-time allAds
   const activeAds = rangeAds ?? allAds;
@@ -1086,15 +1049,6 @@ export default function AdsTracking() {
         id: `${r.date_start}|${r.campaign_id || r.adset_id || r.ad_id || 'agg'}`,
       }));
       await dbUpsert('fbDailyInsights', dailyRecords);
-
-      setSyncNote('Fetching ad-level daily insights…');
-      const adPreset   = isFirstSync ? 'last_90d' : 'last_14d';
-      const adDailyRaw = await apiFetch(`/api/facebook/daily?date_preset=${adPreset}&level=ad`);
-      // Key = date_start|ad_id — unique per ad per day, put() overwrites → zero duplicates
-      const adDailyRecs = adDailyRaw
-        .filter(r => r.ad_id)
-        .map(r => ({ ...r, id: `${r.date_start}|${r.ad_id}` }));
-      await dbUpsert('adDailyInsights', adDailyRecs);
 
       await dbSetMeta('lastSync', now);
       await loadFromDB();
