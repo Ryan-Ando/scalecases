@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect, useRef, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from 'recharts';
@@ -108,17 +109,31 @@ function DateRangePicker({ start, end, onChange }) {
   const [open, setOpen]       = useState(false);
   const [hover, setHover]     = useState(null);
   const [selecting, setSel]   = useState(null); // first click date string
+  const [dropPos, setDropPos] = useState({ top: 0, right: 0 });
   const today = new Date();
   const [viewYear, setViewYear] = useState(today.getFullYear());
   const [viewMonth, setViewMonth] = useState(today.getMonth());
-  const ref = useRef();
+  const btnRef  = useRef();
+  const dropRef = useRef();
 
   useEffect(() => {
     if (!open) return;
-    const handler = e => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    const handler = e => {
+      const inBtn  = btnRef.current  && btnRef.current.contains(e.target);
+      const inDrop = dropRef.current && dropRef.current.contains(e.target);
+      if (!inBtn && !inDrop) setOpen(false);
+    };
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
   }, [open]);
+
+  function openPicker() {
+    if (btnRef.current) {
+      const r = btnRef.current.getBoundingClientRect();
+      setDropPos({ top: r.bottom + 4, right: window.innerWidth - r.right });
+    }
+    setOpen(o => !o);
+  }
 
   function isoDate(y, m, d) {
     return `${y}-${String(m+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
@@ -160,11 +175,58 @@ function DateRangePicker({ start, end, onChange }) {
     ? `${start.slice(5)} – ${end.slice(5)}`
     : start ? `${start.slice(5)} – ?` : 'Date range';
 
+  const dropdown = open && createPortal(
+    <div ref={dropRef} style={{
+      position: 'fixed', top: dropPos.top, right: dropPos.right, zIndex: 9999,
+      background: 'var(--surface)', border: '1px solid var(--border)',
+      borderRadius: 10, padding: 12, boxShadow: '0 8px 32px rgba(0,0,0,0.18)',
+      minWidth: 240,
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+        <button className="btn btn--sm" onClick={prevMonth}>‹</button>
+        <span style={{ fontWeight: 600, fontSize: 13 }}>{MONTHS[viewMonth]} {viewYear}</span>
+        <button className="btn btn--sm" onClick={nextMonth}>›</button>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7,1fr)', gap: 2 }}>
+        {DAYS.map(d => (
+          <div key={d} style={{ textAlign: 'center', fontSize: 10, color: 'var(--text-muted)', fontWeight: 600, padding: '2px 0' }}>{d}</div>
+        ))}
+        {buildDays().map((iso, i) => {
+          if (!iso) return <div key={i} />;
+          const inRange = lo && hi && iso >= lo && iso <= hi;
+          const isEdge  = iso === lo || iso === hi || iso === start || iso === end;
+          return (
+            <div
+              key={iso}
+              onMouseEnter={() => selecting && setHover(iso)}
+              onClick={() => handleDayClick(iso)}
+              style={{
+                textAlign: 'center', fontSize: 12, padding: '4px 2px', borderRadius: 4, cursor: 'pointer',
+                background: isEdge ? 'var(--green)' : inRange ? 'rgba(58,143,92,0.15)' : undefined,
+                color: isEdge ? '#fff' : undefined,
+                fontWeight: isEdge ? 700 : undefined,
+              }}
+            >
+              {parseInt(iso.slice(8))}
+            </div>
+          );
+        })}
+      </div>
+      {selecting && (
+        <div style={{ marginTop: 8, fontSize: 11, color: 'var(--text-muted)', textAlign: 'center' }}>
+          Click end date ({selecting} selected)
+        </div>
+      )}
+    </div>,
+    document.body
+  );
+
   return (
-    <div style={{ position: 'relative' }} ref={ref}>
+    <div>
       <button
+        ref={btnRef}
         className={`btn btn--sm${(start || end) ? ' btn--primary' : ''}`}
-        onClick={() => setOpen(o => !o)}
+        onClick={openPicker}
       >
         {label}
         {(start || end) && (
@@ -174,50 +236,7 @@ function DateRangePicker({ start, end, onChange }) {
           >✕</span>
         )}
       </button>
-      {open && (
-        <div style={{
-          position: 'absolute', top: '100%', right: 0, marginTop: 4, zIndex: 300,
-          background: 'var(--surface)', border: '1px solid var(--border)',
-          borderRadius: 10, padding: 12, boxShadow: '0 8px 32px rgba(0,0,0,0.18)',
-          minWidth: 240,
-        }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-            <button className="btn btn--sm" onClick={prevMonth}>‹</button>
-            <span style={{ fontWeight: 600, fontSize: 13 }}>{MONTHS[viewMonth]} {viewYear}</span>
-            <button className="btn btn--sm" onClick={nextMonth}>›</button>
-          </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7,1fr)', gap: 2 }}>
-            {DAYS.map(d => (
-              <div key={d} style={{ textAlign: 'center', fontSize: 10, color: 'var(--text-muted)', fontWeight: 600, padding: '2px 0' }}>{d}</div>
-            ))}
-            {buildDays().map((iso, i) => {
-              if (!iso) return <div key={i} />;
-              const inRange = lo && hi && iso >= lo && iso <= hi;
-              const isEdge  = iso === lo || iso === hi || iso === start || iso === end;
-              return (
-                <div
-                  key={iso}
-                  onMouseEnter={() => selecting && setHover(iso)}
-                  onClick={() => handleDayClick(iso)}
-                  style={{
-                    textAlign: 'center', fontSize: 12, padding: '4px 2px', borderRadius: 4, cursor: 'pointer',
-                    background: isEdge ? 'var(--green)' : inRange ? 'rgba(58,143,92,0.15)' : undefined,
-                    color: isEdge ? '#fff' : undefined,
-                    fontWeight: isEdge ? 700 : undefined,
-                  }}
-                >
-                  {parseInt(iso.slice(8))}
-                </div>
-              );
-            })}
-          </div>
-          {selecting && (
-            <div style={{ marginTop: 8, fontSize: 11, color: 'var(--text-muted)', textAlign: 'center' }}>
-              Click end date ({selecting} selected)
-            </div>
-          )}
-        </div>
-      )}
+      {dropdown}
     </div>
   );
 }
@@ -259,6 +278,7 @@ function AdDetailModal({ adName, state, allAds, sheetByName, accountLabel, merge
   const [tableEnd, setTableEnd]       = useState('');
   const [rangeAds, setRangeAds]       = useState(null);
   const [loadingRange, setLoadingRange] = useState(false);
+  const [rangeError, setRangeError]   = useState('');
   const [togglingId, setTogglingId]   = useState(null);
 
   // GHL contacts + sheet cases — fetched on-demand when modal opens
@@ -326,12 +346,13 @@ function AdDetailModal({ adName, state, allAds, sheetByName, accountLabel, merge
 
   // When a table date range is selected, fetch fresh ad stats for just this cell
   useEffect(() => {
-    if (!tableStart || !tableEnd) { setRangeAds(null); return; }
+    if (!tableStart || !tableEnd) { setRangeAds(null); setRangeError(''); return; }
     let cancelled = false;
     setLoadingRange(true);
+    setRangeError('');
     apiFetch(`/api/facebook/ads?start=${tableStart}&end=${tableEnd}`)
       .then(data => { if (!cancelled) { setRangeAds(data); setLoadingRange(false); } })
-      .catch(() => { if (!cancelled) setLoadingRange(false); });
+      .catch(err => { if (!cancelled) { setRangeError(err.message); setLoadingRange(false); } });
     return () => { cancelled = true; };
   }, [tableStart, tableEnd]);
 
@@ -685,6 +706,7 @@ function AdDetailModal({ adName, state, allAds, sheetByName, accountLabel, merge
                 </div>
                 <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 6 }}>
                   {loadingRange && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Loading…</span>}
+                  {rangeError && <span style={{ fontSize: 11, color: '#dc2626' }} title={rangeError}>Range error</span>}
                   <DateRangePicker
                     start={tableStart}
                     end={tableEnd}
