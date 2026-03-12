@@ -1023,18 +1023,25 @@ export default function AdsTracking() {
   }, [ghlContacts, sheetCases]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Match cases from column I (ad name) — populated by sheet or just-enriched GHL data
-  const attributedCases = useMemo(() =>
-    sheetCases
+  const attributedCases = useMemo(() => {
+    const start = rangeStart ? rangeStart : null;
+    const end   = rangeEnd   ? rangeEnd   : null;
+    return sheetCases
       .map(sc => {
         if (sc.utmContent) return sc;
-        // Fall back to GHL match for rows not yet written to sheet
         const key = (sc.phone || '').replace(/\D/g, '').slice(-10);
         const contact = ghlByPhone[key];
         return contact ? { ...sc, utmContent: contact.utmContent } : null;
       })
-      .filter(sc => sc?.utmContent),
-    [sheetCases, ghlByPhone]
-  );
+      .filter(sc => {
+        if (!sc?.utmContent) return false;
+        if (!sc.date) return !start; // no date = only show when no range set
+        const d = sc.date.slice(0, 10);
+        if (start && d < start) return false;
+        if (end   && d > end)   return false;
+        return true;
+      });
+  }, [sheetCases, ghlByPhone, rangeStart, rangeEnd]);
 
   const caseGrid = useMemo(() => {
     const map = {};
