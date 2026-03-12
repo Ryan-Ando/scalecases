@@ -130,7 +130,9 @@ function DateRangePicker({ start, end, onChange }) {
   function openPicker() {
     if (btnRef.current) {
       const r = btnRef.current.getBoundingClientRect();
-      setDropPos({ top: r.bottom + 4, right: window.innerWidth - r.right });
+      const calW = 264;
+      const left = Math.min(r.right - calW, window.innerWidth - calW - 8);
+      setDropPos({ top: r.bottom + 4, left: Math.max(8, left) });
     }
     setOpen(o => !o);
   }
@@ -177,7 +179,7 @@ function DateRangePicker({ start, end, onChange }) {
 
   const dropdown = open && createPortal(
     <div ref={dropRef} style={{
-      position: 'fixed', top: dropPos.top, right: dropPos.right, zIndex: 9999,
+      position: 'fixed', top: dropPos.top, left: dropPos.left, zIndex: 9999,
       background: 'var(--surface)', border: '1px solid var(--border)',
       borderRadius: 10, padding: 12, boxShadow: '0 8px 32px rgba(0,0,0,0.18)',
       minWidth: 240,
@@ -702,7 +704,7 @@ function AdDetailModal({ adName, state, allAds, sheetByName, accountLabel, merge
             <div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
                 <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)' }}>
-                  Ads ({fbInstances.length})
+                  Ads ({fbInstances.length}){tableStart && tableEnd ? ` · ${tableStart} – ${tableEnd}` : ' · all time'}
                 </div>
                 <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 6 }}>
                   {loadingRange && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Loading…</span>}
