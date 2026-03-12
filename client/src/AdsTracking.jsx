@@ -706,7 +706,7 @@ function AdDetailModal({ adName, state, allAds, sheetByName, accountLabel, merge
                 </div>
                 <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 6 }}>
                   {loadingRange && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Loading…</span>}
-                  {rangeError && <span style={{ fontSize: 11, color: '#dc2626' }} title={rangeError}>Range error</span>}
+                  {rangeError && <span style={{ fontSize: 11, color: '#dc2626', maxWidth: 300, wordBreak: 'break-all' }}>{rangeError}</span>}
                   <DateRangePicker
                     start={tableStart}
                     end={tableEnd}
