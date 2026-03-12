@@ -285,4 +285,23 @@ router.get('/daily', async (req, res) => {
   }
 });
 
+// POST /api/facebook/ad/:id/status  body: { status: 'ACTIVE'|'PAUSED' }
+router.post('/ad/:id/status', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status } = req.body;
+    if (!['ACTIVE', 'PAUSED'].includes(status)) return res.status(400).json({ error: 'Invalid status' });
+    const r = await fetch(`${FB_API}/${id}?access_token=${token()}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status }),
+    });
+    const json = await r.json();
+    if (json.error) throw new Error(json.error.message);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 export default router;

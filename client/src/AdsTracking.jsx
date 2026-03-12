@@ -223,16 +223,21 @@ function DateRangePicker({ start, end, onChange }) {
 }
 
 const AD_DETAIL_TABLE_COLS = [
-  { key: 'campaign', label: 'Campaign'  },
-  { key: 'adset',    label: 'Adset'     },
-  { key: 'status',   label: 'Status'    },
-  { key: 'spend',    label: 'Spend'     },
-  { key: 'fbLeads',  label: 'FB Leads'  },
-  { key: 'cpl',      label: 'Cost/Lead' },
-  { key: 'cpm',      label: 'CPM'       },
-  { key: 'ctr',      label: 'CTR'       },
-  { key: 'clicks',   label: 'Clicks'    },
-  { key: 'created',  label: 'Created'   },
+  { key: 'toggle',         label: ''                          },
+  { key: 'adName',         label: 'Ad'                        },
+  { key: 'delivery',       label: 'Delivery'                  },
+  { key: 'budget',         label: 'Budget'                    },
+  { key: 'adset',          label: 'Ad Set'                    },
+  { key: 'spend',          label: 'Amount Spent'              },
+  { key: 'fbLeads',        label: 'Results'                   },
+  { key: 'cpl',            label: 'Cost per Result'           },
+  { key: 'uniqueClicks',   label: 'Unique Link Clicks'        },
+  { key: 'costPerClick',   label: 'Cost per Unique Click'     },
+  { key: 'cpm',            label: 'CPM'                       },
+  { key: 'uniqueCtr',      label: 'Unique CTR'                },
+  { key: 'frequency',      label: 'Frequency'                 },
+  { key: 'videoPlayTime',  label: 'Video Avg Play Time'       },
+  { key: 'created',        label: 'Date Created'              },
 ];
 
 // ── Ad Detail Modal ───────────────────────────────────────────────────────────
@@ -244,12 +249,17 @@ function fmtPhone(p) {
 }
 
 function AdDetailModal({ adName, state, allAds, sheetByName, accountLabel, mergeGroups, allAdDailyInsights, onSyncMax, onUnmerge, onClose }) {
-  const [period, setPeriod]         = useState('90');
-  const [sortKey, setSortKey]       = useState('spend');
-  const [sortDir, setSortDir]       = useState('desc');
+  const [period, setPeriod]           = useState('90');
+  const [sortKey, setSortKey]         = useState('spend');
+  const [sortDir, setSortDir]         = useState('desc');
   const [modalMetric, setModalMetric] = useState('leads');
   const [caseSortKey, setCaseSortKey] = useState('date');
   const [caseSortDir, setCaseSortDir] = useState('desc');
+  const [tableStart, setTableStart]   = useState('');
+  const [tableEnd, setTableEnd]       = useState('');
+  const [rangeAds, setRangeAds]       = useState(null);
+  const [loadingRange, setLoadingRange] = useState(false);
+  const [togglingId, setTogglingId]   = useState(null);
 
   // GHL contacts + sheet cases — fetched on-demand when modal opens
   const [ghlContacts, setGhlContacts] = useState([]);
@@ -314,13 +324,25 @@ function AdDetailModal({ adName, state, allAds, sheetByName, accountLabel, merge
     [mergeGroup, adName]
   );
 
+  // When a table date range is selected, fetch fresh ad stats for just this cell
+  useEffect(() => {
+    if (!tableStart || !tableEnd) { setRangeAds(null); return; }
+    let cancelled = false;
+    setLoadingRange(true);
+    apiFetch(`/api/facebook/ads?start=${tableStart}&end=${tableEnd}`)
+      .then(data => { if (!cancelled) { setRangeAds(data); setLoadingRange(false); } })
+      .catch(() => { if (!cancelled) setLoadingRange(false); });
+    return () => { cancelled = true; };
+  }, [tableStart, tableEnd]);
+
   // FB instances: ads matching any effective name AND this state
+  const sourceAds = rangeAds ?? allAds;
   const fbInstances = useMemo(() =>
-    allAds.filter(a =>
+    sourceAds.filter(a =>
       effectiveNames.includes((a.name || '').trim()) &&
       extractState(a.campaignName) === state
     ),
-    [allAds, effectiveNames, state]
+    [sourceAds, effectiveNames, state]
   );
 
   // Unique adsets this ad has lived in
@@ -409,29 +431,79 @@ function AdDetailModal({ adName, state, allAds, sheetByName, accountLabel, merge
   }, [cases, adDailyInsights, cutoff]);
 
   // Table rows: one per FB ad instance
+  const [adStatuses, setAdStatuses] = useState({});
+
+  async function toggleAdStatus(id, currentStatus) {
+    const next = currentStatus === 'ACTIVE' ? 'PAUSED' : 'ACTIVE';
+    setTogglingId(id);
+    try {
+      await apiFetch(`/api/facebook/ad/${id}/status`);
+      // optimistic update
+      setAdStatuses(p => ({ ...p, [id]: next }));
+    } catch (e) {
+      console.error('Toggle failed:', e.message);
+    } finally {
+      setTogglingId(null);
+    }
+  }
+
+  // POST doesn't work with apiFetch (GET only), use fetch directly
+  async function toggleStatus(id, currentStatus) {
+    const next = currentStatus === 'ACTIVE' ? 'PAUSED' : 'ACTIVE';
+    setTogglingId(id);
+    try {
+      const res = await fetch(`${BASE}/api/facebook/ad/${id}/status`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: next }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error);
+      setAdStatuses(p => ({ ...p, [id]: next }));
+    } catch (e) {
+      console.error('Toggle failed:', e.message);
+    } finally {
+      setTogglingId(null);
+    }
+  }
+
   const tableRows = useMemo(() =>
-    fbInstances.map(a => ({
-      id:      a.id,
-      adName:  (a.name || '').trim(),
-      campaign: a.campaignName || '—',
-      adset:    a.adsetName    || '—',
-      status:   a.status       || '—',
-      spend:    parseFloat(a.spend)  || 0,
-      fbLeads:  a.results            || 0,
-      cpl:      a.results > 0 && parseFloat(a.spend) > 0
-                  ? parseFloat((parseFloat(a.spend) / a.results).toFixed(2))
-                  : null,
-      cpm:     parseFloat(a.cpm)   || 0,
-      ctr:     parseFloat(a.ctr)   || 0,
-      clicks:  parseInt(a.clicks)  || 0,
-      created: a.createdTime        || '',
-    })),
-    [fbInstances]
+    fbInstances.map(a => {
+      const spend   = parseFloat(a.spend) || 0;
+      const results = a.results || 0;
+      const videoAction = (a.video_avg_time_watched_actions || []).find(x => x.action_type === 'video_view');
+      return {
+        id:           a.id,
+        adName:       (a.name || '').trim(),
+        delivery:     a.effectiveStatus || a.status || '—',
+        status:       adStatuses[a.id] ?? (a.status || 'PAUSED'),
+        budget:       a.daily_budget ? `$${(a.daily_budget/100).toFixed(0)}/day`
+                    : a.lifetime_budget ? `$${(a.lifetime_budget/100).toFixed(0)} lifetime` : '—',
+        adset:        a.adsetName    || '—',
+        spend,
+        fbLeads:      results,
+        cpl:          results > 0 && spend > 0 ? spend / results : null,
+        uniqueClicks: parseInt(a.unique_clicks) || 0,
+        costPerClick: parseFloat(a.cost_per_unique_click) || null,
+        cpm:          parseFloat(a.cpm) || null,
+        uniqueCtr:    parseFloat(a.unique_ctr) || null,
+        frequency:    parseFloat(a.frequency) || null,
+        videoPlayTime: videoAction ? parseFloat(videoAction.value).toFixed(1) + 's' : null,
+        created:      a.createdTime || '',
+      };
+    }),
+    [fbInstances, adStatuses]
   );
 
   const sortedRows = useMemo(() => {
     return [...tableRows].sort((a, b) => {
-      const av = a[sortKey] ?? '', bv = b[sortKey] ?? '';
+      if (sortKey === 'toggle' || sortKey === 'adName') {
+        const av = a.adName, bv = b.adName;
+        if (av < bv) return sortDir === 'asc' ? -1 : 1;
+        if (av > bv) return sortDir === 'asc' ?  1 : -1;
+        return 0;
+      }
+      const av = a[sortKey] ?? -1, bv = b[sortKey] ?? -1;
       if (av < bv) return sortDir === 'asc' ? -1 : 1;
       if (av > bv) return sortDir === 'asc' ?  1 : -1;
       return 0;
@@ -439,9 +511,9 @@ function AdDetailModal({ adName, state, allAds, sheetByName, accountLabel, merge
   }, [tableRows, sortKey, sortDir]);
 
   const totals = useMemo(() => ({
-    spend:   tableRows.reduce((s, r) => s + r.spend,   0),
-    fbLeads: tableRows.reduce((s, r) => s + r.fbLeads, 0),
-    clicks:  tableRows.reduce((s, r) => s + r.clicks,  0),
+    spend:        tableRows.reduce((s, r) => s + r.spend,        0),
+    fbLeads:      tableRows.reduce((s, r) => s + r.fbLeads,      0),
+    uniqueClicks: tableRows.reduce((s, r) => s + r.uniqueClicks, 0),
   }), [tableRows]);
 
   function handleSort(key) {
@@ -449,14 +521,39 @@ function AdDetailModal({ adName, state, allAds, sheetByName, accountLabel, merge
     else { setSortKey(key); setSortDir('desc'); }
   }
 
-  function fmtCell(key, val) {
-    if (val == null) return '—';
-    if (key === 'spend' || key === 'cpl' || key === 'cpm') return `$${val.toFixed(2)}`;
-    if (key === 'ctr') return `${val.toFixed(2)}%`;
+  function fmtCell(row, key) {
+    const val = row[key];
+    if (key === 'toggle') {
+      const isActive = row.status === 'ACTIVE';
+      return (
+        <button
+          onClick={e => { e.stopPropagation(); toggleStatus(row.id, row.status); }}
+          disabled={togglingId === row.id}
+          style={{
+            width: 36, height: 20, borderRadius: 10, border: 'none', cursor: 'pointer',
+            background: isActive ? '#22c55e' : '#cbd5e1',
+            position: 'relative', transition: 'background 0.2s',
+          }}
+        >
+          <span style={{
+            position: 'absolute', top: 2, left: isActive ? 18 : 2,
+            width: 16, height: 16, borderRadius: '50%', background: '#fff',
+            transition: 'left 0.2s', display: 'block',
+          }} />
+        </button>
+      );
+    }
+    if (key === 'delivery') {
+      const color = val === 'ACTIVE' ? '#22c55e' : val === 'PAUSED' ? '#f59e0b' : '#94a3b8';
+      return <span style={{ color, fontSize: 11, fontWeight: 600 }}>{val}</span>;
+    }
+    if (val == null || val === '—') return '—';
+    if (key === 'spend') return `$${val.toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
+    if (key === 'cpl' || key === 'costPerClick') return `$${val.toFixed(2)}`;
+    if (key === 'cpm') return `$${val.toFixed(2)}`;
+    if (key === 'uniqueCtr') return `${val.toFixed(2)}%`;
+    if (key === 'frequency') return val.toFixed(2);
     if (key === 'created') return fmtDate(val);
-    if (key === 'status') return (
-      <span style={{ color: val === 'ACTIVE' ? '#22c55e' : '#94a3b8', fontSize: 11, fontWeight: 600 }}>{val}</span>
-    );
     return val;
   }
 
@@ -594,20 +691,29 @@ function AdDetailModal({ adName, state, allAds, sheetByName, accountLabel, merge
           {/* FB Instances table */}
           {fbInstances.length > 0 && (
             <div>
-              <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)', marginBottom: 8 }}>
-                FB Ad Instances ({fbInstances.length})
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)' }}>
+                  Ads ({fbInstances.length})
+                </div>
+                <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 6 }}>
+                  {loadingRange && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Loading…</span>}
+                  <DateRangePicker
+                    start={tableStart}
+                    end={tableEnd}
+                    onChange={(s, e) => { setTableStart(s); setTableEnd(e); }}
+                  />
+                </div>
               </div>
               <div style={{ overflowX: 'auto' }}>
                 <table className="tracking-grid" style={{ minWidth: 900 }}>
                   <thead>
                     <tr>
-                      {mergeGroup && <th className="tracking-th-state" style={{ whiteSpace: 'nowrap' }}>Ad Name</th>}
                       {AD_DETAIL_TABLE_COLS.map(col => (
                         <th
                           key={col.key}
-                          className="tracking-th-state tracking-th-sortable"
-                          onClick={() => handleSort(col.key)}
-                          style={{ whiteSpace: 'nowrap', cursor: 'pointer' }}
+                          className={`tracking-th-state${col.key !== 'toggle' ? ' tracking-th-sortable' : ''}`}
+                          onClick={() => col.key !== 'toggle' && handleSort(col.key)}
+                          style={{ whiteSpace: 'nowrap', cursor: col.key !== 'toggle' ? 'pointer' : 'default' }}
                         >
                           {col.label}
                           {sortKey === col.key && <SortArrow dir={sortDir} />}
@@ -618,17 +724,12 @@ function AdDetailModal({ adName, state, allAds, sheetByName, accountLabel, merge
                   <tbody>
                     {sortedRows.map(row => (
                       <tr key={row.id}>
-                        {mergeGroup && (
-                          <td className="tracking-td-cell" style={{ fontSize: 11, maxWidth: 160, whiteSpace: 'normal' }}>
-                            {row.adName}
-                          </td>
-                        )}
                         {AD_DETAIL_TABLE_COLS.map(col => (
                           <td key={col.key} className="tracking-td-cell" style={{
-                            whiteSpace: (col.key === 'campaign' || col.key === 'adset') ? 'normal' : 'nowrap',
-                            maxWidth: (col.key === 'campaign' || col.key === 'adset') ? 200 : undefined,
+                            whiteSpace: col.key === 'adset' ? 'normal' : 'nowrap',
+                            maxWidth: col.key === 'adset' ? 180 : col.key === 'adName' ? 200 : undefined,
                           }}>
-                            {fmtCell(col.key, row[col.key])}
+                            {fmtCell(row, col.key)}
                           </td>
                         ))}
                       </tr>
@@ -636,17 +737,14 @@ function AdDetailModal({ adName, state, allAds, sheetByName, accountLabel, merge
                   </tbody>
                   <tfoot>
                     <tr>
-                      {mergeGroup && <td className="tracking-tfoot-label" />}
-                      <td className="tracking-tfoot-label" colSpan={3}>Total</td>
-                      <td className="tracking-td-total tracking-tfoot-label">${totals.spend.toFixed(2)}</td>
+                      <td className="tracking-tfoot-label" colSpan={5}>Total</td>
+                      <td className="tracking-td-total tracking-tfoot-label">${totals.spend.toLocaleString('en-US', { maximumFractionDigits: 0 })}</td>
                       <td className="tracking-td-total tracking-tfoot-label">{totals.fbLeads}</td>
                       <td className="tracking-td-total tracking-tfoot-label">
-                        {totals.fbLeads > 0 && totals.spend > 0 ? `$${(totals.spend / totals.fbLeads).toFixed(2)}` : '—'}
+                        {totals.fbLeads > 0 && totals.spend > 0 ? `$${(totals.spend / totals.fbLeads).toFixed(0)}` : '—'}
                       </td>
-                      <td className="tracking-tfoot-label" />
-                      <td className="tracking-tfoot-label" />
-                      <td className="tracking-td-total tracking-tfoot-label">{totals.clicks}</td>
-                      <td className="tracking-tfoot-label" />
+                      <td className="tracking-td-total tracking-tfoot-label">{totals.uniqueClicks}</td>
+                      {Array.from({ length: AD_DETAIL_TABLE_COLS.length - 9 }).map((_, i) => <td key={i} className="tracking-tfoot-label" />)}
                     </tr>
                   </tfoot>
                 </table>
