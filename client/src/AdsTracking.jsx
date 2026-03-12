@@ -101,6 +101,127 @@ function SortArrow({ dir }) {
   return <span style={{ fontSize: 9, marginLeft: 3 }}>{dir === 'asc' ? '▲' : '▼'}</span>;
 }
 
+const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+const DAYS   = ['Su','Mo','Tu','We','Th','Fr','Sa'];
+
+function DateRangePicker({ start, end, onChange }) {
+  const [open, setOpen]       = useState(false);
+  const [hover, setHover]     = useState(null);
+  const [selecting, setSel]   = useState(null); // first click date string
+  const today = new Date();
+  const [viewYear, setViewYear] = useState(today.getFullYear());
+  const [viewMonth, setViewMonth] = useState(today.getMonth());
+  const ref = useRef();
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = e => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [open]);
+
+  function isoDate(y, m, d) {
+    return `${y}-${String(m+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+  }
+
+  function prevMonth() {
+    if (viewMonth === 0) { setViewMonth(11); setViewYear(y => y - 1); }
+    else setViewMonth(m => m - 1);
+  }
+  function nextMonth() {
+    if (viewMonth === 11) { setViewMonth(0); setViewYear(y => y + 1); }
+    else setViewMonth(m => m + 1);
+  }
+
+  function handleDayClick(iso) {
+    if (!selecting) {
+      setSel(iso);
+    } else {
+      const [a, b] = [selecting, iso].sort();
+      onChange(a, b);
+      setSel(null);
+      setOpen(false);
+    }
+  }
+
+  function buildDays() {
+    const first = new Date(viewYear, viewMonth, 1).getDay();
+    const total = new Date(viewYear, viewMonth + 1, 0).getDate();
+    const cells = [];
+    for (let i = 0; i < first; i++) cells.push(null);
+    for (let d = 1; d <= total; d++) cells.push(isoDate(viewYear, viewMonth, d));
+    return cells;
+  }
+
+  const lo = selecting && hover ? [selecting, hover].sort()[0] : start;
+  const hi = selecting && hover ? [selecting, hover].sort()[1] : end;
+
+  const label = start && end
+    ? `${start.slice(5)} – ${end.slice(5)}`
+    : start ? `${start.slice(5)} – ?` : 'Date range';
+
+  return (
+    <div style={{ position: 'relative' }} ref={ref}>
+      <button
+        className={`btn btn--sm${(start || end) ? ' btn--primary' : ''}`}
+        onClick={() => setOpen(o => !o)}
+      >
+        {label}
+        {(start || end) && (
+          <span
+            style={{ marginLeft: 6, opacity: 0.7 }}
+            onClick={e => { e.stopPropagation(); onChange('', ''); setSel(null); }}
+          >✕</span>
+        )}
+      </button>
+      {open && (
+        <div style={{
+          position: 'absolute', top: '100%', right: 0, marginTop: 4, zIndex: 300,
+          background: 'var(--surface)', border: '1px solid var(--border)',
+          borderRadius: 10, padding: 12, boxShadow: '0 8px 32px rgba(0,0,0,0.18)',
+          minWidth: 240,
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+            <button className="btn btn--sm" onClick={prevMonth}>‹</button>
+            <span style={{ fontWeight: 600, fontSize: 13 }}>{MONTHS[viewMonth]} {viewYear}</span>
+            <button className="btn btn--sm" onClick={nextMonth}>›</button>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7,1fr)', gap: 2 }}>
+            {DAYS.map(d => (
+              <div key={d} style={{ textAlign: 'center', fontSize: 10, color: 'var(--text-muted)', fontWeight: 600, padding: '2px 0' }}>{d}</div>
+            ))}
+            {buildDays().map((iso, i) => {
+              if (!iso) return <div key={i} />;
+              const inRange = lo && hi && iso >= lo && iso <= hi;
+              const isEdge  = iso === lo || iso === hi || iso === start || iso === end;
+              return (
+                <div
+                  key={iso}
+                  onMouseEnter={() => selecting && setHover(iso)}
+                  onClick={() => handleDayClick(iso)}
+                  style={{
+                    textAlign: 'center', fontSize: 12, padding: '4px 2px', borderRadius: 4, cursor: 'pointer',
+                    background: isEdge ? 'var(--green)' : inRange ? 'rgba(58,143,92,0.15)' : undefined,
+                    color: isEdge ? '#fff' : undefined,
+                    fontWeight: isEdge ? 700 : undefined,
+                  }}
+                >
+                  {parseInt(iso.slice(8))}
+                </div>
+              );
+            })}
+          </div>
+          {selecting && (
+            <div style={{ marginTop: 8, fontSize: 11, color: 'var(--text-muted)', textAlign: 'center' }}>
+              Click end date ({selecting} selected)
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 const AD_DETAIL_TABLE_COLS = [
   { key: 'campaign', label: 'Campaign'  },
   { key: 'adset',    label: 'Adset'     },
@@ -1324,24 +1445,11 @@ export default function AdsTracking() {
               </button>
             ))}
             <span style={{ fontSize: 11, color: 'var(--text-muted)', marginLeft: 4 }}>|</span>
-            <input
-              type="date"
-              value={rangeStart}
-              onChange={e => setRangeStart(e.target.value)}
-              style={{ padding: '4px 8px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text)', fontSize: 12 }}
-              placeholder="Start"
+            <DateRangePicker
+              start={rangeStart}
+              end={rangeEnd}
+              onChange={(s, e) => { setRangeStart(s); setRangeEnd(e); }}
             />
-            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>—</span>
-            <input
-              type="date"
-              value={rangeEnd}
-              onChange={e => setRangeEnd(e.target.value)}
-              style={{ padding: '4px 8px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text)', fontSize: 12 }}
-              placeholder="End"
-            />
-            {(rangeStart || rangeEnd) && (
-              <button className="btn btn--sm" onClick={() => { setRangeStart(''); setRangeEnd(''); }} title="Clear date range">✕</button>
-            )}
             {loadingRange && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Loading…</span>}
             {rangeError  && <span style={{ fontSize: 11, color: '#dc2626' }} title={rangeError}>Range error</span>}
           </div>
