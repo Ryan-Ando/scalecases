@@ -336,13 +336,12 @@ function AdDetailModal({ adName, state, allAds, sheetByName, accountLabel, merge
   }, [tableStart, tableEnd]);
 
   // FB instances: ads matching any effective name AND this state
-  const sourceAds = rangeAds ?? allAds;
   const fbInstances = useMemo(() =>
-    sourceAds.filter(a =>
+    (rangeAds ?? allAds).filter(a =>
       effectiveNames.includes((a.name || '').trim()) &&
       extractState(a.campaignName) === state
     ),
-    [sourceAds, effectiveNames, state]
+    [rangeAds, allAds, effectiveNames, state]
   );
 
   // Unique adsets this ad has lived in
@@ -433,21 +432,6 @@ function AdDetailModal({ adName, state, allAds, sheetByName, accountLabel, merge
   // Table rows: one per FB ad instance
   const [adStatuses, setAdStatuses] = useState({});
 
-  async function toggleAdStatus(id, currentStatus) {
-    const next = currentStatus === 'ACTIVE' ? 'PAUSED' : 'ACTIVE';
-    setTogglingId(id);
-    try {
-      await apiFetch(`/api/facebook/ad/${id}/status`);
-      // optimistic update
-      setAdStatuses(p => ({ ...p, [id]: next }));
-    } catch (e) {
-      console.error('Toggle failed:', e.message);
-    } finally {
-      setTogglingId(null);
-    }
-  }
-
-  // POST doesn't work with apiFetch (GET only), use fetch directly
   async function toggleStatus(id, currentStatus) {
     const next = currentStatus === 'ACTIVE' ? 'PAUSED' : 'ACTIVE';
     setTogglingId(id);
@@ -476,7 +460,8 @@ function AdDetailModal({ adName, state, allAds, sheetByName, accountLabel, merge
         id:           a.id,
         adName:       (a.name || '').trim(),
         delivery:     a.effectiveStatus || a.status || '—',
-        status:       adStatuses[a.id] ?? (a.status || 'PAUSED'),
+        adsetActive:  a.adsetStatus === 'ACTIVE',
+        status:       adStatuses[a.id] ?? (a.adsetStatus !== 'ACTIVE' ? 'PAUSED' : (a.status || 'PAUSED')),
         budget:       a.daily_budget ? `$${(a.daily_budget/100).toFixed(0)}/day`
                     : a.lifetime_budget ? `$${(a.lifetime_budget/100).toFixed(0)} lifetime` : '—',
         adset:        a.adsetName    || '—',
@@ -525,18 +510,21 @@ function AdDetailModal({ adName, state, allAds, sheetByName, accountLabel, merge
     const val = row[key];
     if (key === 'toggle') {
       const isActive = row.status === 'ACTIVE';
+      const adsetOff = !row.adsetActive;
       return (
         <button
           onClick={e => { e.stopPropagation(); toggleStatus(row.id, row.status); }}
-          disabled={togglingId === row.id}
+          disabled={togglingId === row.id || adsetOff}
+          title={adsetOff ? 'Ad set is off — turn on the ad set first' : isActive ? 'Active' : 'Paused'}
           style={{
-            width: 36, height: 20, borderRadius: 10, border: 'none', cursor: 'pointer',
-            background: isActive ? '#22c55e' : '#cbd5e1',
-            position: 'relative', transition: 'background 0.2s',
+            width: 36, height: 20, borderRadius: 10, border: 'none',
+            cursor: adsetOff ? 'not-allowed' : 'pointer',
+            background: isActive && !adsetOff ? '#22c55e' : '#cbd5e1',
+            position: 'relative', transition: 'background 0.2s', opacity: adsetOff ? 0.5 : 1,
           }}
         >
           <span style={{
-            position: 'absolute', top: 2, left: isActive ? 18 : 2,
+            position: 'absolute', top: 2, left: isActive && !adsetOff ? 18 : 2,
             width: 16, height: 16, borderRadius: '50%', background: '#fff',
             transition: 'left 0.2s', display: 'block',
           }} />
