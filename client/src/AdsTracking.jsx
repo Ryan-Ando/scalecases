@@ -881,6 +881,9 @@ export default function AdsTracking() {
   // Custom date range for the grid
   const [rangeStart, setRangeStart]     = useState('');
   const [rangeEnd, setRangeEnd]         = useState('');
+  const [rangeAds, setRangeAds]         = useState(null);
+  const [loadingRange, setLoadingRange] = useState(false);
+  const [rangeError, setRangeError]     = useState('');
   const [colOrder, setColOrder]         = useState(() => {
     try { const s = localStorage.getItem('trackingColOrder'); return s ? JSON.parse(s) : null; }
     catch { return null; }
@@ -924,11 +927,21 @@ export default function AdsTracking() {
     return set;
   }, [mergeGroups]);
 
-  // Instant date-range filtering from cached daily data — no network call
-  const activeAdDailyInsights = useMemo(() => {
-    if (!rangeStart || !rangeEnd) return allAdDailyInsights;
-    return allAdDailyInsights.filter(r => r.date_start >= rangeStart && r.date_start <= rangeEnd);
-  }, [allAdDailyInsights, rangeStart, rangeEnd]);
+  // Fetch aggregated insights for custom date range; clear when range is cleared
+  useEffect(() => {
+    if (!rangeStart || !rangeEnd || rangeStart > rangeEnd) {
+      setRangeAds(null); setRangeError(''); return;
+    }
+    let cancelled = false;
+    setLoadingRange(true); setRangeError('');
+    apiFetch(`/api/facebook/ads?start=${rangeStart}&end=${rangeEnd}`)
+      .then(data => { if (!cancelled) { setRangeAds(data); setLoadingRange(false); } })
+      .catch(err  => { if (!cancelled) { setRangeError(err.message); setLoadingRange(false); } });
+    return () => { cancelled = true; };
+  }, [rangeStart, rangeEnd]);
+
+  // Grid uses range-filtered ads when a range is set, otherwise all-time aggregated ads
+  const activeAds = rangeAds ?? allAds;
 
   // ── Load from IndexedDB ─────────────────────────────────────────────────────
   async function loadFromDB() {
@@ -1026,43 +1039,28 @@ export default function AdsTracking() {
     setSyncError('');
     setSyncNote('Starting sync…');
     try {
-      const lastSyncTime  = await dbGetMeta('lastSync');
-      const lastDailySync = await dbGetMeta('lastDailySync');
-      const isFirstSync   = !lastSyncTime;
-      const now           = new Date().toISOString();
-      const today         = now.slice(0, 10);
+      const lastSyncTime = await dbGetMeta('lastSync');
+      const isFirstSync  = !lastSyncTime;
+      const now          = new Date().toISOString();
 
-      setSyncNote(lastDailySync ? 'Updating data…' : 'First sync — fetching all history…');
+      setSyncNote('Fetching ads + insights…');
+      const dailyPreset = isFirstSync ? 'maximum' : 'last_14d';
 
-      // Incremental ad-level daily: all history first time, only new days after
-      const adDailyUrl = lastDailySync
-        ? `/api/facebook/daily?level=ad&start=${lastDailySync}&end=${today}`
-        : '/api/facebook/daily?level=ad&date_preset=maximum';
-
-      // All three fetches in parallel
-      const [ads, adDailyRaw, campDailyRaw] = await Promise.all([
-        apiFetch('/api/facebook/ads?metadata_only=true'),
-        apiFetch(adDailyUrl),
-        apiFetch(`/api/facebook/daily?date_preset=${isFirstSync ? 'maximum' : 'last_14d'}`),
+      const [ads, dailyRaw] = await Promise.all([
+        apiFetch('/api/facebook/ads?date_preset=maximum'),
+        apiFetch(`/api/facebook/daily?date_preset=${dailyPreset}`),
       ]);
 
-      // Ad-level daily: key = date|ad_id — unique per ad per day, put() = no duplicates
-      const adDailyRecs = adDailyRaw
-        .filter(r => r.ad_id)
-        .map(r => ({ ...r, id: `${r.date_start}|${r.ad_id}` }));
-
-      const campDailyRecs = campDailyRaw.map(r => ({
+      const dailyRecords = dailyRaw.map(r => ({
         ...r,
         id: `${r.date_start}|${r.campaign_id || r.adset_id || r.ad_id || 'agg'}`,
       }));
 
       await Promise.all([
         dbUpsert('fbAds', ads),
-        dbUpsert('adDailyInsights', adDailyRecs),
-        dbUpsert('fbDailyInsights', campDailyRecs),
+        dbUpsert('fbDailyInsights', dailyRecords),
       ]);
 
-      await dbSetMeta('lastDailySync', today);
       await dbSetMeta('lastSync', now);
       await loadFromDB();
       setSyncNote('Done');
@@ -1080,26 +1078,11 @@ export default function AdsTracking() {
   useEffect(() => {
     dbClearStore('sheetImport').catch(() => {});
     dbSetMeta('trackingColumns', null).catch(() => {});
-
-    async function init() {
-      // One-time migration: clear corrupt adDailyInsights (bad cache key) and re-fetch
-      try {
-        const migrated = await dbGetMeta('adDailyMigrated');
-        if (!migrated) {
-          await dbSetMeta('lastDailySync', null);
-          await dbClearStore('adDailyInsights');
-          await dbSetMeta('adDailyMigrated', true);
-        }
-      } catch (e) { /* migration failed, continue anyway */ }
-
-      await loadFromDB();
-      const ts        = await dbGetMeta('lastSync');
-      const lastDaily = await dbGetMeta('lastDailySync');
-      const stale     = !ts || !lastDaily || (Date.now() - new Date(ts).getTime() > 24 * 3600 * 1000);
+    loadFromDB().then(async () => {
+      const ts    = await dbGetMeta('lastSync');
+      const stale = !ts || (Date.now() - new Date(ts).getTime() > 24 * 3600 * 1000);
       if (stale) sync();
-    }
-
-    init().catch(console.error);
+    });
   }, []);
 
   async function resetData() {
@@ -1233,20 +1216,20 @@ export default function AdsTracking() {
 
   const sheetByName = {};
 
-  // Grid: FB leads per ad per state — computed from cached daily rows
+  // Grid: FB leads per ad per state — from aggregated insights in activeAds
   const leadsMap = useMemo(() => {
     const map = {};
     for (const adName of adNames) { map[adName] = {}; for (const st of states) map[adName][st] = 0; }
-    for (const row of activeAdDailyInsights) {
-      const rawName = (row.ad_name || '').trim();
-      const state   = extractState(row.campaign_name);
+    for (const a of activeAds) {
+      const rawName = (a.name || '').trim();
+      const state   = extractState(a.campaignName);
       if (!rawName || !state || deletedAds.has(rawName)) continue;
       const adName  = memberToCanonical[rawName] || rawName;
       if (map[adName]?.[state] !== undefined)
-        map[adName][state] += extractLeadsFromActions(row.actions);
+        map[adName][state] += a.results || 0;
     }
     return map;
-  }, [adNames, states, activeAdDailyInsights, deletedAds, memberToCanonical]);
+  }, [adNames, states, activeAds, deletedAds, memberToCanonical]);
 
   // Alias for backward-compat with existing grid render references
   const grid = leadsMap;
@@ -1326,20 +1309,20 @@ export default function AdsTracking() {
     return map;
   }, [adNames, states, attributedCases, memberToCanonical]);
 
-  // Spend per ad per state — computed from cached daily rows
+  // Spend per ad per state — from aggregated insights in activeAds
   const spendGrid = useMemo(() => {
     const map = {};
     for (const adName of adNames) { map[adName] = {}; for (const st of states) map[adName][st] = 0; }
-    for (const row of activeAdDailyInsights) {
-      const rawName = (row.ad_name || '').trim();
-      const st      = extractState(row.campaign_name);
+    for (const a of activeAds) {
+      const rawName = (a.name || '').trim();
+      const st      = extractState(a.campaignName);
       if (!rawName || !st || deletedAds.has(rawName)) continue;
       const adName  = memberToCanonical[rawName] || rawName;
       if (map[adName]?.[st] !== undefined)
-        map[adName][st] += parseFloat(row.spend) || 0;
+        map[adName][st] += parseFloat(a.spend) || 0;
     }
     return map;
-  }, [adNames, states, activeAdDailyInsights, deletedAds, memberToCanonical]);
+  }, [adNames, states, activeAds, deletedAds, memberToCanonical]);
 
   // Adset sizes: how many ads are in each adset (across all states)
   const adsetSizes = useMemo(() => {
