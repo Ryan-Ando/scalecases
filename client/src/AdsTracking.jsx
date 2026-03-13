@@ -1539,21 +1539,38 @@ export default function AdsTracking() {
       };
     }
 
-    // Per-ad summary (top 20 by leads)
+    // Per-ad summary (all ads, sorted by leads)
     const byAd = adNames
       .map(name => {
         const leads = states.reduce((s, st) => s + (leadsMap[name]?.[st] || 0), 0);
         const spend = states.reduce((s, st) => s + (spendGrid[name]?.[st] || 0), 0);
-        return { name, leads, spend: parseFloat(spend.toFixed(2)), cpl: leads > 0 ? parseFloat((spend / leads).toFixed(2)) : null };
+        const cases = states.reduce((s, st) => s + (caseGrid[name]?.[st] || 0), 0);
+        // Include per-state breakdown for this ad so Claude can see where each ad's cases came from
+        const stateBreakdown = {};
+        for (const st of states) {
+          const stLeads = leadsMap[name]?.[st] || 0;
+          const stCases = caseGrid[name]?.[st] || 0;
+          if (stLeads > 0 || stCases > 0) {
+            stateBreakdown[st] = { leads: stLeads, cases: stCases };
+          }
+        }
+        return {
+          name,
+          leads,
+          spend: parseFloat(spend.toFixed(2)),
+          cases,
+          cpl: leads > 0 ? parseFloat((spend / leads).toFixed(2)) : null,
+          cpc: cases > 0 ? parseFloat((spend / cases).toFixed(2)) : null,
+          stateBreakdown,
+        };
       })
-      .sort((a, b) => b.leads - a.leads)
-      .slice(0, 20);
+      .sort((a, b) => b.leads - a.leads);
 
     return {
       dateRange: rangeStart && rangeEnd ? { start: rangeStart, end: rangeEnd } : { preset: chartPeriod || 'all' },
       totals: { spend: parseFloat(totalSpend.toFixed(2)), leads: totalLeads, cpl: overallCPL ? parseFloat(overallCPL) : null },
       byState,
-      topAds: byAd,
+      ads: byAd,
       adCount: adNames.length,
       stateCount: states.length,
     };
