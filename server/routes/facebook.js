@@ -287,11 +287,11 @@ router.get('/ads', async (req, res) => {
 router.get('/daily', async (req, res) => {
   try {
     const { date_preset, ad_ids, date, start, end } = req.query;
-    const cacheKey = `daily:${date_preset||''}:${ad_ids||''}:${date||''}:${start||''}:${end||''}`;
-    const cached = cacheGet(cacheKey);
-    if (cached) return res.json(cached);
     const adIdList = ad_ids ? ad_ids.split(',').filter(Boolean) : null;
     const level = (adIdList?.length || date) ? 'ad' : (req.query.level || 'campaign');
+    const cacheKey = `daily:${level}:${date_preset||''}:${ad_ids||''}:${date||''}:${start||''}:${end||''}`;
+    const cached = cacheGet(cacheKey);
+    if (cached) return res.json(cached);
     const fields = level === 'ad'
       ? `ad_id,ad_name,campaign_name,spend,impressions,unique_clicks,cpm,actions,date_start,date_stop`
       : `campaign_id,campaign_name,spend,impressions,cpm,actions,date_start,date_stop`;
