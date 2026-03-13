@@ -1047,9 +1047,11 @@ export default function AdsTracking() {
       const dailyPreset = isFirstSync ? 'maximum' : 'last_14d';
 
       const [ads, dailyRaw] = await Promise.all([
-        apiFetch('/api/facebook/ads?date_preset=maximum'),
-        apiFetch(`/api/facebook/daily?date_preset=${dailyPreset}`),
+        apiFetch(`/api/facebook/ads?date_preset=maximum&_t=${Date.now()}`),
+        apiFetch(`/api/facebook/daily?date_preset=${dailyPreset}&_t=${Date.now()}`),
       ]);
+
+      setSyncNote(`Got ${ads.length} ads, ${dailyRaw.length} daily rows — saving…`);
 
       const dailyRecords = dailyRaw.map(r => ({
         ...r,
@@ -1063,7 +1065,7 @@ export default function AdsTracking() {
 
       await dbSetMeta('lastSync', now);
       await loadFromDB();
-      setSyncNote('Done');
+      setSyncNote(`Done — ${ads.length} ads loaded`);
     } catch (err) {
       console.error('Sync error:', err);
       setSyncError(err.message);
@@ -1536,8 +1538,8 @@ export default function AdsTracking() {
             <span style={{ fontSize: 11, color: 'var(--green-dark)' }}>{syncNote}</span>
           )}
           {syncError && (
-            <span style={{ fontSize: 11, color: '#dc2626' }} title={syncError}>
-              Sync failed — {syncError.slice(0, 80)}
+            <span style={{ fontSize: 11, color: '#dc2626' }}>
+              Sync failed — {syncError}
             </span>
           )}
         </div>
