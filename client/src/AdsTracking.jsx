@@ -91,10 +91,12 @@ const MODAL_METRICS = [
 ];
 
 const CHART_PERIODS = [
-  { key: '30',  label: '30D' },
-  { key: '90',  label: '90D' },
-  { key: '365', label: '1Y'  },
-  { key: 'all', label: 'All' },
+  { key: 'today', label: 'Today' },
+  { key: '7',     label: '7D'   },
+  { key: '30',    label: '30D'  },
+  { key: '90',    label: '90D'  },
+  { key: '365',   label: '1Y'   },
+  { key: 'all',   label: 'All'  },
 ];
 
 function CustomTooltip({ active, payload, label, metricKey }) {
@@ -875,7 +877,7 @@ export default function AdsTracking() {
   const [editValue, setEditValue]       = useState('');
   const [adDetail, setAdDetail]         = useState(null);   // { adName, state }
   const [chartMetric, setChartMetric]   = useState('leads');
-  const [chartPeriod, setChartPeriod]   = useState('90');
+  const [chartPeriod, setChartPeriod]   = useState('all');
   const [sortKey, setSortKey]           = useState('date');
   const [sortDir, setSortDir]           = useState('desc');
   // Custom date range for the grid
@@ -1463,10 +1465,14 @@ export default function AdsTracking() {
     dragColRef.current = null; setDragOverCol(null);
   }
 
-  const cutoffDate = useMemo(() => {
-    if (chartPeriod === 'all') return null;
-    return new Date(Date.now() - parseInt(chartPeriod) * 864e5).toISOString().slice(0, 10);
-  }, [chartPeriod]);
+  const { chartStart, chartEnd } = useMemo(() => {
+    const today = new Date().toISOString().slice(0, 10);
+    if (rangeStart && rangeEnd) return { chartStart: rangeStart, chartEnd: rangeEnd };
+    if (chartPeriod === 'all')   return { chartStart: null, chartEnd: null };
+    if (chartPeriod === 'today') return { chartStart: today, chartEnd: today };
+    const start = new Date(Date.now() - parseInt(chartPeriod) * 864e5).toISOString().slice(0, 10);
+    return { chartStart: start, chartEnd: today };
+  }, [chartPeriod, rangeStart, rangeEnd]);
 
   const chartData = useMemo(() => {
     const LEAD_TYPES = ['lead','onsite_conversion.lead_grouped','offsite_conversion.fb_pixel_lead','contact','schedule','submit_application'];
@@ -1480,7 +1486,9 @@ export default function AdsTracking() {
     const fbMap = {};
     for (const row of allDailyInsights) {
       const date = row.date_start;
-      if (!date || (cutoffDate && date < cutoffDate)) continue;
+      if (!date) continue;
+      if (chartStart && date < chartStart) continue;
+      if (chartEnd   && date > chartEnd)   continue;
       if (!fbMap[date]) fbMap[date] = { spend: 0, leads: 0, cpm_sum: 0, cpm_count: 0 };
       fbMap[date].spend += parseFloat(row.spend) || 0;
       fbMap[date].leads += actionsLeads(row.actions || []);
@@ -1494,7 +1502,7 @@ export default function AdsTracking() {
       const cpl   = leads > 0 && spend > 0 ? +(spend / leads).toFixed(2) : null;
       return { date: date.slice(5), leads, spend, cpm, cpl };
     });
-  }, [allDailyInsights, cutoffDate]);
+  }, [allDailyInsights, chartStart, chartEnd]);
 
 
   function saveAccountName(state, name) {
@@ -1557,7 +1565,18 @@ export default function AdsTracking() {
           </div>
           <div style={{ display: 'flex', gap: 4, marginLeft: 'auto', alignItems: 'center', flexWrap: 'wrap' }}>
             {CHART_PERIODS.map(p => (
-              <button key={p.key} className={`btn btn--sm${chartPeriod === p.key ? ' btn--primary' : ''}`} onClick={() => setChartPeriod(p.key)}>
+              <button key={p.key} className={`btn btn--sm${chartPeriod === p.key ? ' btn--primary' : ''}`} onClick={() => {
+                const today = new Date().toISOString().slice(0, 10);
+                setChartPeriod(p.key);
+                if (p.key === 'all') {
+                  setRangeStart(''); setRangeEnd('');
+                } else if (p.key === 'today') {
+                  setRangeStart(today); setRangeEnd(today);
+                } else {
+                  const start = new Date(Date.now() - parseInt(p.key) * 864e5).toISOString().slice(0, 10);
+                  setRangeStart(start); setRangeEnd(today);
+                }
+              }}>
                 {p.label}
               </button>
             ))}
@@ -1565,7 +1584,7 @@ export default function AdsTracking() {
             <DateRangePicker
               start={rangeStart}
               end={rangeEnd}
-              onChange={(s, e) => { setRangeStart(s); setRangeEnd(e); }}
+              onChange={(s, e) => { setRangeStart(s); setRangeEnd(e); setChartPeriod(''); }}
             />
           </div>
         </div>
