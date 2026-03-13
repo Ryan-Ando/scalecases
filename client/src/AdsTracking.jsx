@@ -1080,21 +1080,26 @@ export default function AdsTracking() {
   useEffect(() => {
     dbClearStore('sheetImport').catch(() => {});
     dbSetMeta('trackingColumns', null).catch(() => {});
-    // v2 migration: wipe lastDailySync so we re-fetch all ad-level history with fixed cache key
-    dbGetMeta('adDailyMigrated').then(async migrated => {
-      if (!migrated) {
-        await Promise.all([
-          dbSetMeta('lastDailySync', null),
-          dbClearStore('adDailyInsights'),
-          dbSetMeta('adDailyMigrated', true),
-        ]);
-      }
+
+    async function init() {
+      // One-time migration: clear corrupt adDailyInsights (bad cache key) and re-fetch
+      try {
+        const migrated = await dbGetMeta('adDailyMigrated');
+        if (!migrated) {
+          await dbSetMeta('lastDailySync', null);
+          await dbClearStore('adDailyInsights');
+          await dbSetMeta('adDailyMigrated', true);
+        }
+      } catch (e) { /* migration failed, continue anyway */ }
+
       await loadFromDB();
       const ts        = await dbGetMeta('lastSync');
       const lastDaily = await dbGetMeta('lastDailySync');
       const stale     = !ts || !lastDaily || (Date.now() - new Date(ts).getTime() > 24 * 3600 * 1000);
       if (stale) sync();
-    });
+    }
+
+    init().catch(console.error);
   }, []);
 
   async function resetData() {
