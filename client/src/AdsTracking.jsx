@@ -1081,8 +1081,11 @@ export default function AdsTracking() {
     dbClearStore('sheetImport').catch(() => {});
     dbSetMeta('trackingColumns', null).catch(() => {});
     loadFromDB().then(async () => {
-      const ts    = await dbGetMeta('lastSync');
-      const stale = !ts || (Date.now() - new Date(ts).getTime() > 24 * 3600 * 1000);
+      const ts         = await dbGetMeta('lastSync');
+      const lastDaily  = await dbGetMeta('lastDailySync');
+      // Force sync if daily data has never been fetched (new architecture migration)
+      // or if data is more than 24h old
+      const stale = !ts || !lastDaily || (Date.now() - new Date(ts).getTime() > 24 * 3600 * 1000);
       if (stale) sync();
     });
   }, []);
