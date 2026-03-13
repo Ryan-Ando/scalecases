@@ -4,6 +4,19 @@ import fetch from 'node-fetch';
 const router = Router();
 const FB_API = 'https://graph.facebook.com/v19.0';
 
+// ── Server-side in-memory cache for FB API responses ────────────────────────
+// Keyed by request path+params. TTL: 2 hours. Survives across client reloads.
+const _cache = new Map();
+const CACHE_TTL = 2 * 60 * 60 * 1000;
+
+function cacheGet(key) {
+  const entry = _cache.get(key);
+  if (!entry) return null;
+  if (Date.now() - entry.ts > CACHE_TTL) { _cache.delete(key); return null; }
+  return entry.data;
+}
+function cacheSet(key, data) { _cache.set(key, { data, ts: Date.now() }); }
+
 const INSIGHTS_FIELDS = [
   'spend',
   'impressions',
@@ -206,8 +219,11 @@ router.get('/adsets', async (req, res) => {
 router.get('/ads', async (req, res) => {
   try {
     const { date_preset, adset_id, start, end } = req.query;
-    const timeRange = start && end ? { since: start, until: end } : null;
+    const cacheKey = `ads:${date_preset}:${adset_id||''}:${start||''}:${end||''}`;
+    const cached = cacheGet(cacheKey);
+    if (cached) return res.json(cached);
 
+    const timeRange = start && end ? { since: start, until: end } : null;
     const listParams = { fields: 'id,name,status,effective_status,adset_id,adset{name,status,effective_status},campaign_id,campaign{name},creative{id,name,thumbnail_url},created_time' };
     if (adset_id) listParams.adset_id = adset_id;
 
@@ -237,6 +253,7 @@ router.get('/ads', async (req, res) => {
       };
     });
 
+    cacheSet(cacheKey, merged);
     res.json(merged);
   } catch (err) {
     console.error('FB ads error:', err.message);
@@ -251,6 +268,9 @@ router.get('/ads', async (req, res) => {
 router.get('/daily', async (req, res) => {
   try {
     const { date_preset, ad_ids, date, start, end } = req.query;
+    const cacheKey = `daily:${date_preset||''}:${ad_ids||''}:${date||''}:${start||''}:${end||''}`;
+    const cached = cacheGet(cacheKey);
+    if (cached) return res.json(cached);
     const adIdList = ad_ids ? ad_ids.split(',').filter(Boolean) : null;
     const level = (adIdList?.length || date) ? 'ad' : (req.query.level || 'campaign');
     const fields = level === 'ad'
@@ -288,6 +308,7 @@ router.get('/daily', async (req, res) => {
     })).then(results => results.forEach(r => {
       if (r.status === 'rejected') console.warn('FB daily skipped account:', r.reason?.message);
     }));
+    cacheSet(cacheKey, all);
     res.json(all);
   } catch (err) {
     console.error('FB daily error:', err.message);

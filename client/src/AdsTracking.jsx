@@ -1043,12 +1043,11 @@ export default function AdsTracking() {
       const now          = new Date().toISOString();
 
       setSyncNote('Fetching ads + insights…');
-      const adsPreset   = isFirstSync ? 'maximum' : 'last_30d';
       const dailyPreset = isFirstSync ? 'maximum' : 'last_14d';
 
-      // Run both in parallel
+      // Fetch ads and daily insights in parallel
       const [ads, dailyRaw] = await Promise.all([
-        apiFetch(`/api/facebook/ads?date_preset=${adsPreset}`),
+        apiFetch('/api/facebook/ads?date_preset=maximum'),
         apiFetch(`/api/facebook/daily?date_preset=${dailyPreset}`),
       ]);
 

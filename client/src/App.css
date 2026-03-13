@@ -47,7 +47,7 @@
 .nav-tab:hover { color: var(--text); }
 .nav-tab--active { color: var(--green); border-bottom-color: var(--green); }
 
-.content { padding: 24px; width: 100%; }
+.content { width: 100%; min-width: 0; box-sizing: border-box; overflow-x: hidden; }
 
 /* ── Controls bar ───────────────────────────────────────────────────────────── */
 .controls {
