@@ -901,7 +901,7 @@ export default function AdsTracking() {
   const [importing, setImporting]         = useState(false);
   const [importResult, setImportResult]   = useState(null); // { added, skipped }
   const [importError, setImportError]     = useState('');
-  const importRanRef = useRef(false);
+
 
   // Row selection / merge
   const [selecting, setSelecting]     = useState(false);
@@ -960,36 +960,47 @@ export default function AdsTracking() {
     setMergeGroups(merges || []);
   }
 
-  // ── Cases fetch (lazy, on first toggle to Cases view) ───────────────────────
+  // ── Cases fetch — loads from cache instantly, re-fetches from API if stale ───
   async function loadCases() {
     if (casesLoadedRef.current) return;
     casesLoadedRef.current = true;
     setLoadingCases(true);
     setCasesError('');
     try {
-      const cached = await dbGetAll('ghlContacts');
-      setGhlContacts(cached);
+      // Show cached GHL contacts + sheet cases immediately
+      const [cachedGhl, cachedCases] = await Promise.all([
+        dbGetAll('ghlContacts'),
+        dbGetMeta('sheetCasesData'),
+      ]);
+      if (cachedGhl.length)      setGhlContacts(cachedGhl);
+      if (cachedCases?.cases)    setSheetCases(cachedCases.cases);
 
-      const lastGhlSync = await dbGetMeta('lastGhlSync');
-      const stale = !lastGhlSync || (Date.now() - new Date(lastGhlSync).getTime() > 3600 * 1000);
-      const since = new Date(Date.now() - 2 * 365 * 864e5).toISOString();
-      const now   = new Date().toISOString();
+      // Re-fetch from APIs only if stale
+      const now          = new Date().toISOString();
+      const lastGhlSync  = await dbGetMeta('lastGhlSync');
+      const ghlStale     = !lastGhlSync  || (Date.now() - new Date(lastGhlSync).getTime()          > 3600 * 1000);
+      const casesStale   = !cachedCases  || (Date.now() - new Date(cachedCases.fetchedAt).getTime() > 1800 * 1000);
+      const since        = new Date(Date.now() - 2 * 365 * 864e5).toISOString();
+
+      if (!ghlStale && !casesStale) { setLoadingCases(false); return; }
 
       const [freshGhl, sheetData] = await Promise.all([
-        stale ? apiFetch(`/api/ghl/contacts?start=${encodeURIComponent(since)}&end=${encodeURIComponent(now)}`) : Promise.resolve(null),
-        apiFetch('/api/sheets/cases'),
+        ghlStale  ? apiFetch(`/api/ghl/contacts?start=${encodeURIComponent(since)}&end=${encodeURIComponent(now)}`) : Promise.resolve(null),
+        casesStale ? apiFetch('/api/sheets/cases') : Promise.resolve(null),
       ]);
 
       if (freshGhl) {
         await dbUpsert('ghlContacts', freshGhl);
         await dbSetMeta('lastGhlSync', now);
-        const all = await dbGetAll('ghlContacts');
-        setGhlContacts(all);
+        setGhlContacts(await dbGetAll('ghlContacts'));
       }
-      setSheetCases(sheetData);
+      if (sheetData) {
+        await dbSetMeta('sheetCasesData', { cases: sheetData, fetchedAt: now });
+        setSheetCases(sheetData);
+      }
     } catch (err) {
       setCasesError(err.message);
-      casesLoadedRef.current = false; // allow retry
+      casesLoadedRef.current = false;
     } finally {
       setLoadingCases(false);
     }
@@ -1008,7 +1019,8 @@ export default function AdsTracking() {
       const json = await res.json();
       if (!res.ok) throw new Error(json.error || res.statusText);
       setImportResult(json);
-      // Reload cases so new rows appear immediately
+      // Bust cases cache so fresh data loads
+      await dbSetMeta('sheetCasesData', null);
       casesLoadedRef.current = false;
       await loadCases();
     } catch (err) {
@@ -1017,13 +1029,6 @@ export default function AdsTracking() {
       setImporting(false);
     }
   }
-
-  // Auto-run import once on mount (after cases load)
-  useEffect(() => {
-    if (importRanRef.current) return;
-    importRanRef.current = true;
-    importMonth();
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── FB sync ─────────────────────────────────────────────────────────────────
   const sync = useCallback(async () => {
@@ -1037,18 +1042,24 @@ export default function AdsTracking() {
       const isFirstSync  = !lastSyncTime;
       const now          = new Date().toISOString();
 
-      setSyncNote('Fetching ads…');
-      const ads = await apiFetch('/api/facebook/ads?date_preset=maximum');
-      await dbUpsert('fbAds', ads);
+      setSyncNote('Fetching ads + insights…');
+      const adsPreset   = isFirstSync ? 'maximum' : 'last_30d';
+      const dailyPreset = isFirstSync ? 'maximum' : 'last_14d';
 
-      setSyncNote('Fetching daily insights…');
-      const preset     = isFirstSync ? 'maximum' : 'last_14d';
-      const dailyRaw   = await apiFetch(`/api/facebook/daily?date_preset=${preset}`);
+      // Run both in parallel
+      const [ads, dailyRaw] = await Promise.all([
+        apiFetch(`/api/facebook/ads?date_preset=${adsPreset}`),
+        apiFetch(`/api/facebook/daily?date_preset=${dailyPreset}`),
+      ]);
+
       const dailyRecords = dailyRaw.map(r => ({
         ...r,
         id: `${r.date_start}|${r.campaign_id || r.adset_id || r.ad_id || 'agg'}`,
       }));
-      await dbUpsert('fbDailyInsights', dailyRecords);
+      await Promise.all([
+        dbUpsert('fbAds', ads),
+        dbUpsert('fbDailyInsights', dailyRecords),
+      ]);
 
       await dbSetMeta('lastSync', now);
       await loadFromDB();
@@ -1069,7 +1080,7 @@ export default function AdsTracking() {
     dbSetMeta('trackingColumns', null).catch(() => {});
     loadFromDB().then(async () => {
       const ts    = await dbGetMeta('lastSync');
-      const stale = !ts || (Date.now() - new Date(ts).getTime() > 6 * 3600 * 1000);
+      const stale = !ts || (Date.now() - new Date(ts).getTime() > 24 * 3600 * 1000);
       if (stale) sync();
     });
   }, []);
@@ -1085,7 +1096,6 @@ export default function AdsTracking() {
     setSyncNote('');
     setSyncError('');
     casesLoadedRef.current = false;
-    importRanRef.current = false;
     sync();
     loadCases();
   }
