@@ -185,9 +185,11 @@ router.get('/tracking-import', async (req, res) => {
 });
 
 // POST /api/sheets/import-month
-// Reads MONTHLY_CASES_SHEET_ID + MONTHLY_CASES_TAB and appends rows that don't
-// already exist in the master sheet (SHEETS_ID + SHEETS_TAB_NAME).
-// Deduplication key: normalised name + normalised phone (last 10 digits).
+// Reads MONTHLY_CASES_SHEET_ID + MONTHLY_CASES_TAB (columns A–J) and appends rows
+// that don't already exist in the master sheet (SHEETS_ID + SHEETS_TAB_NAME).
+// Master columns: A=name, B=phone, C=campaign, D=state, E=empty, F=date,
+//                 G=utmCampaign, H=utmAdset, I=utmContent(ad), J=utmTerm
+// Deduplication key: normalised phone number (last 10 digits) — most reliable signal.
 // Returns { added, skipped }.
 router.post('/import-month', async (req, res) => {
   try {
@@ -200,38 +202,47 @@ router.post('/import-month', async (req, res) => {
     const masterTab     = process.env.SHEETS_TAB_NAME || 'Sheet1';
     if (!masterSheetId) return res.status(503).json({ error: 'SHEETS_ID not set' });
 
-    const auth   = await getAuthClient(true); // write scope
+    function normalizePhone(p) {
+      return (p || '').replace(/\D/g, '').slice(-10);
+    }
+
+    const auth   = await getAuthClient(true);
     const sheets = google.sheets({ version: 'v4', auth });
 
-    // Read master sheet to build dedupe set
+    // Read master A–J to build dedupe set keyed on phone (col B = index 1)
     const masterRes = await sheets.spreadsheets.values.get({
       spreadsheetId: masterSheetId,
-      range: `${masterTab}!A2:F`,
+      range: `${masterTab}!A2:J`,
     });
     const masterRows = masterRes.data.values || [];
-    const existing = new Set(
-      masterRows.map(r => `${(r[0]||'').trim().toLowerCase()}|${(r[1]||'').replace(/\D/g,'').slice(-10)}`)
+    const existingPhones = new Set(
+      masterRows.map(r => normalizePhone(r[1])).filter(Boolean)
     );
 
-    // Read monthly tab
+    // Read monthly A–J (captures attribution columns G–J as well as A–F)
     const monthRes = await sheets.spreadsheets.values.get({
       spreadsheetId: monthlySheetId,
-      range: `${monthlyTab}!A2:F`,
+      range: `${monthlyTab}!A2:J`,
     });
     const monthRows = monthRes.data.values || [];
 
-    // Filter to new rows only
-    const toAppend = monthRows.filter(r => {
-      const phone = (r[1] || '').replace(/\D/g, '').slice(-10);
-      if (!phone) return false;
-      const key = `${(r[0]||'').trim().toLowerCase()}|${phone}`;
-      return !existing.has(key);
-    });
+    // Keep only rows whose phone doesn't already exist in master
+    const toAppend = monthRows
+      .filter(r => {
+        const phone = normalizePhone(r[1]);
+        return phone && !existingPhones.has(phone);
+      })
+      .map(r => {
+        // Pad to exactly 10 columns so every value lands in the correct master column
+        const row = [...r];
+        while (row.length < 10) row.push('');
+        return row.slice(0, 10);
+      });
 
     if (toAppend.length > 0) {
       await sheets.spreadsheets.values.append({
         spreadsheetId: masterSheetId,
-        range: `${masterTab}!A:F`,
+        range: `${masterTab}!A:J`,
         valueInputOption: 'USER_ENTERED',
         insertDataOption: 'INSERT_ROWS',
         requestBody: { values: toAppend },
