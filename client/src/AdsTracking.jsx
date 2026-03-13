@@ -4,6 +4,7 @@ import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from 'recharts';
 import { dbGetAll, dbUpsert, dbGetMeta, dbSetMeta, dbClearAll, dbDelete, dbClearStore } from './db.js';
+import ChatPanel from './ChatPanel.jsx';
 
 const BASE = import.meta.env.VITE_API_URL || 'http://localhost:3001';
 
@@ -1518,6 +1519,46 @@ export default function AdsTracking() {
 
   const activeMetric = CHART_METRICS.find(m => m.key === chartMetric);
 
+  // ── AI Chat context snapshot ─────────────────────────────────────────────────
+  const chatContext = useMemo(() => {
+    const totalSpend  = activeAds.reduce((s, a) => s + (parseFloat(a.spend) || 0), 0);
+    const totalLeads  = activeAds.reduce((s, a) => s + (a.results || 0), 0);
+    const overallCPL  = totalLeads > 0 ? (totalSpend / totalLeads).toFixed(2) : null;
+
+    // Per-state summary
+    const byState = {};
+    for (const st of states) {
+      const leads = adNames.reduce((s, a) => s + (leadsMap[a]?.[st] || 0), 0);
+      const spend = adNames.reduce((s, a) => s + (spendGrid[a]?.[st] || 0), 0);
+      const cases = adNames.reduce((s, a) => s + (caseGrid[a]?.[st] || 0), 0);
+      byState[st] = {
+        leads,
+        spend: parseFloat(spend.toFixed(2)),
+        cases,
+        cpl: leads > 0 ? parseFloat((spend / leads).toFixed(2)) : null,
+      };
+    }
+
+    // Per-ad summary (top 20 by leads)
+    const byAd = adNames
+      .map(name => {
+        const leads = states.reduce((s, st) => s + (leadsMap[name]?.[st] || 0), 0);
+        const spend = states.reduce((s, st) => s + (spendGrid[name]?.[st] || 0), 0);
+        return { name, leads, spend: parseFloat(spend.toFixed(2)), cpl: leads > 0 ? parseFloat((spend / leads).toFixed(2)) : null };
+      })
+      .sort((a, b) => b.leads - a.leads)
+      .slice(0, 20);
+
+    return {
+      dateRange: rangeStart && rangeEnd ? { start: rangeStart, end: rangeEnd } : { preset: chartPeriod || 'all' },
+      totals: { spend: parseFloat(totalSpend.toFixed(2)), leads: totalLeads, cpl: overallCPL ? parseFloat(overallCPL) : null },
+      byState,
+      topAds: byAd,
+      adCount: adNames.length,
+      stateCount: states.length,
+    };
+  }, [activeAds, adNames, states, leadsMap, spendGrid, caseGrid, rangeStart, rangeEnd, chartPeriod]);
+
   // ── Render ──────────────────────────────────────────────────────────────────
   return (
     <div style={{ padding: '0 24px', boxSizing: 'border-box' }}>
@@ -1995,6 +2036,9 @@ export default function AdsTracking() {
           onClose={() => setAdDetail(null)}
         />
       )}
+
+      {/* AI Chat Assistant */}
+      <ChatPanel context={chatContext} />
     </div>
   );
 }

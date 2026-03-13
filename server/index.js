@@ -4,6 +4,7 @@ import dotenv from 'dotenv';
 import facebookRoutes from './routes/facebook.js';
 import sheetsRoutes from './routes/sheets.js';
 import ghlRoutes from './routes/ghl.js';
+import chatRoutes from './routes/chat.js';
 
 dotenv.config();
 
@@ -18,6 +19,7 @@ app.use(express.json());
 app.use('/api/facebook', facebookRoutes);
 app.use('/api/sheets', sheetsRoutes);
 app.use('/api/ghl', ghlRoutes);
+app.use('/api/chat', chatRoutes);
 
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 
