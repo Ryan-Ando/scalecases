@@ -250,7 +250,7 @@ router.get('/ads', async (req, res) => {
 // When date=YYYY-MM-DD is provided, fetches a single day (level=ad with actions).
 router.get('/daily', async (req, res) => {
   try {
-    const { date_preset, ad_ids, date } = req.query;
+    const { date_preset, ad_ids, date, start, end } = req.query;
     const adIdList = ad_ids ? ad_ids.split(',').filter(Boolean) : null;
     const level = (adIdList?.length || date) ? 'ad' : (req.query.level || 'campaign');
     const fields = level === 'ad'
@@ -267,7 +267,9 @@ router.get('/daily', async (req, res) => {
         access_token: token(),
         limit: 500,
       });
-      if (date) {
+      if (start && end) {
+        params.set('time_range', JSON.stringify({ since: start, until: end }));
+      } else if (date) {
         params.set('time_range', JSON.stringify({ since: date, until: date }));
       } else {
         params.set('date_preset', date_preset || 'last_30d');
