@@ -23,6 +23,18 @@ const US_STATES = new Set([
   'VA','WA','WV','WI','WY','DC',
 ]);
 
+const LEAD_ACTION_TYPES = [
+  'lead', 'onsite_conversion.lead_grouped', 'offsite_conversion.fb_pixel_lead',
+  'contact', 'schedule', 'submit_application',
+];
+function extractLeadsFromActions(actions = []) {
+  for (const type of LEAD_ACTION_TYPES) {
+    const a = (actions || []).find(x => x.action_type === type);
+    if (a) return parseInt(a.value, 10) || 0;
+  }
+  return 0;
+}
+
 // Split campaign name on separators and return the last token that is a valid US state.
 function extractState(campaignName) {
   if (!campaignName) return null;
@@ -278,9 +290,6 @@ function AdDetailModal({ adName, state, allAds, sheetByName, accountLabel, merge
   const [caseSortDir, setCaseSortDir] = useState('desc');
   const [tableStart, setTableStart]   = useState('');
   const [tableEnd, setTableEnd]       = useState('');
-  const [rangeAds, setRangeAds]       = useState(null);
-  const [loadingRange, setLoadingRange] = useState(false);
-  const [rangeError, setRangeError]   = useState('');
   const [togglingId, setTogglingId]   = useState(null);
 
   // GHL contacts + sheet cases — fetched on-demand when modal opens
@@ -346,26 +355,21 @@ function AdDetailModal({ adName, state, allAds, sheetByName, accountLabel, merge
     [mergeGroup, adName]
   );
 
-  // When a table date range is selected, fetch fresh ad stats for just this cell
-  useEffect(() => {
-    if (!tableStart || !tableEnd) { setRangeAds(null); setRangeError(''); return; }
-    let cancelled = false;
-    setLoadingRange(true);
-    setRangeError('');
-    apiFetch(`/api/facebook/ads?start=${tableStart}&end=${tableEnd}`)
-      .then(data => { if (!cancelled) { setRangeAds(data); setLoadingRange(false); } })
-      .catch(err => { if (!cancelled) { setRangeError(err.message); setLoadingRange(false); } });
-    return () => { cancelled = true; };
-  }, [tableStart, tableEnd]);
-
   // FB instances: ads matching any effective name AND this state
   const fbInstances = useMemo(() =>
-    (rangeAds ?? allAds).filter(a =>
+    allAds.filter(a =>
       effectiveNames.includes((a.name || '').trim()) &&
       extractState(a.campaignName) === state
     ),
-    [rangeAds, allAds, effectiveNames, state]
+    [allAds, effectiveNames, state]
   );
+
+  const modalDailyInsights = useMemo(() => {
+    const ids = new Set(fbInstances.map(a => a.id).filter(Boolean));
+    const rows = allAdDailyInsights.filter(r => ids.has(r.ad_id));
+    if (!tableStart || !tableEnd) return rows;
+    return rows.filter(r => r.date_start >= tableStart && r.date_start <= tableEnd);
+  }, [fbInstances, allAdDailyInsights, tableStart, tableEnd]);
 
   // Unique adsets this ad has lived in
   const adsets = useMemo(() => {
@@ -476,9 +480,11 @@ function AdDetailModal({ adName, state, allAds, sheetByName, accountLabel, merge
 
   const tableRows = useMemo(() =>
     fbInstances.map(a => {
-      const spend   = parseFloat(a.spend) || 0;
-      const results = a.results || 0;
-      const videoAction = (a.video_avg_time_watched_actions || []).find(x => x.action_type === 'video_view');
+      const rows    = modalDailyInsights.filter(r => r.ad_id === a.id);
+      const spend   = rows.reduce((s, r) => s + (parseFloat(r.spend)         || 0), 0);
+      const results = rows.reduce((s, r) => s + extractLeadsFromActions(r.actions), 0);
+      const impr    = rows.reduce((s, r) => s + (parseFloat(r.impressions)   || 0), 0);
+      const uclicks = rows.reduce((s, r) => s + (parseFloat(r.unique_clicks) || 0), 0);
       return {
         id:           a.id,
         adName:       (a.name || '').trim(),
@@ -491,16 +497,16 @@ function AdDetailModal({ adName, state, allAds, sheetByName, accountLabel, merge
         spend,
         fbLeads:      results,
         cpl:          results > 0 && spend > 0 ? spend / results : null,
-        uniqueClicks: parseInt(a.unique_clicks) || 0,
-        costPerClick: parseFloat(a.cost_per_unique_click) || null,
-        cpm:          parseFloat(a.cpm) || null,
-        uniqueCtr:    parseFloat(a.unique_ctr) || null,
-        frequency:    parseFloat(a.frequency) || null,
-        videoPlayTime: videoAction ? parseFloat(videoAction.value).toFixed(1) + 's' : null,
+        uniqueClicks: uclicks,
+        costPerClick: uclicks > 0 && spend > 0 ? spend / uclicks : null,
+        cpm:          impr > 0 ? spend / impr * 1000 : null,
+        uniqueCtr:    null,
+        frequency:    null,
+        videoPlayTime: null,
         created:      a.createdTime || '',
       };
     }),
-    [fbInstances, adStatuses]
+    [fbInstances, modalDailyInsights, adStatuses]
   );
 
   const sortedRows = useMemo(() => {
@@ -707,8 +713,6 @@ function AdDetailModal({ adName, state, allAds, sheetByName, accountLabel, merge
                   Ads ({fbInstances.length}){tableStart && tableEnd ? ` · ${tableStart} – ${tableEnd}` : ' · all time'}
                 </div>
                 <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 6 }}>
-                  {loadingRange && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Loading…</span>}
-                  {rangeError && <span style={{ fontSize: 11, color: '#dc2626' }} title={rangeError}>Range error</span>}
                   <DateRangePicker
                     start={tableStart}
                     end={tableEnd}
@@ -877,9 +881,6 @@ export default function AdsTracking() {
   // Custom date range for the grid
   const [rangeStart, setRangeStart]     = useState('');
   const [rangeEnd, setRangeEnd]         = useState('');
-  const [rangeAds, setRangeAds]         = useState(null);   // null = use allAds
-  const [loadingRange, setLoadingRange] = useState(false);
-  const [rangeError, setRangeError]     = useState('');
   const [colOrder, setColOrder]         = useState(() => {
     try { const s = localStorage.getItem('trackingColOrder'); return s ? JSON.parse(s) : null; }
     catch { return null; }
@@ -923,24 +924,11 @@ export default function AdsTracking() {
     return set;
   }, [mergeGroups]);
 
-  // Fetch ads for custom date range; clear rangeAds when range is cleared
-  useEffect(() => {
-    if (!rangeStart || !rangeEnd || rangeStart > rangeEnd) {
-      setRangeAds(null);
-      setRangeError('');
-      return;
-    }
-    let cancelled = false;
-    setLoadingRange(true);
-    setRangeError('');
-    apiFetch(`/api/facebook/ads?start=${rangeStart}&end=${rangeEnd}`)
-      .then(data => { if (!cancelled) { setRangeAds(data); setLoadingRange(false); } })
-      .catch(err  => { if (!cancelled) { setRangeError(err.message); setLoadingRange(false); } });
-    return () => { cancelled = true; };
-  }, [rangeStart, rangeEnd]);
-
-  // Active ads: use rangeAds when a custom range is set, otherwise all-time allAds
-  const activeAds = rangeAds ?? allAds;
+  // Instant date-range filtering from cached daily data — no network call
+  const activeAdDailyInsights = useMemo(() => {
+    if (!rangeStart || !rangeEnd) return allAdDailyInsights;
+    return allAdDailyInsights.filter(r => r.date_start >= rangeStart && r.date_start <= rangeEnd);
+  }, [allAdDailyInsights, rangeStart, rangeEnd]);
 
   // ── Load from IndexedDB ─────────────────────────────────────────────────────
   async function loadFromDB() {
@@ -1038,28 +1026,43 @@ export default function AdsTracking() {
     setSyncError('');
     setSyncNote('Starting sync…');
     try {
-      const lastSyncTime = await dbGetMeta('lastSync');
-      const isFirstSync  = !lastSyncTime;
-      const now          = new Date().toISOString();
+      const lastSyncTime  = await dbGetMeta('lastSync');
+      const lastDailySync = await dbGetMeta('lastDailySync');
+      const isFirstSync   = !lastSyncTime;
+      const now           = new Date().toISOString();
+      const today         = now.slice(0, 10);
 
-      setSyncNote('Fetching ads + insights…');
-      const dailyPreset = isFirstSync ? 'maximum' : 'last_14d';
+      setSyncNote(lastDailySync ? 'Updating data…' : 'First sync — fetching all history…');
 
-      // Fetch ads and daily insights in parallel
-      const [ads, dailyRaw] = await Promise.all([
-        apiFetch('/api/facebook/ads?date_preset=maximum'),
-        apiFetch(`/api/facebook/daily?date_preset=${dailyPreset}`),
+      // Incremental ad-level daily: all history first time, only new days after
+      const adDailyUrl = lastDailySync
+        ? `/api/facebook/daily?level=ad&start=${lastDailySync}&end=${today}`
+        : '/api/facebook/daily?level=ad&date_preset=maximum';
+
+      // All three fetches in parallel
+      const [ads, adDailyRaw, campDailyRaw] = await Promise.all([
+        apiFetch('/api/facebook/ads?metadata_only=true'),
+        apiFetch(adDailyUrl),
+        apiFetch(`/api/facebook/daily?date_preset=${isFirstSync ? 'maximum' : 'last_14d'}`),
       ]);
 
-      const dailyRecords = dailyRaw.map(r => ({
+      // Ad-level daily: key = date|ad_id — unique per ad per day, put() = no duplicates
+      const adDailyRecs = adDailyRaw
+        .filter(r => r.ad_id)
+        .map(r => ({ ...r, id: `${r.date_start}|${r.ad_id}` }));
+
+      const campDailyRecs = campDailyRaw.map(r => ({
         ...r,
         id: `${r.date_start}|${r.campaign_id || r.adset_id || r.ad_id || 'agg'}`,
       }));
+
       await Promise.all([
         dbUpsert('fbAds', ads),
-        dbUpsert('fbDailyInsights', dailyRecords),
+        dbUpsert('adDailyInsights', adDailyRecs),
+        dbUpsert('fbDailyInsights', campDailyRecs),
       ]);
 
+      await dbSetMeta('lastDailySync', today);
       await dbSetMeta('lastSync', now);
       await loadFromDB();
       setSyncNote('Done');
@@ -1185,12 +1188,12 @@ export default function AdsTracking() {
   // ── Derived data ────────────────────────────────────────────────────────────
   const states = useMemo(() => {
     const set = new Set();
-    for (const a of activeAds) {
+    for (const a of allAds) {
       const s = extractState(a.campaignName);
       if (s) set.add(s);
     }
     return [...set].sort();
-  }, [activeAds]);
+  }, [allAds]);
 
   const orderedStates = useMemo(() => {
     if (!colOrder) return states;
@@ -1203,7 +1206,7 @@ export default function AdsTracking() {
   const adNames = useMemo(() => {
     const seen  = new Set();
     const names = [];
-    for (const a of activeAds) {
+    for (const a of allAds) {
       const name = (a.name || '').trim();
       if (name && !seen.has(name) && !deletedAds.has(name) && !absorbedMembers.has(name)) {
         seen.add(name);
@@ -1211,28 +1214,27 @@ export default function AdsTracking() {
       }
     }
     return names;
-  }, [activeAds, deletedAds, absorbedMembers]);
+  }, [allAds, deletedAds, absorbedMembers]);
 
   const sheetByName = {};
 
-  // Grid: FB results (leads) per ad per state
-  const grid = useMemo(() => {
+  // Grid: FB leads per ad per state — computed from cached daily rows
+  const leadsMap = useMemo(() => {
     const map = {};
-    for (const adName of adNames) {
-      map[adName] = {};
-      for (const state of states) map[adName][state] = 0;
-    }
-    for (const a of activeAds) {
-      const rawName = (a.name || '').trim();
-      const state   = extractState(a.campaignName);
+    for (const adName of adNames) { map[adName] = {}; for (const st of states) map[adName][st] = 0; }
+    for (const row of activeAdDailyInsights) {
+      const rawName = (row.ad_name || '').trim();
+      const state   = extractState(row.campaign_name);
       if (!rawName || !state || deletedAds.has(rawName)) continue;
       const adName  = memberToCanonical[rawName] || rawName;
-      if (map[adName]?.[state] !== undefined) {
-        map[adName][state] += a.results || 0;
-      }
+      if (map[adName]?.[state] !== undefined)
+        map[adName][state] += extractLeadsFromActions(row.actions);
     }
     return map;
-  }, [adNames, states, activeAds, deletedAds, memberToCanonical]);
+  }, [adNames, states, activeAdDailyInsights, deletedAds, memberToCanonical]);
+
+  // Alias for backward-compat with existing grid render references
+  const grid = leadsMap;
 
   // ── Cases grid (sheet cases attributed via GHL UTM) ────────────────────────
   const ghlByPhone = useMemo(() => {
@@ -1309,33 +1311,29 @@ export default function AdsTracking() {
     return map;
   }, [adNames, states, attributedCases, memberToCanonical]);
 
-  // Spend per ad per state
+  // Spend per ad per state — computed from cached daily rows
   const spendGrid = useMemo(() => {
     const map = {};
-    for (const adName of adNames) {
-      map[adName] = {};
-      for (const st of states) map[adName][st] = 0;
-    }
-    for (const a of activeAds) {
-      const rawName = (a.name || '').trim();
-      const st      = extractState(a.campaignName);
+    for (const adName of adNames) { map[adName] = {}; for (const st of states) map[adName][st] = 0; }
+    for (const row of activeAdDailyInsights) {
+      const rawName = (row.ad_name || '').trim();
+      const st      = extractState(row.campaign_name);
       if (!rawName || !st || deletedAds.has(rawName)) continue;
       const adName  = memberToCanonical[rawName] || rawName;
-      if (map[adName]?.[st] !== undefined) {
-        map[adName][st] += parseFloat(a.spend) || 0;
-      }
+      if (map[adName]?.[st] !== undefined)
+        map[adName][st] += parseFloat(row.spend) || 0;
     }
     return map;
-  }, [adNames, states, activeAds, deletedAds, memberToCanonical]);
+  }, [adNames, states, activeAdDailyInsights, deletedAds, memberToCanonical]);
 
   // Adset sizes: how many ads are in each adset (across all states)
   const adsetSizes = useMemo(() => {
     const map = {};
-    for (const a of activeAds) {
+    for (const a of allAds) {
       if (a.adsetId) map[a.adsetId] = (map[a.adsetId] || 0) + 1;
     }
     return map;
-  }, [activeAds]);
+  }, [allAds]);
 
   // Cell status per adName × state: 'solo' (green) | 'shared' (blue) | 'off' (none)
   const cellStatus = useMemo(() => {
@@ -1343,7 +1341,7 @@ export default function AdsTracking() {
     for (const adName of adNames) {
       map[adName] = {};
       for (const st of states) {
-        const instances = activeAds.filter(a => {
+        const instances = allAds.filter(a => {
           const canonical = memberToCanonical[(a.name || '').trim()] || (a.name || '').trim();
           return canonical === adName && extractState(a.campaignName) === st;
         });
@@ -1356,7 +1354,7 @@ export default function AdsTracking() {
       }
     }
     return map;
-  }, [adNames, states, activeAds, memberToCanonical, adsetSizes]);
+  }, [adNames, states, allAds, memberToCanonical, adsetSizes]);
 
   // First used: earliest date among all members' ad names
   const firstUsed = useMemo(() => {
@@ -1514,7 +1512,7 @@ export default function AdsTracking() {
 
   // ── Render ──────────────────────────────────────────────────────────────────
   return (
-    <div>
+    <div style={{ padding: '0 24px', boxSizing: 'border-box' }}>
       {/* Header */}
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 24 }}>
         <div>
@@ -1569,8 +1567,6 @@ export default function AdsTracking() {
               end={rangeEnd}
               onChange={(s, e) => { setRangeStart(s); setRangeEnd(e); }}
             />
-            {loadingRange && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Loading…</span>}
-            {rangeError  && <span style={{ fontSize: 11, color: '#dc2626' }} title={rangeError}>Range error</span>}
           </div>
         </div>
         <div style={{ background: 'var(--surface)', borderRadius: 12, border: '1px solid var(--border)', padding: '20px 8px 8px' }}>
@@ -1597,7 +1593,7 @@ export default function AdsTracking() {
         <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
           {adNames.length} unique ads
           {deletedAds.size > 0 && ` · ${deletedAds.size} hidden`}
-          {rangeAds && ` · ${rangeStart} – ${rangeEnd}`}
+          {(rangeStart && rangeEnd) && ` · ${rangeStart} – ${rangeEnd}`}
         </span>
         {loadingCases && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Loading cases…</span>}
         {casesError && <span style={{ fontSize: 11, color: '#dc2626' }}>{casesError}</span>}
@@ -1632,9 +1628,9 @@ export default function AdsTracking() {
       {adNames.length === 0 ? (
         <div className="empty">
           <div className="empty-icon">📊</div>
-          <div className="empty-title">{syncing || loadingRange ? 'Loading…' : 'No data yet'}</div>
+          <div className="empty-title">{syncing ? 'Loading…' : 'No data yet'}</div>
           <div className="empty-desc">
-            {syncing ? 'This may take a moment on first sync.' : loadingRange ? 'Fetching date range…' : 'Click "Sync Now" to load your ads and leads.'}
+            {syncing ? 'This may take a moment on first sync.' : 'Click "Sync Now" to load your ads and leads.'}
           </div>
         </div>
       ) : (
@@ -1817,7 +1813,7 @@ export default function AdsTracking() {
                     {orderedStates.map(state => {
                       const leads    = row[state]     || 0;
                       const cases    = caseRow[state] || 0;
-                      const everUsed = activeAds.some(a => {
+                      const everUsed = allAds.some(a => {
                         const canonical = memberToCanonical[(a.name || '').trim()] || (a.name || '').trim();
                         return canonical === adName && extractState(a.campaignName) === state;
                       });

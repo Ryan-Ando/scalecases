@@ -223,6 +223,25 @@ router.get('/ads', async (req, res) => {
     const cached = cacheGet(cacheKey);
     if (cached) return res.json(cached);
 
+    // Fast path: metadata only (no insights)
+    if (req.query.metadata_only === 'true') {
+      const cacheKey = 'ads:metadata';
+      const cached = cacheGet(cacheKey);
+      if (cached) return res.json(cached);
+      const listParams = { fields: 'id,name,status,effective_status,adset_id,adset{name,status,effective_status},campaign_id,campaign{name},creative{id,name,thumbnail_url},created_time,daily_budget,lifetime_budget' };
+      const ads = await fetchFromAllAccounts('ads', listParams);
+      const mapped = ads.map(a => ({
+        id: a.id, name: a.name, status: a.status, effectiveStatus: a.effective_status,
+        adsetId: a.adset_id, adsetName: a.adset?.name || '',
+        adsetStatus: a.adset?.effective_status || a.adset?.status || '',
+        campaignId: a.campaign_id, campaignName: a.campaign?.name || '',
+        creative: a.creative, createdTime: a.created_time,
+        daily_budget: a.daily_budget, lifetime_budget: a.lifetime_budget,
+      }));
+      cacheSet(cacheKey, mapped);
+      return res.json(mapped);
+    }
+
     const timeRange = start && end ? { since: start, until: end } : null;
     const listParams = { fields: 'id,name,status,effective_status,adset_id,adset{name,status,effective_status},campaign_id,campaign{name},creative{id,name,thumbnail_url},created_time' };
     if (adset_id) listParams.adset_id = adset_id;
@@ -274,7 +293,7 @@ router.get('/daily', async (req, res) => {
     const adIdList = ad_ids ? ad_ids.split(',').filter(Boolean) : null;
     const level = (adIdList?.length || date) ? 'ad' : (req.query.level || 'campaign');
     const fields = level === 'ad'
-      ? `ad_id,ad_name,campaign_name,spend,impressions,cpm,actions,date_start,date_stop`
+      ? `ad_id,ad_name,campaign_name,spend,impressions,unique_clicks,cpm,actions,date_start,date_stop`
       : `campaign_id,campaign_name,spend,impressions,cpm,actions,date_start,date_stop`;
 
     const accounts = adAccounts();
