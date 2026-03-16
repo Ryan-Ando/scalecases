@@ -432,23 +432,28 @@ function AdDetailModal({ adName, state, allAds, sheetByName, accountLabel, merge
   const hasStoredSpend = adDailyInsights.length > 0;
 
   const cutoff = useMemo(() => {
-    if (period === 'all') return null;
+    const today = new Date().toISOString().slice(0, 10);
+    if (period === 'all')   return null;
+    if (period === 'today') return today;
     return new Date(Date.now() - parseInt(period) * 864e5).toISOString().slice(0, 10);
   }, [period]);
 
   // Chart: GHL leads/day + FB ad-level spend/day
   const chartData = useMemo(() => {
+    const ceiling = period === 'today' ? new Date().toISOString().slice(0, 10) : null;
     const leadsMap = {};
     for (const c of loadingGhl ? [] : cases) {
       if (!c.date) continue;
       const day = c.date.slice(0, 10);
-      if (cutoff && day < cutoff) continue;
+      if (cutoff   && day < cutoff)   continue;
+      if (ceiling  && day > ceiling)  continue;
       leadsMap[day] = (leadsMap[day] || 0) + 1;
     }
     const spendMap = {};
     for (const row of adDailyInsights) {
       const date = row.date_start;
       if (!date || (cutoff && date < cutoff)) continue;
+      if (ceiling && date > ceiling) continue;
       spendMap[date] = (spendMap[date] || 0) + (parseFloat(row.spend) || 0);
     }
     const allDates = new Set([...Object.keys(leadsMap), ...Object.keys(spendMap)]);
