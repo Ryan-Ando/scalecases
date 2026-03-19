@@ -28,13 +28,14 @@ function fmt(v) {
 }
 
 export default function SpendSheet() {
-  const [insights, setInsights]   = useState([]);
-  const [allAds, setAllAds]       = useState([]);
-  const [loading, setLoading]     = useState(true);
-  const [syncing, setSyncing]     = useState(false);
-  const [syncError, setSyncError] = useState('');
-  const [viewYear, setViewYear]   = useState(new Date().getFullYear());
-  const [viewMonth, setViewMonth] = useState(new Date().getMonth());
+  const [insights, setInsights]     = useState([]);
+  const [adsets, setAdsets]         = useState([]);
+  const [loadingBudget, setLoadingBudget] = useState(false);
+  const [loading, setLoading]       = useState(true);
+  const [syncing, setSyncing]       = useState(false);
+  const [syncError, setSyncError]   = useState('');
+  const [viewYear, setViewYear]     = useState(new Date().getFullYear());
+  const [viewMonth, setViewMonth]   = useState(new Date().getMonth());
 
   // Column order: persisted to localStorage
   const [colOrder, setColOrder] = useState(() => {
@@ -44,36 +45,45 @@ export default function SpendSheet() {
   const dragSrc = useRef(null);
 
   function loadFromDB() {
-    return Promise.all([
-      dbGetAll('fbDailyInsights').then(setInsights),
-      dbGetAll('fbAds').then(setAllAds),
-    ]);
+    return dbGetAll('fbDailyInsights').then(setInsights);
+  }
+
+  // Fetch live adset budgets from the server (budgets live at adset level in FB)
+  async function fetchAdsets() {
+    setLoadingBudget(true);
+    try {
+      const res  = await fetch(`${BASE}/api/facebook/adsets`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || res.statusText);
+      setAdsets(data);
+    } catch (e) {
+      console.warn('Adset budget fetch failed:', e.message);
+    } finally {
+      setLoadingBudget(false);
+    }
   }
 
   useEffect(() => {
     loadFromDB().finally(() => setLoading(false));
+    fetchAdsets();
   }, []);
 
   // Live daily budget: sum active adset daily budgets per campaign state
+  // FB returns dailyBudget in cents
   const budgetByState = useMemo(() => {
-    // Deduplicate adsets — one row per unique adset ID so we don't double-count
-    // ads that share the same adset
-    const seenAdsets = new Set();
     const map = {};
-    for (const a of allAds) {
-      if (!a.adsetId || seenAdsets.has(a.adsetId)) continue;
-      seenAdsets.add(a.adsetId);
-      if (a.adsetStatus !== 'ACTIVE') continue;
+    for (const a of adsets) {
+      if (a.status !== 'ACTIVE') continue;
       const state = extractState(a.campaignName);
       if (!state) continue;
-      const budget = parseFloat(a.daily_budget) / 100 || 0; // FB returns cents
+      const budget = parseFloat(a.dailyBudget) / 100 || 0;
       if (budget <= 0) continue;
       map[state] = (map[state] || 0) + budget;
     }
     return map;
-  }, [allAds]);
+  }, [adsets]);
 
-  const budgetStates   = useMemo(() => Object.keys(budgetByState).sort(), [budgetByState]);
+  const budgetStates     = useMemo(() => Object.keys(budgetByState).sort(), [budgetByState]);
   const totalDailyBudget = useMemo(() => Object.values(budgetByState).reduce((s, v) => s + v, 0), [budgetByState]);
 
   async function syncMonth() {
@@ -216,7 +226,10 @@ export default function SpendSheet() {
       </div>
 
       {/* Live Daily Budget section */}
-      {budgetStates.length > 0 && (
+      {loadingBudget && (
+        <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 16 }}>Loading live budgets…</div>
+      )}
+      {!loadingBudget && budgetStates.length > 0 && (
         <div style={{ marginBottom: 28 }}>
           <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10, color: 'var(--text)' }}>
             Live Daily Budget
