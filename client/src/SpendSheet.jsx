@@ -29,6 +29,7 @@ function fmt(v) {
 
 export default function SpendSheet() {
   const [insights, setInsights]   = useState([]);
+  const [allAds, setAllAds]       = useState([]);
   const [loading, setLoading]     = useState(true);
   const [syncing, setSyncing]     = useState(false);
   const [syncError, setSyncError] = useState('');
@@ -43,12 +44,37 @@ export default function SpendSheet() {
   const dragSrc = useRef(null);
 
   function loadFromDB() {
-    return dbGetAll('fbDailyInsights').then(setInsights);
+    return Promise.all([
+      dbGetAll('fbDailyInsights').then(setInsights),
+      dbGetAll('fbAds').then(setAllAds),
+    ]);
   }
 
   useEffect(() => {
     loadFromDB().finally(() => setLoading(false));
   }, []);
+
+  // Live daily budget: sum active adset daily budgets per campaign state
+  const budgetByState = useMemo(() => {
+    // Deduplicate adsets — one row per unique adset ID so we don't double-count
+    // ads that share the same adset
+    const seenAdsets = new Set();
+    const map = {};
+    for (const a of allAds) {
+      if (!a.adsetId || seenAdsets.has(a.adsetId)) continue;
+      seenAdsets.add(a.adsetId);
+      if (a.adsetStatus !== 'ACTIVE') continue;
+      const state = extractState(a.campaignName);
+      if (!state) continue;
+      const budget = parseFloat(a.daily_budget) / 100 || 0; // FB returns cents
+      if (budget <= 0) continue;
+      map[state] = (map[state] || 0) + budget;
+    }
+    return map;
+  }, [allAds]);
+
+  const budgetStates   = useMemo(() => Object.keys(budgetByState).sort(), [budgetByState]);
+  const totalDailyBudget = useMemo(() => Object.values(budgetByState).reduce((s, v) => s + v, 0), [budgetByState]);
 
   async function syncMonth() {
     setSyncing(true);
@@ -188,6 +214,42 @@ export default function SpendSheet() {
           </div>
         </div>
       </div>
+
+      {/* Live Daily Budget section */}
+      {budgetStates.length > 0 && (
+        <div style={{ marginBottom: 28 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10, color: 'var(--text)' }}>
+            Live Daily Budget
+            <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 400, color: 'var(--text-muted)' }}>
+              sum of active adset daily budgets
+            </span>
+          </div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'flex-end' }}>
+            {budgetStates.map(st => (
+              <div key={st} style={{
+                background: 'var(--surface)',
+                border: '1px solid var(--border)',
+                borderRadius: 8,
+                padding: '10px 16px',
+                minWidth: 90,
+              }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>{st}</div>
+                <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text)' }}>{fmt(budgetByState[st])}</div>
+              </div>
+            ))}
+            <div style={{
+              background: 'var(--green-light)',
+              border: '1px solid var(--green)',
+              borderRadius: 8,
+              padding: '10px 16px',
+              minWidth: 90,
+            }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--green-dark)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>Total / day</div>
+              <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--green-dark)' }}>{fmt(totalDailyBudget)}</div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {loading ? (
         <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>Loading…</div>
