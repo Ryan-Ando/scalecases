@@ -22,7 +22,7 @@ export default function App() {
           ))}
         </nav>
       </header>
-      <main className="content" style={{ padding: 0, boxSizing: 'border-box', minWidth: 0, overflow: 'hidden' }}>
+      <main className="content" style={{ padding: 0, boxSizing: 'border-box', minWidth: 0, overflow: 'clip' }}>
         {tab === 'Ads Tracking' && <AdsTracking />}
         {tab === 'Spend Sheet'  && <SpendSheet />}
       </main>
