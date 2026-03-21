@@ -710,7 +710,8 @@ tfoot .td-name { font-family: var(--sans); font-weight: 700; font-size: 13px; }
 .tracking-grid {
   border-collapse: separate;
   border-spacing: 0;
-  width: 100%;
+  width: max-content;
+  min-width: 100%;
   font-size: 13px;
 }
 
