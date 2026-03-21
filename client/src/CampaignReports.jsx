@@ -824,6 +824,16 @@ export default function CampaignReports() {
       const res  = await fetch(`${BASE}/api/facebook/campaigns?start=${start}&end=${end}`);
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || res.statusText);
+      // TEMP DEBUG — open browser console (F12) to see this
+      if (data[0]) console.log('[CPL DEBUG] first campaign raw fields:', {
+        name: data[0].name,
+        spend: data[0].spend,
+        results: data[0].results,
+        cost_per_result: data[0].cost_per_result,
+        unique_clicks: data[0].unique_clicks,
+        cost_per_unique_click: data[0].cost_per_unique_click,
+        action_types: (data[0].actions || []).map(a => `${a.action_type}=${a.value}`),
+      });
       setCampaigns(data.filter(c => c.effectiveStatus === 'ACTIVE' || c.status === 'ACTIVE'));
     } catch (e) {
       setError(e.message);
