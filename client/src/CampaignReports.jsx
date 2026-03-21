@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
   Legend, ResponsiveContainer,
@@ -492,6 +492,150 @@ function AiRulesModal({ campaigns, onClose }) {
   );
 }
 
+// ── Date Range Picker ─────────────────────────────────────────────────────────
+const MONTH_NAMES = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+
+function DateRangePicker({ start, end, onChange }) {
+  const [open, setOpen]       = useState(false);
+  const [picking, setPicking] = useState(null); // first click sets this
+  const [hover, setHover]     = useState(null);
+  const [viewYear, setViewYear]   = useState(() => (start ? new Date(start + 'T12:00:00') : new Date()).getFullYear());
+  const [viewMonth, setViewMonth] = useState(() => (start ? new Date(start + 'T12:00:00') : new Date()).getMonth());
+  const ref = useRef(null);
+
+  useEffect(() => {
+    if (!open) return;
+    function handle(e) { if (ref.current && !ref.current.contains(e.target)) { setOpen(false); setPicking(null); } }
+    document.addEventListener('mousedown', handle);
+    return () => document.removeEventListener('mousedown', handle);
+  }, [open]);
+
+  function openPicker() {
+    const d = start ? new Date(start + 'T12:00:00') : new Date();
+    setViewYear(d.getFullYear()); setViewMonth(d.getMonth());
+    setPicking(null); setHover(null); setOpen(true);
+  }
+  function prevMonth() {
+    if (viewMonth === 0) { setViewMonth(11); setViewYear(y => y - 1); }
+    else setViewMonth(m => m - 1);
+  }
+  function nextMonth() {
+    if (viewMonth === 11) { setViewMonth(0); setViewYear(y => y + 1); }
+    else setViewMonth(m => m + 1);
+  }
+  function handleDayClick(d) {
+    if (d > todayStr()) return;
+    if (!picking) {
+      setPicking(d);
+    } else {
+      const s = d < picking ? d : picking;
+      const e = d < picking ? picking : d;
+      onChange({ start: s, end: e });
+      setPicking(null); setHover(null); setOpen(false);
+    }
+  }
+
+  // Build grid cells for current view month
+  const firstDow = new Date(viewYear, viewMonth, 1).getDay();
+  const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate();
+  const cells = [];
+  for (let i = 0; i < firstDow; i++) cells.push(null);
+  for (let d = 1; d <= daysInMonth; d++) {
+    cells.push(`${viewYear}-${String(viewMonth + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`);
+  }
+
+  function getRangeInfo(d) {
+    if (!d) return {};
+    const today = todayStr();
+    if (d > today) return { future: true };
+    let rStart, rEnd;
+    if (picking) {
+      const h = hover || picking;
+      rStart = picking <= h ? picking : h;
+      rEnd   = picking <= h ? h : picking;
+    } else {
+      rStart = start; rEnd = end;
+    }
+    return {
+      isStart: d === rStart,
+      isEnd:   d === rEnd,
+      inRange: rStart && rEnd && d > rStart && d < rEnd,
+      isToday: d === today,
+    };
+  }
+
+  const prompt = picking ? 'Click end date' : 'Click start date';
+
+  return (
+    <div style={{ position: 'relative' }} ref={ref}>
+      <button className="btn btn--sm"
+        onClick={() => open ? (setOpen(false), setPicking(null)) : openPicker()}
+        style={{ fontSize: 12, fontFamily: 'monospace', letterSpacing: '-0.01em' }}>
+        {start} – {end}
+      </button>
+      {open && (
+        <div style={{ position: 'absolute', right: 0, top: '100%', marginTop: 6,
+          background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12,
+          padding: '14px 16px', zIndex: 300, boxShadow: '0 8px 32px rgba(0,0,0,0.18)',
+          minWidth: 268 }}>
+          <div style={{ fontSize: 11, color: picking ? '#16a34a' : 'var(--text-muted)',
+            textAlign: 'center', marginBottom: 10, fontWeight: picking ? 700 : 400 }}>{prompt}</div>
+          {/* Month nav */}
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+            <button onClick={prevMonth} style={{ background: 'none', border: 'none', cursor: 'pointer',
+              fontSize: 18, padding: '0 6px', color: 'var(--text)', lineHeight: 1 }}>‹</button>
+            <span style={{ fontSize: 13, fontWeight: 700 }}>{MONTH_NAMES[viewMonth]} {viewYear}</span>
+            <button onClick={nextMonth} style={{ background: 'none', border: 'none', cursor: 'pointer',
+              fontSize: 18, padding: '0 6px', color: 'var(--text)', lineHeight: 1 }}>›</button>
+          </div>
+          {/* Day-of-week headers */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 2, marginBottom: 4 }}>
+            {['Su','Mo','Tu','We','Th','Fr','Sa'].map(h => (
+              <div key={h} style={{ textAlign: 'center', fontSize: 10, fontWeight: 700,
+                color: 'var(--text-muted)', padding: '2px 0' }}>{h}</div>
+            ))}
+          </div>
+          {/* Day cells */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 2 }}
+            onMouseLeave={() => setHover(null)}>
+            {cells.map((d, i) => {
+              const { future, isStart, isEnd, inRange, isToday } = getRangeInfo(d);
+              let bg = 'transparent', color = 'var(--text)', outline = 'none';
+              if (!d || future) { color = 'var(--text-muted)'; }
+              if (inRange)        { bg = '#d1fae5'; }
+              if (isStart || isEnd) { bg = '#16a34a'; color = '#fff'; }
+              if (isToday && !isStart && !isEnd) { outline = '1px solid #16a34a'; }
+              return (
+                <div key={i}
+                  onClick={d && !future ? () => handleDayClick(d) : undefined}
+                  onMouseEnter={d && !future ? () => setHover(d) : undefined}
+                  style={{
+                    height: 32, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    fontSize: 12, borderRadius: 6, background: bg, color,
+                    outline, cursor: d && !future ? 'pointer' : 'default',
+                    opacity: future ? 0.35 : 1, userSelect: 'none',
+                  }}>
+                  {d ? new Date(d + 'T12:00:00').getDate() : ''}
+                </div>
+              );
+            })}
+          </div>
+          {/* Current selection display */}
+          {(picking || (start && end)) && (
+            <div style={{ marginTop: 12, fontSize: 11, color: 'var(--text-muted)',
+              textAlign: 'center', borderTop: '1px solid var(--border)', paddingTop: 10 }}>
+              {picking
+                ? <><strong style={{ color: 'var(--text)' }}>{picking}</strong> → pick end date</>
+                : <><strong style={{ color: 'var(--text)' }}>{start}</strong> → <strong style={{ color: 'var(--text)' }}>{end}</strong></>
+              }
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
 export default function CampaignReports() {
   const [dateRange, setDateRange] = useState({ start: daysAgo(7), end: todayStr() });
@@ -573,9 +717,14 @@ export default function CampaignReports() {
         .map(r => ({
           date: r.date_start?.slice(5),
           spend: parseFloat(r.spend) || 0,
-          leads: (r.actions || []).reduce((s, a) =>
-            ['lead','onsite_conversion.lead_grouped','offsite_conversion.fb_pixel_lead','contact']
-              .includes(a.action_type) ? s + parseInt(a.value, 10) : s, 0),
+          leads: (() => {
+            const types = ['lead','onsite_conversion.lead_grouped','offsite_conversion.fb_pixel_lead','contact','schedule','submit_application'];
+            for (const t of types) {
+              const a = (r.actions || []).find(x => x.action_type === t);
+              if (a) return parseInt(a.value, 10) || 0;
+            }
+            return 0;
+          })(),
         }))
         .sort((a, b) => a.date < b.date ? -1 : 1);
       setTrendData(filtered);
@@ -710,18 +859,7 @@ export default function CampaignReports() {
               </button>
             );
           })}
-          {/* Date range inputs */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginLeft: 4 }}>
-            <input type="date" value={start} max={end}
-              onChange={e => setDateRange(d => ({ ...d, start: e.target.value }))}
-              style={{ padding: '4px 8px', borderRadius: 7, border: '1px solid var(--border)',
-                background: 'var(--bg)', color: 'var(--text)', fontSize: 12 }} />
-            <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>→</span>
-            <input type="date" value={end} min={start} max={todayStr()}
-              onChange={e => setDateRange(d => ({ ...d, end: e.target.value }))}
-              style={{ padding: '4px 8px', borderRadius: 7, border: '1px solid var(--border)',
-                background: 'var(--bg)', color: 'var(--text)', fontSize: 12 }} />
-          </div>
+          <DateRangePicker start={start} end={end} onChange={setDateRange} />
           <button className="btn btn--sm" onClick={loadCampaigns} disabled={loading} style={{ marginLeft: 4 }}>
             {loading ? 'Loading…' : 'Refresh'}
           </button>

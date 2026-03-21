@@ -155,7 +155,11 @@ router.get('/campaigns', async (req, res) => {
 
     const insightsMap = Object.fromEntries(insights.map(i => [i.campaign_id, i]));
 
-    const merged = campaigns.map(c => {
+    // Deduplicate campaigns by id (same campaign may appear from multiple accounts)
+    const seenCampaigns = new Set();
+    const uniqueCampaigns = campaigns.filter(c => { if (seenCampaigns.has(c.id)) return false; seenCampaigns.add(c.id); return true; });
+
+    const merged = uniqueCampaigns.map(c => {
       const ins = insightsMap[c.id] || {};
       return {
         id: c.id,
@@ -209,7 +213,11 @@ router.get('/adsets', async (req, res) => {
 
     const insightsMap = Object.fromEntries(insights.map(i => [i.adset_id, i]));
 
-    const merged = adsets.map(a => {
+    // Deduplicate adsets by id
+    const seenAdsets = new Set();
+    const uniqueAdsets = adsets.filter(a => { if (seenAdsets.has(a.id)) return false; seenAdsets.add(a.id); return true; });
+
+    const merged = uniqueAdsets.map(a => {
       const ins = insightsMap[a.id] || {};
       return {
         id: a.id,
@@ -272,7 +280,11 @@ router.get('/ads', async (req, res) => {
 
     const insightsMap = Object.fromEntries(insights.map(i => [i.ad_id, i]));
 
-    const merged = ads.map(a => {
+    // Deduplicate ads by id
+    const seenAds = new Set();
+    const uniqueAds = ads.filter(a => { if (seenAds.has(a.id)) return false; seenAds.add(a.id); return true; });
+
+    const merged = uniqueAds.map(a => {
       const ins = insightsMap[a.id] || {};
       return {
         id: a.id,
@@ -346,8 +358,11 @@ router.get('/daily', async (req, res) => {
     })).then(results => results.forEach(r => {
       if (r.status === 'rejected') console.warn('FB daily skipped account:', r.reason?.message);
     }));
-    cacheSet(cacheKey, all);
-    res.json(all);
+    // Deduplicate by entity_id + date in case same campaign/adset appears from multiple accounts
+    const idKey = level === 'ad' ? 'ad_id' : level === 'adset' ? 'adset_id' : 'campaign_id';
+    const deduped = [...new Map(all.map(r => [`${r[idKey]}:${r.date_start}`, r])).values()];
+    cacheSet(cacheKey, deduped);
+    res.json(deduped);
   } catch (err) {
     console.error('FB daily error:', err.message);
     res.status(500).json({ error: err.message });
