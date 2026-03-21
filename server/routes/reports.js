@@ -137,7 +137,8 @@ router.post('/analyze-batch', async (req, res) => {
     `   Budget: ${fmtBudget(r)} | Spend: $${parseFloat(r.spend || 0).toFixed(2)}\n` +
     `   Leads: ${r.results || 0} | CPL: ${r.cost_per_result ? '$' + parseFloat(r.cost_per_result).toFixed(2) : 'N/A'}\n` +
     `   CTR: ${r.unique_ctr ? parseFloat(r.unique_ctr).toFixed(2) + '%' : 'N/A'} | Freq: ${r.frequency ? parseFloat(r.frequency).toFixed(2) : 'N/A'} | CPM: ${r.cpm ? '$' + parseFloat(r.cpm).toFixed(2) : 'N/A'}\n` +
-    `   Video avg: ${fmtVideoTime(r.video_avg_time_watched_actions)}`
+    `   Video avg: ${fmtVideoTime(r.video_avg_time_watched_actions)}` +
+    (r.trendSummary ? `\n   Trend:\n${r.trendSummary.split('\n').map(l => '     ' + l).join('\n')}` : '')
   ).join('\n\n');
 
   const prompt = `You are an expert Facebook advertising analyst for a law firm. Rate each of the following ${rows.length} ${levelLabel.toLowerCase()}s for the period ${timeframeLabel}.
@@ -153,7 +154,7 @@ ${rowsBlock}
 Return ONLY a valid JSON array with exactly ${rows.length} entries — one per ${levelLabel.toLowerCase()} — using their exact IDs (no markdown, no explanation):
 [{"id":"<exact id>","rating":"good"|"warning"|"poor","summary":"1–2 sentences with actual numbers","insights":["insight"],"recommendations":["recommendation"]}]
 
-Rating guide: "good" = on target or better, "warning" = mixed/needs attention, "poor" = significantly off target or high CPL.
+Rating guide: "good" = on target or better, "warning" = mixed/needs attention, "poor" = significantly off target or high CPL. Where trend data is available, weight recent performance (last 3d and 7d) more heavily than all-time — an ad with good all-time CPL but sharply worsening recent CPL should be rated "warning" or "poor".
 Never suggest pausing or directly editing ads.`;
 
   try {
@@ -214,6 +215,7 @@ FREQUENCY: ${row.frequency ? parseFloat(row.frequency).toFixed(2) : 'N/A'}
 UNIQUE CTR: ${row.unique_ctr ? parseFloat(row.unique_ctr).toFixed(2) + '%' : 'N/A'}
 VIDEO AVG PLAY TIME: ${fmtVideoTime(row.video_avg_time_watched_actions)}
 ${row.campaignName ? `CAMPAIGN: ${row.campaignName}` : ''}
+${row.trendSummary ? `\nPERFORMANCE TREND (all-time daily data — use this to detect degradation):\n${row.trendSummary}` : ''}
 
 KPI TARGETS:
 ${kpiBlock}
@@ -228,7 +230,7 @@ Return ONLY valid JSON with this exact structure (no markdown, no explanation):
   "recommendations": ["one actionable recommendation", "another recommendation"]
 }
 
-Rating guide: "good" = on target or better, "warning" = mixed/needs attention, "poor" = significantly off target or high CPL.
+Rating guide: "good" = on target or better, "warning" = mixed/needs attention, "poor" = significantly off target or high CPL. If trend data is present, weight recent performance (last 3d and 7d) more heavily than all-time averages when assigning the rating — an ad with a good all-time CPL but sharply rising recent CPL should be rated "warning" or "poor".
 Never suggest pausing or directly editing ads — only provide observations and advice.`;
 
   try {

@@ -92,6 +92,32 @@ function clientCpc(row) {
   return null;
 }
 
+// Compute all-time / last-7d / last-3d trend summary for a single ad from daily rows
+function computeAdTrend(adId, dailyRows) {
+  const rows = dailyRows.filter(r => r.ad_id === adId);
+  if (!rows.length) return null;
+  const cutoff7 = daysAgo(7);
+  const cutoff3 = daysAgo(3);
+  const LEAD_TYPES = ['lead','onsite_conversion.lead_grouped','offsite_conversion.fb_pixel_lead','contact','schedule','submit_application'];
+  function sumPeriod(subset) {
+    let spend = 0, leads = 0;
+    for (const r of subset) {
+      spend += parseFloat(r.spend) || 0;
+      for (const t of LEAD_TYPES) {
+        const a = (r.actions || []).find(x => x.action_type === t);
+        if (a) { leads += parseInt(a.value, 10) || 0; break; }
+      }
+    }
+    const cpl = leads > 0 ? (spend / leads).toFixed(2) : null;
+    return { spend: spend.toFixed(2), leads, cpl };
+  }
+  const fmtP = p => `spend $${p.spend} | leads ${p.leads} | CPL ${p.cpl ? '$' + p.cpl : 'N/A'}`;
+  const all   = sumPeriod(rows);
+  const last7 = sumPeriod(rows.filter(r => r.date_start >= cutoff7));
+  const last3 = sumPeriod(rows.filter(r => r.date_start >= cutoff3));
+  return `All-time: ${fmtP(all)}\nLast 7d:  ${fmtP(last7)}\nLast 3d:  ${fmtP(last3)}`;
+}
+
 function fmtDate(iso) {
   if (!iso) return '—';
   return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: '2-digit' });
@@ -971,16 +997,20 @@ setCampaigns(data.filter(c => c.effectiveStatus === 'ACTIVE' || c.status === 'AC
     setRowAnalyses(prev => ({ ...prev, [id]: { loading: true } }));
     const campaignId = row.campaignId || selCampaign?.id;
     const kpis = campaignId ? (kpisMap[campaignId] || {}) : {};
-    const [globalRules, campaignRules] = await Promise.all([
+    const [globalRules, campaignRules, dailyRows] = await Promise.all([
       dbGetMeta('aiRules_global').catch(() => ''),
       campaignId ? dbGetMeta(`aiRules_${campaignId}`).catch(() => '') : Promise.resolve(''),
+      level === 'ad' ? dbGetAll('adDailyInsights').catch(() => []) : Promise.resolve([]),
     ]);
+    const enrichedRow = level === 'ad'
+      ? { ...row, trendSummary: computeAdTrend(row.id, dailyRows) }
+      : row;
     try {
       const res = await fetch(`${BASE}/api/reports/analyze-row`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          row, level, kpis, timeframeLabel: tfLabel,
+          row: enrichedRow, level, kpis, timeframeLabel: tfLabel,
           globalRules: globalRules || '', campaignRules: campaignRules || '',
         }),
       });
@@ -1007,16 +1037,20 @@ setCampaigns(data.filter(c => c.effectiveStatus === 'ACTIVE' || c.status === 'AC
     });
     const campaignId = selCampaign?.id;
     const kpis = campaignId ? (kpisMap[campaignId] || {}) : {};
-    const [globalRules, campaignRules] = await Promise.all([
+    const [globalRules, campaignRules, dailyRows] = await Promise.all([
       dbGetMeta('aiRules_global').catch(() => ''),
       campaignId ? dbGetMeta(`aiRules_${campaignId}`).catch(() => '') : Promise.resolve(''),
+      level === 'ad' ? dbGetAll('adDailyInsights').catch(() => []) : Promise.resolve([]),
     ]);
+    const enrichedRows = level === 'ad'
+      ? rows.map(r => ({ ...r, trendSummary: computeAdTrend(r.id, dailyRows) }))
+      : rows;
     try {
       const res = await fetch(`${BASE}/api/reports/analyze-batch`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          rows, level, kpis, timeframeLabel: tfLabel,
+          rows: enrichedRows, level, kpis, timeframeLabel: tfLabel,
           globalRules: globalRules || '', campaignRules: campaignRules || '',
         }),
       });
