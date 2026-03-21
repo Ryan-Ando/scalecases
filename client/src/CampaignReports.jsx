@@ -107,16 +107,29 @@ function computeAdStats(_, dailyRows) {
     return 0;
   }
   function sumPeriod(subset) {
-    const spend = subset.reduce((s, r) => s + (parseFloat(r.spend) || 0), 0);
-    const leads = subset.reduce((s, r) => s + getLeads(r), 0);
-    const days  = subset.length;
-    return { spend, leads, days, cpl: leads > 0 ? spend / leads : null,
-             spendPerDay: days > 0 ? spend / days : 0, leadsPerDay: days > 0 ? leads / days : 0 };
+    const spend       = subset.reduce((s, r) => s + (parseFloat(r.spend) || 0), 0);
+    const leads       = subset.reduce((s, r) => s + getLeads(r), 0);
+    const impressions = subset.reduce((s, r) => s + (parseFloat(r.impressions) || 0), 0);
+    const clicks      = subset.reduce((s, r) => s + (parseFloat(r.unique_clicks) || 0), 0);
+    const days        = subset.length;
+    return {
+      spend, leads, impressions, clicks, days,
+      spendPerDay:      days > 0 ? spend / days : 0,
+      leadsPerDay:      days > 0 ? leads / days : 0,
+      impressionsPerDay:days > 0 ? impressions / days : 0,
+      clicksPerDay:     days > 0 ? clicks / days : 0,
+      cpl: leads > 0 ? spend / leads : null,
+      cpc: clicks > 0 ? spend / clicks : null,
+      cpm: impressions > 0 ? (spend / impressions) * 1000 : null,
+      ctr: impressions > 0 ? (clicks / impressions) * 100 : null,
+    };
   }
   const chartData = rows.map(r => ({
-    date: r.date_start.slice(5),
-    spend: parseFloat(r.spend) || 0,
-    leads: getLeads(r),
+    date:        r.date_start.slice(5),
+    spend:       parseFloat(r.spend) || 0,
+    leads:       getLeads(r),
+    impressions: parseFloat(r.impressions) || 0,
+    clicks:      parseFloat(r.unique_clicks) || 0,
   }));
   return {
     all:    sumPeriod(rows),
@@ -167,12 +180,23 @@ function AdTrendSection({ rows, loading, error }) {
 
   const { all, last7, last3, chartData } = stats;
 
+  const METRICS = [
+    { key: 'spendPerDay',       label: 'Spend/day',   fmt: v => fmt$(v),                invert: false },
+    { key: 'leadsPerDay',       label: 'Leads/day',   fmt: v => v.toFixed(2),           invert: true  },
+    { key: 'cpl',               label: 'CPL',         fmt: v => v ? fmt$(v) : '—',      invert: false },
+    { key: 'cpc',               label: 'CPC',         fmt: v => v ? fmt$(v) : '—',      invert: false },
+    { key: 'cpm',               label: 'CPM',         fmt: v => v ? fmt$(v) : '—',      invert: false },
+    { key: 'ctr',               label: 'CTR',         fmt: v => v ? `${v.toFixed(2)}%` : '—', invert: true },
+    { key: 'impressionsPerDay', label: 'Impressions/day', fmt: v => fmtN(v),            invert: true  },
+    { key: 'clicksPerDay',      label: 'Clicks/day',  fmt: v => v.toFixed(2),           invert: true  },
+  ];
+
   return (
     <>
-      {/* Daily chart — fixed pixel dimensions avoid ResponsiveContainer issues inside overflow:auto */}
+      {/* Daily chart */}
       <div style={{ marginBottom: 18 }}>
         <div style={TREND_LABEL}>Daily Performance (all-time)</div>
-        <LineChart width={580} height={130} data={chartData} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
+        <LineChart width={580} height={140} data={chartData} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
           <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
           <XAxis dataKey="date" tick={{ fontSize: 9 }} tickLine={false} interval="preserveStartEnd" />
           <YAxis yAxisId="l" orientation="left" tick={{ fontSize: 9 }} tickLine={false} width={42}
@@ -180,48 +204,38 @@ function AdTrendSection({ rows, loading, error }) {
           <YAxis yAxisId="r" orientation="right" tick={{ fontSize: 9 }} tickLine={false} width={20} />
           <Tooltip formatter={(v, n) => [n === 'Spend' ? `$${parseFloat(v).toFixed(2)}` : v, n]}
             contentStyle={{ fontSize: 11 }} />
-          <Line yAxisId="l" type="monotone" dataKey="spend" stroke="#6366f1" dot={false}
+          <Line yAxisId="l" type="linear" dataKey="spend" stroke="#6366f1" dot={false}
             strokeWidth={1.5} name="Spend" />
-          <Line yAxisId="r" type="monotone" dataKey="leads" stroke="#10b981" dot={false}
+          <Line yAxisId="r" type="linear" dataKey="leads" stroke="#10b981" dot={false}
             strokeWidth={1.5} name="Leads" />
         </LineChart>
       </div>
 
       {/* Stats comparison table */}
-      <div style={{ marginBottom: 16 }}>
+      <div style={{ marginBottom: 12 }}>
         <div style={TREND_LABEL}>Performance Trend</div>
         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
           <thead>
             <tr>
               <th style={{ ...TREND_TH, textAlign: 'left' }}>Metric</th>
               <th style={TREND_TH}>All-time avg/day</th>
-              <th style={TREND_TH}>Last 7d avg/day</th>
-              <th style={TREND_TH}>Last 3d avg/day</th>
+              <th style={TREND_TH}>Last 7d</th>
+              <th style={TREND_TH}>Last 3d</th>
             </tr>
           </thead>
           <tbody>
-            <tr>
-              <td style={{ ...TREND_TD, textAlign: 'left' }}>Spend</td>
-              <td style={TREND_TD}>{fmt$(all.spendPerDay)}</td>
-              <td style={TREND_TD}>{fmt$(last7.spendPerDay)}<PctTag val={pctChange(last7.spendPerDay, all.spendPerDay)} /></td>
-              <td style={TREND_TD}>{fmt$(last3.spendPerDay)}<PctTag val={pctChange(last3.spendPerDay, all.spendPerDay)} /></td>
-            </tr>
-            <tr>
-              <td style={{ ...TREND_TD, textAlign: 'left' }}>Leads</td>
-              <td style={TREND_TD}>{all.leadsPerDay.toFixed(2)}</td>
-              <td style={TREND_TD}>{last7.leadsPerDay.toFixed(2)}<PctTag val={pctChange(last7.leadsPerDay, all.leadsPerDay)} invert /></td>
-              <td style={TREND_TD}>{last3.leadsPerDay.toFixed(2)}<PctTag val={pctChange(last3.leadsPerDay, all.leadsPerDay)} invert /></td>
-            </tr>
-            <tr>
-              <td style={{ ...TREND_TD, borderBottom: 'none', textAlign: 'left' }}>CPL</td>
-              <td style={{ ...TREND_TD, borderBottom: 'none' }}>{all.cpl ? fmt$(all.cpl) : '—'}</td>
-              <td style={{ ...TREND_TD, borderBottom: 'none' }}>
-                {last7.cpl ? fmt$(last7.cpl) : '—'}<PctTag val={pctChange(last7.cpl, all.cpl)} />
-              </td>
-              <td style={{ ...TREND_TD, borderBottom: 'none' }}>
-                {last3.cpl ? fmt$(last3.cpl) : '—'}<PctTag val={pctChange(last3.cpl, all.cpl)} />
-              </td>
-            </tr>
+            {METRICS.map(({ key, label, fmt, invert }, i) => {
+              const isLast = i === METRICS.length - 1;
+              const td = isLast ? { ...TREND_TD, borderBottom: 'none' } : TREND_TD;
+              return (
+                <tr key={key}>
+                  <td style={{ ...td, textAlign: 'left' }}>{label}</td>
+                  <td style={td}>{fmt(all[key] ?? 0)}</td>
+                  <td style={td}>{fmt(last7[key] ?? 0)}<PctTag val={pctChange(last7[key], all[key])} invert={invert} /></td>
+                  <td style={td}>{fmt(last3[key] ?? 0)}<PctTag val={pctChange(last3[key], all[key])} invert={invert} /></td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
         <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 6, textAlign: 'right' }}>
@@ -583,8 +597,10 @@ function DrillTable({ rows, onRowClick, label = 'Ad Set', rowAnalyses = {}, onAn
           display: 'flex', alignItems: 'center', justifyContent: 'center' }}
           onClick={() => setPopup(null)}>
           <div style={{ background: 'var(--surface)', borderRadius: 14, padding: 24,
-            width: 660, maxWidth: '95vw',
-            maxHeight: '88vh', overflowY: 'auto', boxShadow: '0 8px 32px rgba(0,0,0,0.2)' }}
+            width: 680, maxWidth: '95vw',
+            minWidth: 360, minHeight: 200,
+            maxHeight: '92vh', overflowY: 'auto',
+            resize: 'both', boxShadow: '0 8px 32px rgba(0,0,0,0.2)' }}
             onClick={e => e.stopPropagation()}>
 
             {/* Header */}
