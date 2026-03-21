@@ -362,14 +362,19 @@ router.get('/ads', async (req, res) => {
 // When date=YYYY-MM-DD is provided, fetches a single day (level=ad with actions).
 router.get('/daily', async (req, res) => {
   try {
-    const { date_preset, ad_ids, date, start, end } = req.query;
-    const adIdList = ad_ids ? ad_ids.split(',').filter(Boolean) : null;
-    const level = (adIdList?.length || date) ? 'ad' : (req.query.level || 'campaign');
-    const cacheKey = `daily:${level}:${date_preset||''}:${ad_ids||''}:${date||''}:${start||''}:${end||''}`;
+    const { date_preset, ad_ids, adset_ids, date, start, end } = req.query;
+    const adIdList    = ad_ids    ? ad_ids.split(',').filter(Boolean)    : null;
+    const adsetIdList = adset_ids ? adset_ids.split(',').filter(Boolean) : null;
+    const level = (adIdList?.length || date) ? 'ad'
+                : adsetIdList?.length         ? 'adset'
+                : (req.query.level || 'campaign');
+    const cacheKey = `daily:${level}:${date_preset||''}:${ad_ids||''}:${adset_ids||''}:${date||''}:${start||''}:${end||''}`;
     const cached = cacheGet(cacheKey);
     if (cached) return res.json(cached);
     const fields = level === 'ad'
       ? `ad_id,ad_name,campaign_name,spend,impressions,unique_clicks,cpm,actions,date_start,date_stop`
+      : level === 'adset'
+      ? `adset_id,adset_name,campaign_name,spend,impressions,unique_clicks,cpm,actions,date_start,date_stop`
       : `campaign_id,campaign_name,spend,impressions,cpm,actions,date_start,date_stop`;
 
     const accounts = adAccounts();
@@ -391,6 +396,8 @@ router.get('/daily', async (req, res) => {
       }
       if (adIdList?.length) {
         params.set('filtering', JSON.stringify([{ field: 'ad.id', operator: 'IN', value: adIdList }]));
+      } else if (adsetIdList?.length) {
+        params.set('filtering', JSON.stringify([{ field: 'adset.id', operator: 'IN', value: adsetIdList }]));
       }
       let url = `${FB_API}/${account}/insights?${params}`;
       while (url) {

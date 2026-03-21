@@ -517,17 +517,19 @@ function DrillTable({ rows, onRowClick, label = 'Ad Set', rowAnalyses = {}, onAn
     else { setSortKey(key); setSortDir('asc'); }
   }
 
-  // Fetch daily data for an ad when its popup opens
+  // Fetch daily data when a popup opens (works for both ads and adsets)
   useEffect(() => {
-    if (level !== 'ad' || !popup) return;
-    if (adDailyCache[popup]) return; // already cached
-    const fromProp = dailyRows.filter(r => r.ad_id === popup);
+    if (!popup) return;
+    if (adDailyCache[popup]) return;
+    const idField  = level === 'ad' ? 'ad_id' : 'adset_id';
+    const param    = level === 'ad' ? 'ad_ids' : 'adset_ids';
+    const fromProp = dailyRows.filter(r => r[idField] === popup);
     if (fromProp.length) {
       setAdDailyCache(prev => ({ ...prev, [popup]: { rows: fromProp } }));
       return;
     }
     setAdDailyCache(prev => ({ ...prev, [popup]: { loading: true } }));
-    fetch(`${BASE}/api/facebook/daily?date_preset=maximum&ad_ids=${encodeURIComponent(popup)}`)
+    fetch(`${BASE}/api/facebook/daily?date_preset=maximum&${param}=${encodeURIComponent(popup)}`)
       .then(r => r.json())
       .then(data => setAdDailyCache(prev => ({ ...prev, [popup]: { rows: Array.isArray(data) ? data : [] } })))
       .catch(e  => setAdDailyCache(prev => ({ ...prev, [popup]: { error: e.message, rows: [] } })));
@@ -581,7 +583,7 @@ function DrillTable({ rows, onRowClick, label = 'Ad Set', rowAnalyses = {}, onAn
           display: 'flex', alignItems: 'center', justifyContent: 'center' }}
           onClick={() => setPopup(null)}>
           <div style={{ background: 'var(--surface)', borderRadius: 14, padding: 24,
-            width: level === 'ad' ? 660 : 500, maxWidth: '95vw',
+            width: 660, maxWidth: '95vw',
             maxHeight: '88vh', overflowY: 'auto', boxShadow: '0 8px 32px rgba(0,0,0,0.2)' }}
             onClick={e => e.stopPropagation()}>
 
@@ -597,14 +599,14 @@ function DrillTable({ rows, onRowClick, label = 'Ad Set', rowAnalyses = {}, onAn
                 cursor: 'pointer', fontSize: 18, color: 'var(--text-muted)', padding: '0 4px', marginLeft: 12 }}>✕</button>
             </div>
 
-            {/* Ad trend section — chart + stats table (ads only) */}
-            {level === 'ad' && popupRow && (() => {
+            {/* Trend section — chart + stats table */}
+            {popupRow && (() => {
               const cache = adDailyCache[popupRow.id] || {};
               return <AdTrendSection rows={cache.rows} loading={!!cache.loading} error={cache.error} />;
             })()}
 
             {/* Divider between trend and AI analysis */}
-            {level === 'ad' && popupAnalysis && !popupAnalysis.loading && !popupAnalysis.error && (
+            {popupAnalysis && !popupAnalysis.loading && !popupAnalysis.error && (
               <div style={{ borderTop: '1px solid var(--border)', marginBottom: 16 }} />
             )}
 
