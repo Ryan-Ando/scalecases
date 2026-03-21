@@ -1842,7 +1842,7 @@ export default function AdsTracking() {
                         />
                       </td>
                     )}
-                    <td className="tracking-td-ad" title={adName} style={{ position: 'relative' }}>
+                    <td className="tracking-td-ad" title={adName}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
                         <span className="tracking-ad-name">{adName}</span>
                         {mergeGroup && (
