@@ -178,6 +178,21 @@ router.get('/campaigns', async (req, res) => {
   }
 });
 
+// GET /api/facebook/campaign-insights?campaign_id=xxx
+// Returns lifetime (all-time) insights for a single campaign — used to seed default KPIs.
+router.get('/campaign-insights', async (req, res) => {
+  try {
+    const { campaign_id } = req.query;
+    if (!campaign_id) return res.status(400).json({ error: 'campaign_id required' });
+    const insights = await fetchInsights('campaign', 'maximum', { campaign_id });
+    const ins = insights.find(i => i.campaign_id === campaign_id) || {};
+    res.json({ ...ins, ...extractResults(ins) });
+  } catch (err) {
+    console.error('FB campaign-insights error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // GET /api/facebook/adsets?campaign_id=
 router.get('/adsets', async (req, res) => {
   try {

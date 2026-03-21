@@ -1,9 +1,9 @@
-import { useState, useEffect, useMemo, useRef } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
   Legend, ResponsiveContainer,
 } from 'recharts';
-import { dbGetAll, dbUpsert, dbDelete } from './db.js';
+import { dbGetAll, dbUpsert } from './db.js';
 
 const BASE = import.meta.env.VITE_API_URL || 'http://localhost:3001';
 
@@ -37,9 +37,9 @@ function getDateRange(days) {
   return { start, end: today };
 }
 
-function fmt$(v)   { return v != null && v !== '' ? `$${parseFloat(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '—'; }
-function fmtN(v)   { return v != null && v !== '' ? parseFloat(v).toLocaleString('en-US', { maximumFractionDigits: 2 }) : '—'; }
-function fmtPct(v) { return v != null && v !== '' ? `${parseFloat(v).toFixed(2)}%` : '—'; }
+function fmt$(v)   { return v != null && v !== '' && !isNaN(parseFloat(v)) ? `$${parseFloat(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '—'; }
+function fmtN(v)   { return v != null && v !== '' && !isNaN(parseFloat(v)) ? parseFloat(v).toLocaleString('en-US', { maximumFractionDigits: 2 }) : '—'; }
+function fmtPct(v) { return v != null && v !== '' && !isNaN(parseFloat(v)) ? `${parseFloat(v).toFixed(2)}%` : '—'; }
 
 function fmtBudget(item) {
   if (item.dailyBudget)    return `$${(parseFloat(item.dailyBudget) / 100).toFixed(0)}/day`;
@@ -50,12 +50,17 @@ function fmtBudget(item) {
 function fmtVideo(arr) {
   if (!Array.isArray(arr)) return '—';
   const v = arr.find(a => a.action_type === 'video_view');
-  if (!v) return '—';
+  if (!v || !parseFloat(v.value)) return '—';
   const s = parseFloat(v.value);
-  if (!s) return '—';
   return s >= 60
     ? `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, '0')}`
     : `${s.toFixed(1)}s`;
+}
+
+function videoSecs(arr) {
+  if (!Array.isArray(arr)) return 0;
+  const v = arr.find(a => a.action_type === 'video_view');
+  return v ? parseFloat(v.value) || 0 : 0;
 }
 
 function fmtDate(iso) {
@@ -63,15 +68,23 @@ function fmtDate(iso) {
   return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: '2-digit' });
 }
 
+function deliveryOrder(r) {
+  const s = r.effectiveStatus || r.status || '';
+  if (s === 'ACTIVE') return 0;
+  if (s === 'PAUSED') return 1;
+  return 2;
+}
+
+// ── Badges ────────────────────────────────────────────────────────────────────
 function DeliveryBadge({ status }) {
   const map = {
-    ACTIVE:           { label: 'Active',           color: '#16a34a', bg: '#f0fdf4' },
-    PAUSED:           { label: 'Paused',            color: '#64748b', bg: '#f1f5f9' },
-    CAMPAIGN_PAUSED:  { label: 'Campaign paused',   color: '#f59e0b', bg: '#fffbeb' },
-    ADSET_PAUSED:     { label: 'Ad set paused',     color: '#f59e0b', bg: '#fffbeb' },
-    ARCHIVED:         { label: 'Archived',          color: '#94a3b8', bg: '#f8fafc' },
-    IN_PROCESS:       { label: 'In review',         color: '#3b82f6', bg: '#eff6ff' },
-    WITH_ISSUES:      { label: 'Issues',            color: '#dc2626', bg: '#fef2f2' },
+    ACTIVE:          { label: 'Active',          color: '#16a34a', bg: '#f0fdf4' },
+    PAUSED:          { label: 'Paused',           color: '#64748b', bg: '#f1f5f9' },
+    CAMPAIGN_PAUSED: { label: 'Campaign paused',  color: '#f59e0b', bg: '#fffbeb' },
+    ADSET_PAUSED:    { label: 'Ad set paused',    color: '#f59e0b', bg: '#fffbeb' },
+    ARCHIVED:        { label: 'Archived',         color: '#94a3b8', bg: '#f8fafc' },
+    IN_PROCESS:      { label: 'In review',        color: '#3b82f6', bg: '#eff6ff' },
+    WITH_ISSUES:     { label: 'Issues',           color: '#dc2626', bg: '#fef2f2' },
   };
   const s = map[status] || { label: status || '—', color: '#94a3b8', bg: '#f8fafc' };
   return (
@@ -88,9 +101,7 @@ function RatingBadge({ rating }) {
   const [label, color, bg] = map[rating] || ['Unknown', '#94a3b8', '#f8fafc'];
   return (
     <span style={{ fontSize: 11, fontWeight: 700, padding: '3px 10px', borderRadius: 20,
-      color, background: bg, border: `1px solid ${color}44` }}>
-      {label}
-    </span>
+      color, background: bg, border: `1px solid ${color}44` }}>{label}</span>
   );
 }
 
@@ -101,39 +112,74 @@ function ratingColors(rating) {
   return { border: 'var(--border)', bg: 'var(--surface)' };
 }
 
-// ── KPI Modal ────────────────────────────────────────────────────────────────
-function KpiModal({ kpis, onSave, onClose }) {
-  const [draft, setDraft] = useState({ ...kpis });
+// ── KPI Modal (per-campaign) ──────────────────────────────────────────────────
+const KPI_FIELDS = [
+  { key: 'targetCpl',      label: 'Target CPL — Cost per Lead ($)',               ph: 'e.g. 80',   dataKey: 'cost_per_result' },
+  { key: 'targetCpc',      label: 'Target CPC — Cost per Unique Click ($)',        ph: 'e.g. 5',    dataKey: 'cost_per_unique_click' },
+  { key: 'targetCpm',      label: 'Target CPM — Cost per 1,000 Impressions ($)',  ph: 'e.g. 15',   dataKey: 'cpm' },
+  { key: 'targetCtr',      label: 'Target Unique CTR (%)',                         ph: 'e.g. 2.5',  dataKey: 'unique_ctr' },
+  { key: 'maxFrequency',   label: 'Max Frequency (times seen)',                    ph: 'e.g. 3',    dataKey: 'frequency' },
+  { key: 'targetSpend',    label: 'Target Daily Spend ($)',                        ph: 'e.g. 500',  dataKey: null },
+  { key: 'minLeads',       label: 'Min Leads per Day',                             ph: 'e.g. 2',    dataKey: null },
+  { key: 'minVideoTime',   label: 'Min Video Avg Play Time (seconds)',             ph: 'e.g. 10',   dataKey: null },
+];
+
+function KpiModal({ campaignId, campaignName, currentKpis, onSave, onClose }) {
+  const [draft, setDraft]               = useState({ ...currentKpis });
+  const [loadingDef, setLoadingDef]     = useState(false);
+  const [defaultsNote, setDefaultsNote] = useState('');
+
   function set(k, v) { setDraft(d => ({ ...d, [k]: v })); }
+
+  // Auto-fetch lifetime averages if this campaign has no saved KPIs yet
+  useEffect(() => {
+    const hasAny = KPI_FIELDS.some(f => currentKpis?.[f.key]);
+    if (hasAny) return; // already configured
+    setLoadingDef(true);
+    fetch(`${BASE}/api/facebook/campaign-insights?campaign_id=${campaignId}`)
+      .then(r => r.json())
+      .then(data => {
+        setDraft(prev => {
+          const next = { ...prev };
+          for (const f of KPI_FIELDS) {
+            if (f.dataKey && data[f.dataKey] != null && !next[f.key]) {
+              next[f.key] = parseFloat(data[f.dataKey]).toFixed(2);
+            }
+          }
+          return next;
+        });
+        setDefaultsNote('Pre-filled with all-time averages — adjust as needed.');
+      })
+      .catch(() => {})
+      .finally(() => setLoadingDef(false));
+  }, []);
+
   return (
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 1000,
       display: 'flex', alignItems: 'center', justifyContent: 'center' }}
       onClick={onClose}>
       <div style={{ background: 'var(--surface)', borderRadius: 14, padding: 28, width: 440,
-        maxHeight: '90vh', overflowY: 'auto',
-        boxShadow: '0 8px 32px rgba(0,0,0,0.18)' }}
+        maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 8px 32px rgba(0,0,0,0.18)' }}
         onClick={e => e.stopPropagation()}>
-        <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 4 }}>Manage KPIs</div>
-        <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 16 }}>
-          Set targets — AI uses these to rate performance and flag issues.
+        <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 2 }}>KPIs — {campaignName}</div>
+        <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: defaultsNote ? 6 : 16 }}>
+          Targets are used by AI to rate performance and flag issues.
         </div>
-        {[
-          ['targetCpl',       'Target CPL — Cost per Lead ($)',            'e.g. 80'],
-          ['targetCpc',       'Target CPC — Cost per Unique Click ($)',    'e.g. 5'],
-          ['targetCpm',       'Target CPM — Cost per 1,000 Impressions ($)', 'e.g. 15'],
-          ['targetCtr',       'Target Unique CTR (%)',                     'e.g. 2.5'],
-          ['maxFrequency',    'Max Frequency (times seen)',                 'e.g. 3'],
-          ['targetSpend',     'Target Daily Spend ($)',                     'e.g. 500'],
-          ['minLeads',        'Min Leads per Day',                         'e.g. 2'],
-          ['minVideoTime',    'Min Video Avg Play Time (seconds)',          'e.g. 10'],
-        ].map(([k, label, ph]) => (
-          <div key={k} style={{ marginBottom: 12 }}>
+        {loadingDef && (
+          <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12 }}>Loading all-time averages…</div>
+        )}
+        {defaultsNote && !loadingDef && (
+          <div style={{ fontSize: 12, color: '#16a34a', marginBottom: 14, background: '#f0fdf4',
+            border: '1px solid #bbf7d0', borderRadius: 8, padding: '6px 10px' }}>{defaultsNote}</div>
+        )}
+        {KPI_FIELDS.map(({ key, label, ph }) => (
+          <div key={key} style={{ marginBottom: 12 }}>
             <label style={{ display: 'block', fontSize: 12, fontWeight: 600,
               color: 'var(--text-muted)', marginBottom: 4 }}>{label}</label>
             <input
               type="number" step="any" placeholder={ph}
-              value={draft[k] || ''}
-              onChange={e => set(k, e.target.value)}
+              value={draft[key] || ''}
+              onChange={e => set(key, e.target.value)}
               style={{ width: '100%', padding: '8px 12px', borderRadius: 8, fontSize: 13,
                 border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)',
                 boxSizing: 'border-box' }}
@@ -144,7 +190,7 @@ function KpiModal({ kpis, onSave, onClose }) {
           <label style={{ display: 'block', fontSize: 12, fontWeight: 600,
             color: 'var(--text-muted)', marginBottom: 4 }}>Additional context for AI</label>
           <textarea
-            placeholder="e.g. AZ historically has higher CPL in Q1, SC target market is seniors..."
+            placeholder="e.g. AZ historically has higher CPL in Q1, target market is seniors…"
             value={draft.notes || ''}
             onChange={e => set('notes', e.target.value)}
             rows={3}
@@ -156,86 +202,175 @@ function KpiModal({ kpis, onSave, onClose }) {
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
           <button className="btn btn--sm" onClick={onClose}>Cancel</button>
           <button className="btn btn--sm" style={{ background: 'var(--green)', color: '#fff' }}
-            onClick={() => { onSave(draft); onClose(); }}>Save KPIs</button>
+            onClick={() => { onSave(campaignId, draft); onClose(); }}>Save KPIs</button>
         </div>
       </div>
     </div>
   );
 }
 
-// ── Stat row helper ──────────────────────────────────────────────────────────
-function StatBox({ label, value, sub }) {
+// ── Stat box ──────────────────────────────────────────────────────────────────
+function StatBox({ label, value }) {
   return (
     <div style={{ minWidth: 80 }}>
       <div style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 600,
         textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 2 }}>{label}</div>
       <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text)' }}>{value}</div>
-      {sub && <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{sub}</div>}
     </div>
   );
 }
 
-// ── Drilldown table ──────────────────────────────────────────────────────────
+// ── Sortable drill-down table ─────────────────────────────────────────────────
+const COLS = [
+  { key: 'name',                  label: 'Name',        align: 'left',  sticky: true },
+  { key: 'status',                label: 'On/Off',      align: 'center' },
+  { key: 'effectiveStatus',       label: 'Delivery',    align: 'center' },
+  { key: 'budget',                label: 'Budget',      align: 'right'  },
+  { key: 'spend',                 label: 'Spent',       align: 'right'  },
+  { key: 'results',               label: 'Results',     align: 'right'  },
+  { key: 'cost_per_result',       label: 'CPL',         align: 'right'  },
+  { key: 'unique_clicks',         label: 'Uniq Clicks', align: 'right'  },
+  { key: 'cost_per_unique_click', label: 'CPC',         align: 'right'  },
+  { key: 'frequency',             label: 'Frequency',   align: 'right'  },
+  { key: 'cpm',                   label: 'CPM',         align: 'right'  },
+  { key: 'unique_ctr',            label: 'Uniq CTR',    align: 'right'  },
+  { key: 'videoTime',             label: 'Video Time',  align: 'right'  },
+  { key: 'createdTime',           label: 'Created',     align: 'right'  },
+];
+
+function getSortVal(r, key) {
+  switch (key) {
+    case 'name':                  return (r.name || '').toLowerCase();
+    case 'status':
+    case 'effectiveStatus':       return deliveryOrder(r);
+    case 'budget':                return parseFloat(r.dailyBudget || r.lifetimeBudget || 0) / 100;
+    case 'spend':                 return parseFloat(r.spend || 0);
+    case 'results':               return r.results || 0;
+    case 'cost_per_result':       return parseFloat(r.cost_per_result || 0) || 1e9;
+    case 'unique_clicks':         return parseFloat(r.unique_clicks || 0);
+    case 'cost_per_unique_click': return parseFloat(r.cost_per_unique_click || 0) || 1e9;
+    case 'frequency':             return parseFloat(r.frequency || 0);
+    case 'cpm':                   return parseFloat(r.cpm || 0);
+    case 'unique_ctr':            return parseFloat(r.unique_ctr || 0);
+    case 'videoTime':             return videoSecs(r.video_avg_time_watched_actions);
+    case 'createdTime':           return r.createdTime || r.created_time || '';
+    default:                      return 0;
+  }
+}
+
+function cellVal(r, key) {
+  switch (key) {
+    case 'name':                  return <span style={{ fontWeight: 600 }} title={r.name}>{r.name}</span>;
+    case 'status':                return <DeliveryBadge status={r.status} />;
+    case 'effectiveStatus':       return <DeliveryBadge status={r.effectiveStatus || r.status} />;
+    case 'budget':                return fmtBudget(r);
+    case 'spend':                 return fmt$(r.spend);
+    case 'results':               return r.results ?? '—';
+    case 'cost_per_result':       return fmt$(r.cost_per_result);
+    case 'unique_clicks':         return fmtN(r.unique_clicks);
+    case 'cost_per_unique_click': return fmt$(r.cost_per_unique_click);
+    case 'frequency':             return fmtN(r.frequency);
+    case 'cpm':                   return fmt$(r.cpm);
+    case 'unique_ctr':            return fmtPct(r.unique_ctr);
+    case 'videoTime':             return fmtVideo(r.video_avg_time_watched_actions);
+    case 'createdTime':           return fmtDate(r.createdTime || r.created_time);
+    default:                      return '—';
+  }
+}
+
 function DrillTable({ rows, onRowClick, label = 'Ad Set' }) {
-  const tdS = { padding: '8px 12px', fontSize: 12, borderBottom: '1px solid var(--border)',
-    whiteSpace: 'nowrap', color: 'var(--text)' };
-  const thS = { padding: '8px 12px', fontSize: 11, fontWeight: 700, textTransform: 'uppercase',
+  // Default: ACTIVE first, then newest created
+  const [sortKey, setSortKey] = useState('_default');
+  const [sortDir, setSortDir] = useState('asc');
+
+  const sorted = useMemo(() => {
+    const arr = [...rows];
+    if (sortKey === '_default') {
+      return arr.sort((a, b) => {
+        const d = deliveryOrder(a) - deliveryOrder(b);
+        if (d !== 0) return d;
+        const ca = a.createdTime || a.created_time || '';
+        const cb = b.createdTime || b.created_time || '';
+        return cb.localeCompare(ca); // newest first
+      });
+    }
+    return arr.sort((a, b) => {
+      const av = getSortVal(a, sortKey);
+      const bv = getSortVal(b, sortKey);
+      if (av < bv) return sortDir === 'asc' ? -1 : 1;
+      if (av > bv) return sortDir === 'asc' ?  1 : -1;
+      return 0;
+    });
+  }, [rows, sortKey, sortDir]);
+
+  function handleSort(key) {
+    if (sortKey === key) setSortDir(d => d === 'asc' ? 'desc' : 'asc');
+    else { setSortKey(key); setSortDir('asc'); }
+  }
+
+  const thBase = {
+    padding: '9px 12px', fontSize: 11, fontWeight: 700, textTransform: 'uppercase',
     letterSpacing: '0.05em', color: 'var(--text-muted)', borderBottom: '2px solid var(--border)',
-    whiteSpace: 'nowrap', background: 'var(--surface)', position: 'sticky', top: 0 };
+    whiteSpace: 'nowrap', background: 'var(--surface)', position: 'sticky', top: 0,
+    cursor: 'pointer', userSelect: 'none',
+  };
+  const tdBase = {
+    padding: '8px 12px', fontSize: 12, borderBottom: '1px solid var(--border)',
+    whiteSpace: 'nowrap', color: 'var(--text)',
+  };
+
+  const displayLabel = col => col.key === 'name' ? label : col.label;
 
   return (
     <div style={{ overflowX: 'auto', overflowY: 'auto', maxHeight: 'calc(100vh - 320px)',
       border: '1px solid var(--border)', borderRadius: 10 }}>
-      <table style={{ borderCollapse: 'collapse', width: '100%', minWidth: 1100 }}>
+      <table style={{ borderCollapse: 'collapse', width: '100%', minWidth: 1200 }}>
         <thead>
           <tr>
-            <th style={{ ...thS, textAlign: 'left', minWidth: 200, position: 'sticky', left: 0, zIndex: 2 }}>{label}</th>
-            <th style={{ ...thS, textAlign: 'center' }}>Status</th>
-            <th style={{ ...thS, textAlign: 'right' }}>Delivery</th>
-            <th style={{ ...thS, textAlign: 'right' }}>Budget</th>
-            <th style={{ ...thS, textAlign: 'right' }}>Spent</th>
-            <th style={{ ...thS, textAlign: 'right' }}>Results</th>
-            <th style={{ ...thS, textAlign: 'right' }}>CPL</th>
-            <th style={{ ...thS, textAlign: 'right' }}>Uniq Clicks</th>
-            <th style={{ ...thS, textAlign: 'right' }}>CPC</th>
-            <th style={{ ...thS, textAlign: 'right' }}>Frequency</th>
-            <th style={{ ...thS, textAlign: 'right' }}>CPM</th>
-            <th style={{ ...thS, textAlign: 'right' }}>Uniq CTR</th>
-            <th style={{ ...thS, textAlign: 'right' }}>Video Time</th>
-            <th style={{ ...thS, textAlign: 'right' }}>Created</th>
+            {COLS.map(col => (
+              <th key={col.key}
+                style={{
+                  ...thBase,
+                  textAlign: col.align || 'right',
+                  ...(col.sticky ? { position: 'sticky', left: 0, zIndex: 3, top: 0 } : {}),
+                }}
+                onClick={() => handleSort(col.key)}
+                title={`Sort by ${col.label}`}
+              >
+                {displayLabel(col)}
+                {sortKey === col.key
+                  ? <span style={{ marginLeft: 4, fontSize: 9 }}>{sortDir === 'asc' ? '▲' : '▼'}</span>
+                  : <span style={{ marginLeft: 4, fontSize: 9, opacity: 0.3 }}>⇅</span>
+                }
+              </th>
+            ))}
           </tr>
         </thead>
         <tbody>
-          {rows.map(r => (
-            <tr key={r.id} onClick={onRowClick ? () => onRowClick(r) : undefined}
+          {sorted.map(r => (
+            <tr key={r.id}
+              onClick={onRowClick ? () => onRowClick(r) : undefined}
               style={{ cursor: onRowClick ? 'pointer' : 'default' }}
               onMouseEnter={e => { if (onRowClick) e.currentTarget.style.background = 'var(--bg)'; }}
               onMouseLeave={e => { e.currentTarget.style.background = ''; }}>
-              <td style={{ ...tdS, fontWeight: 600, position: 'sticky', left: 0,
-                background: 'var(--surface)', maxWidth: 240, overflow: 'hidden',
-                textOverflow: 'ellipsis' }}
-                title={r.name}>{r.name}</td>
-              <td style={{ ...tdS, textAlign: 'center' }}>
-                <DeliveryBadge status={r.status === 'ACTIVE' ? 'ACTIVE' : r.status} />
-              </td>
-              <td style={{ ...tdS, textAlign: 'right' }}>
-                <DeliveryBadge status={r.effectiveStatus || r.status} />
-              </td>
-              <td style={{ ...tdS, textAlign: 'right' }}>{fmtBudget(r)}</td>
-              <td style={{ ...tdS, textAlign: 'right' }}>{fmt$(r.spend)}</td>
-              <td style={{ ...tdS, textAlign: 'right' }}>{r.results ?? '—'}</td>
-              <td style={{ ...tdS, textAlign: 'right' }}>{fmt$(r.cost_per_result)}</td>
-              <td style={{ ...tdS, textAlign: 'right' }}>{fmtN(r.unique_clicks)}</td>
-              <td style={{ ...tdS, textAlign: 'right' }}>{fmt$(r.cost_per_unique_click)}</td>
-              <td style={{ ...tdS, textAlign: 'right' }}>{fmtN(r.frequency)}</td>
-              <td style={{ ...tdS, textAlign: 'right' }}>{fmt$(r.cpm)}</td>
-              <td style={{ ...tdS, textAlign: 'right' }}>{fmtPct(r.unique_ctr)}</td>
-              <td style={{ ...tdS, textAlign: 'right' }}>{fmtVideo(r.video_avg_time_watched_actions)}</td>
-              <td style={{ ...tdS, textAlign: 'right' }}>{fmtDate(r.createdTime || r.created_time)}</td>
+              {COLS.map(col => (
+                <td key={col.key} style={{
+                  ...tdBase,
+                  textAlign: col.align || 'right',
+                  ...(col.sticky ? {
+                    position: 'sticky', left: 0, zIndex: 1,
+                    background: 'var(--surface)', maxWidth: 240,
+                    overflow: 'hidden', textOverflow: 'ellipsis',
+                  } : {}),
+                }}>
+                  {cellVal(r, col.key)}
+                </td>
+              ))}
             </tr>
           ))}
           {rows.length === 0 && (
-            <tr><td colSpan={14} style={{ ...tdS, textAlign: 'center', color: 'var(--text-muted)', padding: 24 }}>No data</td></tr>
+            <tr><td colSpan={COLS.length} style={{ ...tdBase, textAlign: 'center',
+              color: 'var(--text-muted)', padding: 24 }}>No data</td></tr>
           )}
         </tbody>
       </table>
@@ -243,46 +378,46 @@ function DrillTable({ rows, onRowClick, label = 'Ad Set' }) {
   );
 }
 
-// ── Main component ───────────────────────────────────────────────────────────
+// ── Main component ────────────────────────────────────────────────────────────
 export default function CampaignReports() {
-  const [tfDays, setTfDays]           = useState(7);
-  const [kpis, setKpis]               = useState(() => { try { return JSON.parse(localStorage.getItem('reportKpis') || '{}'); } catch { return {}; } });
-  const [showKpiModal, setShowKpiModal] = useState(false);
+  const [tfDays, setTfDays]       = useState(7);
+  const [kpisMap, setKpisMap]     = useState({});  // { [campaignId]: { targetCpl, ... } }
+  const [kpiModal, setKpiModal]   = useState(null); // { campaignId, campaignName } | null
 
-  const [campaigns, setCampaigns]     = useState([]);
-  const [loading, setLoading]         = useState(true);
-  const [error, setError]             = useState('');
+  const [campaigns, setCampaigns] = useState([]);
+  const [loading, setLoading]     = useState(true);
+  const [error, setError]         = useState('');
 
-  // drill-down
-  const [view, setView]                   = useState('campaigns');  // 'campaigns' | 'adsets' | 'ads'
-  const [selCampaign, setSelCampaign]     = useState(null);
-  const [selAdset, setSelAdset]           = useState(null);
-  const [adsets, setAdsets]               = useState([]);
-  const [ads, setAds]                     = useState([]);
-  const [adsetLoading, setAdsetLoading]   = useState(false);
-  const [adLoading, setAdLoading]         = useState(false);
-  const [trendData, setTrendData]         = useState([]);
+  const [view, setView]               = useState('campaigns');
+  const [selCampaign, setSelCampaign] = useState(null);
+  const [selAdset, setSelAdset]       = useState(null);
+  const [adsets, setAdsets]           = useState([]);
+  const [ads, setAds]                 = useState([]);
+  const [adsetLoading, setAdsetLoading] = useState(false);
+  const [adLoading, setAdLoading]       = useState(false);
+  const [trendData, setTrendData]       = useState([]);
 
-  // AI analysis: { [campaignId]: { rating, summary, insights, recommendations } | { loading } | { error } }
-  const [analyses, setAnalyses] = useState({});
+  const [analyses, setAnalyses]   = useState({});
+  const [training, setTraining]   = useState({});
+  const [noteInputs, setNoteInputs] = useState({});
 
-  // Training notes: { [campaignId]: [{ id, type, text, ts }] }
-  const [training, setTraining] = useState({});
-  const [noteInputs, setNoteInputs] = useState({});  // campaignId → draft string
-
-  // ── Date range ────────────────────────────────────────────────────────────
   const { start, end } = useMemo(() => getDateRange(tfDays), [tfDays]);
   const tfLabel = tfDays === 0 ? 'Today' : `Last ${tfDays} days`;
 
-  // ── Load training from IndexedDB ──────────────────────────────────────────
+  // ── Persist: load KPIs + training from IndexedDB ──────────────────────────
   useEffect(() => {
+    dbGetAll('campaignKpis').then(rows => {
+      const map = {};
+      for (const r of rows) map[r.id] = r;
+      setKpisMap(map);
+    }).catch(() => {});
+
     dbGetAll('campaignTraining').then(rows => {
       const map = {};
       for (const r of rows) {
         if (!map[r.campaignId]) map[r.campaignId] = [];
         map[r.campaignId].push(r);
       }
-      // Sort each by ts desc, keep last 20
       for (const id of Object.keys(map)) map[id].sort((a, b) => b.ts - a.ts).splice(20);
       setTraining(map);
     }).catch(() => {});
@@ -305,28 +440,27 @@ export default function CampaignReports() {
 
   useEffect(() => { loadCampaigns(); }, [start, end]);
 
-  // ── Load adsets for a campaign ────────────────────────────────────────────
+  // ── Drill: campaign → adsets ──────────────────────────────────────────────
   async function openCampaign(campaign) {
     setSelCampaign(campaign); setView('adsets'); setAdsets([]); setTrendData([]);
     setAdsetLoading(true);
     try {
-      const [adsetsRes, trendRes] = await Promise.all([
+      const [ar, tr] = await Promise.all([
         fetch(`${BASE}/api/facebook/adsets?campaign_id=${campaign.id}&start=${start}&end=${end}`),
         fetch(`${BASE}/api/facebook/daily?start=${start}&end=${end}&level=campaign`),
       ]);
-      const adsetsData = await adsetsRes.json();
-      const trendRaw   = await trendRes.json();
-      if (!adsetsRes.ok) throw new Error(adsetsData.error || adsetsRes.statusText);
+      const adsetsData = await ar.json();
+      const trendRaw   = await tr.json();
+      if (!ar.ok) throw new Error(adsetsData.error);
       setAdsets(adsetsData);
-      // Filter trend to this campaign, format for recharts
       const filtered = (Array.isArray(trendRaw) ? trendRaw : [])
         .filter(r => r.campaign_id === campaign.id)
         .map(r => ({
-          date: r.date_start?.slice(5),  // MM-DD
+          date: r.date_start?.slice(5),
           spend: parseFloat(r.spend) || 0,
           leads: (r.actions || []).reduce((s, a) =>
-            ['lead','onsite_conversion.lead_grouped','offsite_conversion.fb_pixel_lead','contact'].includes(a.action_type)
-              ? s + parseInt(a.value, 10) : s, 0),
+            ['lead','onsite_conversion.lead_grouped','offsite_conversion.fb_pixel_lead','contact']
+              .includes(a.action_type) ? s + parseInt(a.value, 10) : s, 0),
         }))
         .sort((a, b) => a.date < b.date ? -1 : 1);
       setTrendData(filtered);
@@ -337,14 +471,14 @@ export default function CampaignReports() {
     }
   }
 
-  // ── Load ads for an adset ─────────────────────────────────────────────────
+  // ── Drill: adset → ads ────────────────────────────────────────────────────
   async function openAdset(adset) {
     setSelAdset(adset); setView('ads'); setAds([]);
     setAdLoading(true);
     try {
       const res  = await fetch(`${BASE}/api/facebook/ads?adset_id=${adset.id}&start=${start}&end=${end}`);
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || res.statusText);
+      if (!res.ok) throw new Error(data.error);
       setAds(data);
     } catch (e) {
       console.error('Ad load error:', e.message);
@@ -353,11 +487,12 @@ export default function CampaignReports() {
     }
   }
 
-  // ── AI Analysis ───────────────────────────────────────────────────────────
+  // ── AI analysis ───────────────────────────────────────────────────────────
   async function analyze(campaign, adsetsForCampaign = []) {
     const id = campaign.id;
     setAnalyses(prev => ({ ...prev, [id]: { loading: true } }));
     const notes = (training[id] || []).slice(0, 8).map(n => ({ type: n.type, text: n.text }));
+    const kpis  = kpisMap[id] || {};
     try {
       const res  = await fetch(`${BASE}/api/reports/analyze`, {
         method: 'POST',
@@ -365,29 +500,28 @@ export default function CampaignReports() {
         body: JSON.stringify({ campaign, adsets: adsetsForCampaign, kpis, trainingNotes: notes, timeframeLabel: tfLabel }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || res.statusText);
+      if (!res.ok) throw new Error(data.error);
       setAnalyses(prev => ({ ...prev, [id]: data }));
     } catch (e) {
       setAnalyses(prev => ({ ...prev, [id]: { error: e.message } }));
     }
   }
 
-  // ── Training helpers ──────────────────────────────────────────────────────
+  // ── KPI save (to IndexedDB) ───────────────────────────────────────────────
+  async function saveKpis(campaignId, next) {
+    const entry = { id: campaignId, ...next };
+    await dbUpsert('campaignKpis', [entry]);
+    setKpisMap(prev => ({ ...prev, [campaignId]: entry }));
+  }
+
+  // ── Training ──────────────────────────────────────────────────────────────
   async function addTraining(campaignId, campaignName, type, text) {
     const entry = { id: `${campaignId}_${Date.now()}`, campaignId, campaignName, type, text, ts: Date.now() };
     await dbUpsert('campaignTraining', [entry]);
-    setTraining(prev => {
-      const existing = prev[campaignId] || [];
-      return { ...prev, [campaignId]: [entry, ...existing].slice(0, 20) };
-    });
+    setTraining(prev => ({ ...prev, [campaignId]: [entry, ...(prev[campaignId] || [])].slice(0, 20) }));
   }
 
-  function saveKpis(next) {
-    setKpis(next);
-    localStorage.setItem('reportKpis', JSON.stringify(next));
-  }
-
-  // ── Breadcrumb navigation ─────────────────────────────────────────────────
+  // ── Navigation ────────────────────────────────────────────────────────────
   function navTo(level) {
     if (level === 'campaigns') { setView('campaigns'); setSelCampaign(null); setSelAdset(null); }
     if (level === 'adsets')    { setView('adsets'); setSelAdset(null); }
@@ -396,19 +530,27 @@ export default function CampaignReports() {
   // ── Render ────────────────────────────────────────────────────────────────
   return (
     <div style={{ padding: '24px 28px', minHeight: '100%', boxSizing: 'border-box' }}>
-      {showKpiModal && <KpiModal kpis={kpis} onSave={saveKpis} onClose={() => setShowKpiModal(false)} />}
+
+      {/* Per-campaign KPI modal */}
+      {kpiModal && (
+        <KpiModal
+          campaignId={kpiModal.campaignId}
+          campaignName={kpiModal.campaignName}
+          currentKpis={kpisMap[kpiModal.campaignId] || {}}
+          onSave={saveKpis}
+          onClose={() => setKpiModal(null)}
+        />
+      )}
 
       {/* Header */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 20, flexWrap: 'wrap' }}>
         <div style={{ fontSize: 20, fontWeight: 700, color: 'var(--text)' }}>Campaign Reports</div>
-        <button className="btn btn--sm" style={{ color: 'var(--text-muted)' }}
-          onClick={() => setShowKpiModal(true)}>
-          ⚙ KPIs{kpis.targetCpl ? ` · CPL $${kpis.targetCpl}` : ''}
-        </button>
         <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 6 }}>
           {TIMEFRAMES.map(tf => (
-            <button key={tf.days} className={`btn btn--sm${tfDays === tf.days ? ' nav-tab--active' : ''}`}
-              onClick={() => setTfDays(tf.days)} style={tfDays === tf.days ? { background: 'var(--green)', color: '#fff', border: 'none' } : {}}>
+            <button key={tf.days}
+              className="btn btn--sm"
+              onClick={() => setTfDays(tf.days)}
+              style={tfDays === tf.days ? { background: 'var(--green)', color: '#fff', border: 'none' } : {}}>
               {tf.label}
             </button>
           ))}
@@ -428,8 +570,7 @@ export default function CampaignReports() {
               <span>/</span>
               {view === 'ads'
                 ? <button className="btn btn--sm" onClick={() => navTo('adsets')}>{selCampaign.name}</button>
-                : <span style={{ color: 'var(--text)', fontWeight: 600 }}>{selCampaign.name}</span>
-              }
+                : <span style={{ color: 'var(--text)', fontWeight: 600 }}>{selCampaign.name}</span>}
             </>
           )}
           {view === 'ads' && selAdset && (
@@ -438,15 +579,14 @@ export default function CampaignReports() {
         </div>
       )}
 
-      {/* Error */}
       {error && <div style={{ color: '#dc2626', fontSize: 13, marginBottom: 16 }}>Error: {error}</div>}
 
-      {/* ── Campaign grid ───────────────────────────────────────────────── */}
+      {/* ── Campaign grid ─────────────────────────────────────────────────── */}
       {view === 'campaigns' && (
         loading ? (
           <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>Loading campaigns…</div>
         ) : campaigns.length === 0 ? (
-          <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>No active campaigns found for this timeframe.</div>
+          <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>No active campaigns found.</div>
         ) : (
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(520px, 1fr))', gap: 16 }}>
             {campaigns.map(c => {
@@ -454,19 +594,13 @@ export default function CampaignReports() {
               const analysis = analyses[c.id];
               const { border, bg } = ratingColors(analysis?.rating);
               const notes    = training[c.id] || [];
+              const hasKpis  = KPI_FIELDS.some(f => kpisMap[c.id]?.[f.key]);
 
               return (
-                <div key={c.id} style={{
-                  border: `1px solid ${border}`,
-                  borderLeft: `4px solid ${border}`,
-                  borderRadius: 10,
-                  background: bg,
-                  padding: 20,
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: 14,
-                }}>
-                  {/* Tile header */}
+                <div key={c.id} style={{ border: `1px solid ${border}`, borderLeft: `4px solid ${border}`,
+                  borderRadius: 10, background: bg, padding: 20, display: 'flex', flexDirection: 'column', gap: 14 }}>
+
+                  {/* Header */}
                   <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8 }}>
                     <div>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
@@ -481,33 +615,39 @@ export default function CampaignReports() {
                         {c.objective} · Budget {fmtBudget(c)}
                       </div>
                     </div>
-                    <DeliveryBadge status={c.effectiveStatus || c.status} />
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+                      <button className="btn btn--sm"
+                        onClick={() => setKpiModal({ campaignId: c.id, campaignName: c.name })}
+                        title={hasKpis ? 'Edit KPIs' : 'Set KPIs (no targets yet)'}
+                        style={{ fontSize: 11, color: hasKpis ? 'var(--green-dark)' : 'var(--text-muted)' }}>
+                        ⚙ KPIs{hasKpis ? ' ✓' : ''}
+                      </button>
+                      <DeliveryBadge status={c.effectiveStatus || c.status} />
+                    </div>
                   </div>
 
                   {/* Stats */}
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16 }}>
-                    <StatBox label="Spent"   value={fmt$(c.spend)} />
-                    <StatBox label="Leads"   value={c.results ?? '—'} />
-                    <StatBox label="CPL"     value={fmt$(c.cost_per_result)} />
-                    <StatBox label="Clicks"  value={fmtN(c.unique_clicks)} />
-                    <StatBox label="CPM"     value={fmt$(c.cpm)} />
-                    <StatBox label="Freq"    value={fmtN(c.frequency)} />
-                    <StatBox label="CTR"     value={fmtPct(c.unique_ctr)} />
+                    <StatBox label="Spent"  value={fmt$(c.spend)} />
+                    <StatBox label="Leads"  value={c.results ?? '—'} />
+                    <StatBox label="CPL"    value={fmt$(c.cost_per_result)} />
+                    <StatBox label="Clicks" value={fmtN(c.unique_clicks)} />
+                    <StatBox label="CPM"    value={fmt$(c.cpm)} />
+                    <StatBox label="Freq"   value={fmtN(c.frequency)} />
+                    <StatBox label="CTR"    value={fmtPct(c.unique_ctr)} />
                   </div>
 
-                  {/* AI analysis */}
+                  {/* AI section */}
                   <div style={{ borderTop: '1px solid var(--border)', paddingTop: 12 }}>
                     {!analysis && (
-                      <button className="btn btn--sm" onClick={() => analyze(c)}
-                        style={{ fontSize: 12 }}>
+                      <button className="btn btn--sm" onClick={() => analyze(c)} style={{ fontSize: 12 }}>
                         ✦ Analyze with AI
                       </button>
                     )}
-                    {analysis?.loading && (
-                      <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Analyzing…</div>
-                    )}
+                    {analysis?.loading && <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Analyzing…</div>}
                     {analysis?.error && (
-                      <div style={{ fontSize: 12, color: '#dc2626' }}>AI error: {analysis.error}
+                      <div style={{ fontSize: 12, color: '#dc2626' }}>
+                        AI error: {analysis.error}
                         <button className="btn btn--sm" style={{ marginLeft: 8 }} onClick={() => analyze(c)}>Retry</button>
                       </div>
                     )}
@@ -530,19 +670,16 @@ export default function CampaignReports() {
                             </ul>
                           </div>
                         )}
-                        {/* Training feedback */}
                         <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
                           <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Was this accurate?</span>
-                          <button className="btn btn--sm" title="Accurate"
-                            onClick={() => addTraining(c.id, c.name, 'positive', `Analysis on ${new Date().toLocaleDateString()} was accurate`)}>👍</button>
-                          <button className="btn btn--sm" title="Inaccurate"
-                            onClick={() => addTraining(c.id, c.name, 'negative', `Analysis on ${new Date().toLocaleDateString()} was inaccurate`)}>👎</button>
+                          <button className="btn btn--sm"
+                            onClick={() => addTraining(c.id, c.name, 'positive', `Analysis ${new Date().toLocaleDateString()} was accurate`)}>👍</button>
+                          <button className="btn btn--sm"
+                            onClick={() => addTraining(c.id, c.name, 'negative', `Analysis ${new Date().toLocaleDateString()} was inaccurate`)}>👎</button>
                           <button className="btn btn--sm" onClick={() => analyze(c)}>Re-analyze</button>
                         </div>
-                        {/* Note input */}
                         <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
-                          <input
-                            type="text" placeholder="Add a training note…"
+                          <input type="text" placeholder="Add a training note…"
                             value={noteInputs[c.id] || ''}
                             onChange={e => setNoteInputs(p => ({ ...p, [c.id]: e.target.value }))}
                             onKeyDown={e => {
@@ -570,7 +707,6 @@ export default function CampaignReports() {
                     )}
                   </div>
 
-                  {/* Drill-down button */}
                   <button className="btn btn--sm" onClick={() => openCampaign(c)}
                     style={{ alignSelf: 'flex-start', fontSize: 12 }}>
                     View Adsets →
@@ -582,13 +718,11 @@ export default function CampaignReports() {
         )
       )}
 
-      {/* ── Adset view ──────────────────────────────────────────────────── */}
+      {/* ── Adset view ────────────────────────────────────────────────────── */}
       {view === 'adsets' && selCampaign && (
         <div>
-          {/* Campaign summary */}
           <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap', marginBottom: 20,
-            padding: '14px 18px', background: 'var(--surface)', border: '1px solid var(--border)',
-            borderRadius: 10 }}>
+            padding: '14px 18px', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 10 }}>
             <StatBox label="Spent"  value={fmt$(selCampaign.spend)} />
             <StatBox label="Leads"  value={selCampaign.results ?? '—'} />
             <StatBox label="CPL"    value={fmt$(selCampaign.cost_per_result)} />
@@ -598,15 +732,13 @@ export default function CampaignReports() {
             <StatBox label="Budget" value={fmtBudget(selCampaign)} />
           </div>
 
-          {/* AI analyze button for this campaign + adsets */}
           {adsets.length > 0 && !adsetLoading && (
             <div style={{ marginBottom: 16, display: 'flex', gap: 8, alignItems: 'center' }}>
               {analyses[selCampaign.id] && !analyses[selCampaign.id].loading
-                ? <RatingBadge rating={analyses[selCampaign.id].rating} />
-                : null}
+                ? <RatingBadge rating={analyses[selCampaign.id].rating} /> : null}
               <button className="btn btn--sm" onClick={() => analyze(selCampaign, adsets)}
                 disabled={analyses[selCampaign.id]?.loading}>
-                {analyses[selCampaign.id]?.loading ? 'Analyzing…' : '✦ Analyze campaign + adsets with AI'}
+                {analyses[selCampaign.id]?.loading ? 'Analyzing…' : '✦ Analyze with AI'}
               </button>
             </div>
           )}
@@ -620,17 +752,15 @@ export default function CampaignReports() {
             </div>
           )}
 
-          {/* Trend chart */}
           {trendData.length > 1 && (
             <div style={{ marginBottom: 20, padding: 16, background: 'var(--surface)',
               border: '1px solid var(--border)', borderRadius: 10 }}>
-              <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 12 }}>Spend & Leads Trend ({tfLabel})</div>
+              <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 12 }}>Spend & Leads — {tfLabel}</div>
               <ResponsiveContainer width="100%" height={180}>
                 <LineChart data={trendData} margin={{ top: 4, right: 20, left: 0, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
                   <XAxis dataKey="date" tick={{ fontSize: 11 }} />
-                  <YAxis yAxisId="spend" orientation="left" tick={{ fontSize: 11 }}
-                    tickFormatter={v => `$${v}`} width={55} />
+                  <YAxis yAxisId="spend" orientation="left" tick={{ fontSize: 11 }} tickFormatter={v => `$${v}`} width={55} />
                   <YAxis yAxisId="leads" orientation="right" tick={{ fontSize: 11 }} width={30} />
                   <Tooltip formatter={(val, name) => name === 'spend' ? [`$${val.toFixed(2)}`, 'Spend'] : [val, 'Leads']} />
                   <Legend />
@@ -643,23 +773,21 @@ export default function CampaignReports() {
 
           {adsetLoading
             ? <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>Loading adsets…</div>
-            : <DrillTable rows={adsets} onRowClick={openAdset} label="Ad Set" />
-          }
+            : <DrillTable rows={adsets} onRowClick={openAdset} label="Ad Set" />}
         </div>
       )}
 
-      {/* ── Ad view ─────────────────────────────────────────────────────── */}
+      {/* ── Ad view ───────────────────────────────────────────────────────── */}
       {view === 'ads' && selAdset && (
         <div>
           <div style={{ marginBottom: 16, fontSize: 13, color: 'var(--text-muted)' }}>
-            Adset: <strong style={{ color: 'var(--text)' }}>{selAdset.name}</strong>
+            Ad set: <strong style={{ color: 'var(--text)' }}>{selAdset.name}</strong>
             &nbsp;·&nbsp;Budget {fmtBudget(selAdset)}
             &nbsp;·&nbsp;<DeliveryBadge status={selAdset.effectiveStatus || selAdset.status} />
           </div>
           {adLoading
             ? <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>Loading ads…</div>
-            : <DrillTable rows={ads} label="Ad" />
-          }
+            : <DrillTable rows={ads} label="Ad" />}
         </div>
       )}
     </div>

@@ -2,7 +2,7 @@
 // Stores GHL contacts, FB daily insights, and FB ads across sessions.
 
 const DB_NAME = 'scalecases_v1';
-const DB_VERSION = 4; // v4 adds campaignTraining store
+const DB_VERSION = 5; // v5 adds campaignKpis store
 let _db = null;
 
 async function openDB() {
@@ -34,6 +34,10 @@ async function openDB() {
       // v4: AI training notes per campaign
       if (!db.objectStoreNames.contains('campaignTraining')) {
         db.createObjectStore('campaignTraining', { keyPath: 'id' });
+      }
+      // v5: per-campaign KPI settings (keyed by campaign id)
+      if (!db.objectStoreNames.contains('campaignKpis')) {
+        db.createObjectStore('campaignKpis', { keyPath: 'id' });
       }
     };
     req.onsuccess = e => { _db = e.target.result; resolve(_db); };
