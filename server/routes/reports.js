@@ -26,10 +26,15 @@ router.post('/analyze', async (req, res) => {
   if (!campaign) return res.status(400).json({ error: 'campaign required' });
 
   const kpiBlock = [
-    kpis.targetCpl   ? `Target CPL: $${kpis.targetCpl}` : null,
-    kpis.targetCpc   ? `Target CPC: $${kpis.targetCpc}` : null,
-    kpis.minLeads    ? `Min leads per day: ${kpis.minLeads}` : null,
-    kpis.notes       ? `Additional context: ${kpis.notes}` : null,
+    kpis.targetCpl     ? `Target CPL: $${kpis.targetCpl}` : null,
+    kpis.targetCpc     ? `Target CPC: $${kpis.targetCpc}` : null,
+    kpis.targetCpm     ? `Target CPM: $${kpis.targetCpm}` : null,
+    kpis.targetCtr     ? `Target Unique CTR: ${kpis.targetCtr}%` : null,
+    kpis.maxFrequency  ? `Max acceptable frequency: ${kpis.maxFrequency}` : null,
+    kpis.targetSpend   ? `Target daily spend: $${kpis.targetSpend}` : null,
+    kpis.minLeads      ? `Min leads per day: ${kpis.minLeads}` : null,
+    kpis.minVideoTime  ? `Min video avg play time: ${kpis.minVideoTime}s` : null,
+    kpis.notes         ? `Additional context: ${kpis.notes}` : null,
   ].filter(Boolean).join('\n') || 'No KPI targets set — use general best practices.';
 
   const trainingBlock = trainingNotes.length

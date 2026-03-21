@@ -185,7 +185,7 @@ router.get('/adsets', async (req, res) => {
     const timeRange = start && end ? { since: start, until: end } : null;
 
     const listParams = { fields: 'id,name,status,effective_status,campaign_id,campaign{name},created_time,daily_budget,lifetime_budget,optimization_goal' };
-    if (campaign_id) listParams.campaign_id = campaign_id;
+    if (campaign_id) listParams.filtering = JSON.stringify([{ field: 'campaign.id', operator: 'EQUAL', value: campaign_id }]);
 
     const [adsets, insights] = await Promise.all([
       fetchFromAllAccounts('adsets', listParams),
@@ -248,7 +248,7 @@ router.get('/ads', async (req, res) => {
 
     const timeRange = start && end ? { since: start, until: end } : null;
     const listParams = { fields: 'id,name,status,effective_status,adset_id,adset{name,status,effective_status},campaign_id,campaign{name},creative{id,name,thumbnail_url},created_time' };
-    if (adset_id) listParams.adset_id = adset_id;
+    if (adset_id) listParams.filtering = JSON.stringify([{ field: 'adset.id', operator: 'EQUAL', value: adset_id }]);
 
     const [ads, insights] = await Promise.all([
       fetchFromAllAccounts('ads', listParams),

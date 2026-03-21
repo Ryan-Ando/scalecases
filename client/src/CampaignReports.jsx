@@ -109,16 +109,25 @@ function KpiModal({ kpis, onSave, onClose }) {
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 1000,
       display: 'flex', alignItems: 'center', justifyContent: 'center' }}
       onClick={onClose}>
-      <div style={{ background: 'var(--surface)', borderRadius: 14, padding: 28, width: 380,
+      <div style={{ background: 'var(--surface)', borderRadius: 14, padding: 28, width: 440,
+        maxHeight: '90vh', overflowY: 'auto',
         boxShadow: '0 8px 32px rgba(0,0,0,0.18)' }}
         onClick={e => e.stopPropagation()}>
-        <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 20 }}>Manage KPIs</div>
+        <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 4 }}>Manage KPIs</div>
+        <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 16 }}>
+          Set targets — AI uses these to rate performance and flag issues.
+        </div>
         {[
-          ['targetCpl',  'Target CPL ($)',          'e.g. 80'],
-          ['targetCpc',  'Target CPC ($)',           'e.g. 5'],
-          ['minLeads',   'Min leads / day',          'e.g. 2'],
+          ['targetCpl',       'Target CPL — Cost per Lead ($)',            'e.g. 80'],
+          ['targetCpc',       'Target CPC — Cost per Unique Click ($)',    'e.g. 5'],
+          ['targetCpm',       'Target CPM — Cost per 1,000 Impressions ($)', 'e.g. 15'],
+          ['targetCtr',       'Target Unique CTR (%)',                     'e.g. 2.5'],
+          ['maxFrequency',    'Max Frequency (times seen)',                 'e.g. 3'],
+          ['targetSpend',     'Target Daily Spend ($)',                     'e.g. 500'],
+          ['minLeads',        'Min Leads per Day',                         'e.g. 2'],
+          ['minVideoTime',    'Min Video Avg Play Time (seconds)',          'e.g. 10'],
         ].map(([k, label, ph]) => (
-          <div key={k} style={{ marginBottom: 14 }}>
+          <div key={k} style={{ marginBottom: 12 }}>
             <label style={{ display: 'block', fontSize: 12, fontWeight: 600,
               color: 'var(--text-muted)', marginBottom: 4 }}>{label}</label>
             <input
@@ -175,7 +184,8 @@ function DrillTable({ rows, onRowClick, label = 'Ad Set' }) {
     whiteSpace: 'nowrap', background: 'var(--surface)', position: 'sticky', top: 0 };
 
   return (
-    <div style={{ overflowX: 'auto', border: '1px solid var(--border)', borderRadius: 10 }}>
+    <div style={{ overflowX: 'auto', overflowY: 'auto', maxHeight: 'calc(100vh - 320px)',
+      border: '1px solid var(--border)', borderRadius: 10 }}>
       <table style={{ borderCollapse: 'collapse', width: '100%', minWidth: 1100 }}>
         <thead>
           <tr>
@@ -624,8 +634,8 @@ export default function CampaignReports() {
                   <YAxis yAxisId="leads" orientation="right" tick={{ fontSize: 11 }} width={30} />
                   <Tooltip formatter={(val, name) => name === 'spend' ? [`$${val.toFixed(2)}`, 'Spend'] : [val, 'Leads']} />
                   <Legend />
-                  <Line yAxisId="spend" type="monotone" dataKey="spend" stroke="#16a34a" strokeWidth={2} dot={false} />
-                  <Line yAxisId="leads" type="monotone" dataKey="leads" stroke="#3b82f6" strokeWidth={2} dot={false} />
+                  <Line yAxisId="spend" type="linear" dataKey="spend" stroke="#16a34a" strokeWidth={2} dot={{ r: 3 }} />
+                  <Line yAxisId="leads" type="linear" dataKey="leads" stroke="#3b82f6" strokeWidth={2} dot={{ r: 3 }} />
                 </LineChart>
               </ResponsiveContainer>
             </div>
