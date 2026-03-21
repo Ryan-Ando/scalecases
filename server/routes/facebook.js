@@ -72,6 +72,14 @@ function computedCpl(ins, extracted) {
   return null;
 }
 
+function computedCpc(ins) {
+  if (ins.cost_per_unique_click) return ins.cost_per_unique_click;
+  const spend = parseFloat(ins.spend);
+  const clicks = parseFloat(ins.unique_clicks);
+  if (clicks > 0 && spend > 0) return (spend / clicks).toFixed(2);
+  return null;
+}
+
 function token() {
   return process.env.FB_ACCESS_TOKEN;
 }
@@ -182,6 +190,7 @@ router.get('/campaigns', async (req, res) => {
         ...ins,
         ...ext,
         cost_per_result: computedCpl(ins, ext),
+        cost_per_unique_click: computedCpc(ins),
       };
     });
 
@@ -244,6 +253,7 @@ router.get('/adsets', async (req, res) => {
         ...ins,
         ...ext,
         cost_per_result: computedCpl(ins, ext),
+        cost_per_unique_click: computedCpc(ins),
       };
     });
 
@@ -314,6 +324,7 @@ router.get('/ads', async (req, res) => {
         ...ins,
         ...ext,
         cost_per_result: computedCpl(ins, ext),
+        cost_per_unique_click: computedCpc(ins),
       };
     });
 

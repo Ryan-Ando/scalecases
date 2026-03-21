@@ -1234,18 +1234,19 @@ export default function CampaignReports() {
           {adsets.length > 0 && !adsetLoading && (
             <div style={{ marginBottom: 16, display: 'flex', gap: 8, alignItems: 'center' }}>
               {(() => {
-                const batchLoading = adsets.some(a => rowAnalyses[a.id]?.loading);
-                const done = adsets.filter(a => rowAnalyses[a.id] && !rowAnalyses[a.id].loading && !rowAnalyses[a.id].error).length;
+                const active = adsets.filter(a => a.effectiveStatus === 'ACTIVE');
+                const batchLoading = active.some(a => rowAnalyses[a.id]?.loading);
+                const done = active.filter(a => rowAnalyses[a.id] && !rowAnalyses[a.id].loading && !rowAnalyses[a.id].error).length;
                 return (
                   <>
                     {done > 0 && (
                       <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                        {done}/{adsets.length} analyzed
+                        {done}/{active.length} active analyzed
                       </span>
                     )}
-                    <button className="btn btn--sm" disabled={batchLoading}
-                      onClick={() => analyzeAllRows(adsets, 'adset')}>
-                      {batchLoading ? 'Analyzing…' : '✦ Analyze All with AI'}
+                    <button className="btn btn--sm" disabled={batchLoading || !active.length}
+                      onClick={() => analyzeAllRows(active, 'adset')}>
+                      {batchLoading ? 'Analyzing…' : `✦ Analyze Active (${active.length})`}
                     </button>
                   </>
                 );
@@ -1294,18 +1295,19 @@ export default function CampaignReports() {
               {ads.length > 0 && (
                 <div style={{ marginBottom: 16, display: 'flex', gap: 8, alignItems: 'center' }}>
                   {(() => {
-                    const batchLoading = ads.some(a => rowAnalyses[a.id]?.loading);
-                    const done = ads.filter(a => rowAnalyses[a.id] && !rowAnalyses[a.id].loading && !rowAnalyses[a.id].error).length;
+                    const active = ads.filter(a => a.effectiveStatus === 'ACTIVE');
+                    const batchLoading = active.some(a => rowAnalyses[a.id]?.loading);
+                    const done = active.filter(a => rowAnalyses[a.id] && !rowAnalyses[a.id].loading && !rowAnalyses[a.id].error).length;
                     return (
                       <>
                         {done > 0 && (
                           <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                            {done}/{ads.length} analyzed
+                            {done}/{active.length} active analyzed
                           </span>
                         )}
-                        <button className="btn btn--sm" disabled={batchLoading}
-                          onClick={() => analyzeAllRows(ads, 'ad')}>
-                          {batchLoading ? 'Analyzing…' : '✦ Analyze All with AI'}
+                        <button className="btn btn--sm" disabled={batchLoading || !active.length}
+                          onClick={() => analyzeAllRows(active, 'ad')}>
+                          {batchLoading ? 'Analyzing…' : `✦ Analyze Active (${active.length})`}
                         </button>
                       </>
                     );
