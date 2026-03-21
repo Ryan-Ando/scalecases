@@ -128,10 +128,39 @@ function computeAdStats(adId, dailyRows) {
 
 // Trend chart + stats table shown inside the ad analysis popup
 function AdTrendSection({ adId, dailyRows }) {
-  const stats = useMemo(() => computeAdStats(adId, dailyRows), [adId, dailyRows]);
+  const [extraRows, setExtraRows] = useState(null); // null = not yet fetched
+  const [fetching, setFetching]   = useState(false);
+
+  // Prefer pre-synced rows; if none exist, use auto-fetched rows
+  const allRows = useMemo(() => {
+    const fromStore = dailyRows.filter(r => r.ad_id === adId);
+    if (fromStore.length) return fromStore;
+    return extraRows || [];
+  }, [adId, dailyRows, extraRows]);
+
+  const stats = useMemo(() =>
+    allRows.length ? computeAdStats(adId, allRows) : null,
+    [adId, allRows]);
+
+  // Auto-fetch if no data available yet
+  useEffect(() => {
+    if (stats || fetching || extraRows !== null) return;
+    setFetching(true);
+    fetch(`${BASE}/api/facebook/daily?date_preset=maximum&ad_ids=${encodeURIComponent(adId)}`)
+      .then(r => r.json())
+      .then(data => setExtraRows(Array.isArray(data) ? data : []))
+      .catch(() => setExtraRows([]))
+      .finally(() => setFetching(false));
+  }, [adId, stats, fetching, extraRows]);
+
+  if (fetching) return (
+    <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 16 }}>
+      Loading trend data…
+    </div>
+  );
   if (!stats) return (
     <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 16 }}>
-      No daily data — sync this ad in Ads Tracking first.
+      No historical data available for this ad.
     </div>
   );
   const { all, last7, last3, chartData } = stats;
@@ -1142,11 +1171,18 @@ setCampaigns(data.filter(c => c.effectiveStatus === 'ACTIVE' || c.status === 'AC
     setRowAnalyses(prev => ({ ...prev, [id]: { loading: true } }));
     const campaignId = row.campaignId || selCampaign?.id;
     const kpis = campaignId ? (kpisMap[campaignId] || {}) : {};
-    const [globalRules, campaignRules, dailyRows] = await Promise.all([
+    const [globalRules, campaignRules, storedDaily] = await Promise.all([
       dbGetMeta('aiRules_global').catch(() => ''),
       campaignId ? dbGetMeta(`aiRules_${campaignId}`).catch(() => '') : Promise.resolve(''),
       level === 'ad' ? dbGetAll('adDailyInsights').catch(() => []) : Promise.resolve([]),
     ]);
+    let dailyRows = storedDaily;
+    if (level === 'ad' && !dailyRows.some(r => r.ad_id === row.id)) {
+      try {
+        const d = await fetch(`${BASE}/api/facebook/daily?date_preset=maximum&ad_ids=${encodeURIComponent(row.id)}`).then(r => r.json());
+        if (Array.isArray(d)) dailyRows = [...dailyRows, ...d];
+      } catch {}
+    }
     const enrichedRow = level === 'ad'
       ? { ...row, trendSummary: computeAdTrend(row.id, dailyRows) }
       : row;
@@ -1182,11 +1218,22 @@ setCampaigns(data.filter(c => c.effectiveStatus === 'ACTIVE' || c.status === 'AC
     });
     const campaignId = selCampaign?.id;
     const kpis = campaignId ? (kpisMap[campaignId] || {}) : {};
-    const [globalRules, campaignRules, dailyRows] = await Promise.all([
+    const [globalRules, campaignRules, storedDaily] = await Promise.all([
       dbGetMeta('aiRules_global').catch(() => ''),
       campaignId ? dbGetMeta(`aiRules_${campaignId}`).catch(() => '') : Promise.resolve(''),
       level === 'ad' ? dbGetAll('adDailyInsights').catch(() => []) : Promise.resolve([]),
     ]);
+    let dailyRows = storedDaily;
+    if (level === 'ad') {
+      const adIdsWithData = new Set(dailyRows.map(r => r.ad_id));
+      const missing = rows.filter(r => !adIdsWithData.has(r.id)).map(r => r.id);
+      if (missing.length) {
+        try {
+          const d = await fetch(`${BASE}/api/facebook/daily?date_preset=maximum&ad_ids=${encodeURIComponent(missing.join(','))}`).then(r => r.json());
+          if (Array.isArray(d)) dailyRows = [...dailyRows, ...d];
+        } catch {}
+      }
+    }
     const enrichedRows = level === 'ad'
       ? rows.map(r => ({ ...r, trendSummary: computeAdTrend(r.id, dailyRows) }))
       : rows;
