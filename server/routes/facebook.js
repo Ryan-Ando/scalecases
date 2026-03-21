@@ -143,13 +143,14 @@ async function fetchFromAllAccounts(path, queryParams) {
 // GET /api/facebook/campaigns
 router.get('/campaigns', async (req, res) => {
   try {
-    const { date_preset } = req.query;
+    const { date_preset, start, end } = req.query;
+    const timeRange = start && end ? { since: start, until: end } : null;
 
     const [campaigns, insights] = await Promise.all([
       fetchFromAllAccounts('campaigns', {
-        fields: 'id,name,status,objective,created_time,daily_budget,lifetime_budget',
+        fields: 'id,name,status,effective_status,objective,created_time,daily_budget,lifetime_budget',
       }),
-      fetchInsights('campaign', date_preset),
+      fetchInsights('campaign', date_preset, {}, timeRange),
     ]);
 
     const insightsMap = Object.fromEntries(insights.map(i => [i.campaign_id, i]));
@@ -160,6 +161,7 @@ router.get('/campaigns', async (req, res) => {
         id: c.id,
         name: c.name,
         status: c.status,
+        effectiveStatus: c.effective_status,
         objective: c.objective,
         createdTime: c.created_time,
         dailyBudget: c.daily_budget,
@@ -179,14 +181,15 @@ router.get('/campaigns', async (req, res) => {
 // GET /api/facebook/adsets?campaign_id=
 router.get('/adsets', async (req, res) => {
   try {
-    const { date_preset, campaign_id } = req.query;
+    const { date_preset, campaign_id, start, end } = req.query;
+    const timeRange = start && end ? { since: start, until: end } : null;
 
     const listParams = { fields: 'id,name,status,effective_status,campaign_id,campaign{name},created_time,daily_budget,lifetime_budget,optimization_goal' };
     if (campaign_id) listParams.campaign_id = campaign_id;
 
     const [adsets, insights] = await Promise.all([
       fetchFromAllAccounts('adsets', listParams),
-      fetchInsights('adset', date_preset, campaign_id ? { campaign_id } : {}),
+      fetchInsights('adset', date_preset, campaign_id ? { campaign_id } : {}, timeRange),
     ]);
 
     const insightsMap = Object.fromEntries(insights.map(i => [i.adset_id, i]));

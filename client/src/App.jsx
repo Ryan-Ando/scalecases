@@ -2,12 +2,13 @@ import { useState } from 'react';
 import './App.css';
 import AdsTracking from './AdsTracking.jsx';
 import SpendSheet from './SpendSheet.jsx';
+import CampaignReports from './CampaignReports.jsx';
 
 function Logo() {
   return <img src="/logo.png" width="32" height="32" style={{ borderRadius: 8, display: 'block' }} alt="Scale Cases" />;
 }
 
-const TABS = ['Ads Tracking', 'Spend Sheet'];
+const TABS = ['Ads Tracking', 'Spend Sheet', 'Campaign Reports'];
 
 export default function App() {
   const [tab, setTab] = useState('Ads Tracking');
@@ -23,8 +24,9 @@ export default function App() {
         </nav>
       </header>
       <main className="content" style={{ padding: 0, boxSizing: 'border-box', minWidth: 0, overflow: 'clip' }}>
-        {tab === 'Ads Tracking' && <AdsTracking />}
-        {tab === 'Spend Sheet'  && <SpendSheet />}
+        {tab === 'Ads Tracking'    && <AdsTracking />}
+        {tab === 'Spend Sheet'     && <SpendSheet />}
+        {tab === 'Campaign Reports' && <CampaignReports />}
       </main>
     </div>
   );
