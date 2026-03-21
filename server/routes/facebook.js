@@ -64,6 +64,14 @@ function extractResults(insightRow) {
   return { results: 0, resultType: 'Leads' };
 }
 
+// Compute CPL from spend ÷ leads when FB doesn't return cost_per_result
+function computedCpl(ins, extracted) {
+  if (ins.cost_per_result) return ins.cost_per_result;
+  const spend = parseFloat(ins.spend);
+  if (extracted.results > 0 && spend > 0) return (spend / extracted.results).toFixed(2);
+  return null;
+}
+
 function token() {
   return process.env.FB_ACCESS_TOKEN;
 }
@@ -161,6 +169,7 @@ router.get('/campaigns', async (req, res) => {
 
     const merged = uniqueCampaigns.map(c => {
       const ins = insightsMap[c.id] || {};
+      const ext = extractResults(ins);
       return {
         id: c.id,
         name: c.name,
@@ -171,7 +180,8 @@ router.get('/campaigns', async (req, res) => {
         dailyBudget: c.daily_budget,
         lifetimeBudget: c.lifetime_budget,
         ...ins,
-        ...extractResults(ins),
+        ...ext,
+        cost_per_result: computedCpl(ins, ext),
       };
     });
 
@@ -219,6 +229,7 @@ router.get('/adsets', async (req, res) => {
 
     const merged = uniqueAdsets.map(a => {
       const ins = insightsMap[a.id] || {};
+      const ext = extractResults(ins);
       return {
         id: a.id,
         name: a.name,
@@ -231,7 +242,8 @@ router.get('/adsets', async (req, res) => {
         optimizationGoal: a.optimization_goal,
         effectiveStatus: a.effective_status,
         ...ins,
-        ...extractResults(ins),
+        ...ext,
+        cost_per_result: computedCpl(ins, ext),
       };
     });
 
@@ -286,6 +298,7 @@ router.get('/ads', async (req, res) => {
 
     const merged = uniqueAds.map(a => {
       const ins = insightsMap[a.id] || {};
+      const ext = extractResults(ins);
       return {
         id: a.id,
         name: a.name,
@@ -299,7 +312,8 @@ router.get('/ads', async (req, res) => {
         creative: a.creative,
         createdTime: a.created_time,
         ...ins,
-        ...extractResults(ins),
+        ...ext,
+        cost_per_result: computedCpl(ins, ext),
       };
     });
 

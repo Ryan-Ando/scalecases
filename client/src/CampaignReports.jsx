@@ -38,8 +38,10 @@ function fmtN(v)   { return v != null && v !== '' && !isNaN(parseFloat(v)) ? par
 function fmtPct(v) { return v != null && v !== '' && !isNaN(parseFloat(v)) ? `${parseFloat(v).toFixed(2)}%` : '—'; }
 
 function fmtBudget(item) {
-  if (item.dailyBudget)    return `$${(parseFloat(item.dailyBudget) / 100).toFixed(0)}/day`;
-  if (item.lifetimeBudget) return `$${(parseFloat(item.lifetimeBudget) / 100).toFixed(0)} ltm`;
+  const db = parseFloat(item.dailyBudget);
+  if (!isNaN(db) && db > 0) return `$${(db / 100).toFixed(0)}/day`;
+  const lb = parseFloat(item.lifetimeBudget);
+  if (!isNaN(lb) && lb > 0) return `$${(lb / 100).toFixed(0)} ltm`;
   return '—';
 }
 
@@ -816,6 +818,13 @@ export default function CampaignReports() {
 
   useEffect(() => { loadCampaigns(); }, [start, end]);
 
+  // Keep selCampaign stats fresh when campaigns reload (date range change)
+  useEffect(() => {
+    if (!selCampaign) return;
+    const updated = campaigns.find(c => c.id === selCampaign.id);
+    if (updated) setSelCampaign(updated);
+  }, [campaigns]);
+
   // ── Drill: campaign → adsets ──────────────────────────────────────────────
   async function fetchAdsetData(campaign, s, e) {
     setAdsets([]); setTrendData([]); setRowAnalyses({});
@@ -939,6 +948,46 @@ export default function CampaignReports() {
       setRowAnalyses(prev => ({ ...prev, [id]: data }));
     } catch (e) {
       setRowAnalyses(prev => ({ ...prev, [id]: { error: e.message } }));
+    }
+  }
+
+  // ── Batch AI analysis — one API call for all rows ────────────────────────
+  async function analyzeAllRows(rows, level) {
+    if (!rows.length) return;
+    setRowAnalyses(prev => {
+      const next = { ...prev };
+      for (const r of rows) next[r.id] = { loading: true };
+      return next;
+    });
+    const campaignId = selCampaign?.id;
+    const kpis = campaignId ? (kpisMap[campaignId] || {}) : {};
+    const [globalRules, campaignRules] = await Promise.all([
+      dbGetMeta('aiRules_global').catch(() => ''),
+      campaignId ? dbGetMeta(`aiRules_${campaignId}`).catch(() => '') : Promise.resolve(''),
+    ]);
+    try {
+      const res = await fetch(`${BASE}/api/reports/analyze-batch`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          rows, level, kpis, timeframeLabel: tfLabel,
+          globalRules: globalRules || '', campaignRules: campaignRules || '',
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      if (!Array.isArray(data)) throw new Error('Unexpected response');
+      setRowAnalyses(prev => {
+        const next = { ...prev };
+        for (const item of data) next[item.id] = item;
+        return next;
+      });
+    } catch (e) {
+      setRowAnalyses(prev => {
+        const next = { ...prev };
+        for (const r of rows) { if (next[r.id]?.loading) next[r.id] = { error: e.message }; }
+        return next;
+      });
     }
   }
 
@@ -1184,21 +1233,23 @@ export default function CampaignReports() {
 
           {adsets.length > 0 && !adsetLoading && (
             <div style={{ marginBottom: 16, display: 'flex', gap: 8, alignItems: 'center' }}>
-              {analyses[selCampaign.id] && !analyses[selCampaign.id].loading
-                ? <RatingBadge rating={analyses[selCampaign.id].rating} /> : null}
-              <button className="btn btn--sm" onClick={() => analyze(selCampaign, adsets)}
-                disabled={analyses[selCampaign.id]?.loading}>
-                {analyses[selCampaign.id]?.loading ? 'Analyzing…' : '✦ Analyze with AI'}
-              </button>
-            </div>
-          )}
-          {analyses[selCampaign.id] && !analyses[selCampaign.id].loading && !analyses[selCampaign.id].error && (
-            <div style={{ marginBottom: 16, padding: '12px 16px', background: 'var(--bg)',
-              border: '1px solid var(--border)', borderRadius: 10, fontSize: 13 }}>
-              <div style={{ marginBottom: 6, lineHeight: 1.5 }}>{analyses[selCampaign.id].summary}</div>
-              {analyses[selCampaign.id].recommendations?.map((r, i) => (
-                <div key={i} style={{ fontSize: 12, color: 'var(--green-dark)' }}>→ {r}</div>
-              ))}
+              {(() => {
+                const batchLoading = adsets.some(a => rowAnalyses[a.id]?.loading);
+                const done = adsets.filter(a => rowAnalyses[a.id] && !rowAnalyses[a.id].loading && !rowAnalyses[a.id].error).length;
+                return (
+                  <>
+                    {done > 0 && (
+                      <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                        {done}/{adsets.length} analyzed
+                      </span>
+                    )}
+                    <button className="btn btn--sm" disabled={batchLoading}
+                      onClick={() => analyzeAllRows(adsets, 'adset')}>
+                      {batchLoading ? 'Analyzing…' : '✦ Analyze All with AI'}
+                    </button>
+                  </>
+                );
+              })()}
             </div>
           )}
 
@@ -1236,10 +1287,35 @@ export default function CampaignReports() {
             &nbsp;·&nbsp;Budget {fmtBudget(selAdset)}
             &nbsp;·&nbsp;<DeliveryBadge status={selAdset.effectiveStatus || selAdset.status} />
           </div>
-          {adLoading
-            ? <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>Loading ads…</div>
-            : <DrillTable rows={ads} label="Ad"
-                rowAnalyses={rowAnalyses} onAnalyzeRow={r => analyzeRow(r, 'ad')} />}
+          {adLoading ? (
+            <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>Loading ads…</div>
+          ) : (
+            <>
+              {ads.length > 0 && (
+                <div style={{ marginBottom: 16, display: 'flex', gap: 8, alignItems: 'center' }}>
+                  {(() => {
+                    const batchLoading = ads.some(a => rowAnalyses[a.id]?.loading);
+                    const done = ads.filter(a => rowAnalyses[a.id] && !rowAnalyses[a.id].loading && !rowAnalyses[a.id].error).length;
+                    return (
+                      <>
+                        {done > 0 && (
+                          <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                            {done}/{ads.length} analyzed
+                          </span>
+                        )}
+                        <button className="btn btn--sm" disabled={batchLoading}
+                          onClick={() => analyzeAllRows(ads, 'ad')}>
+                          {batchLoading ? 'Analyzing…' : '✦ Analyze All with AI'}
+                        </button>
+                      </>
+                    );
+                  })()}
+                </div>
+              )}
+              <DrillTable rows={ads} label="Ad"
+                rowAnalyses={rowAnalyses} onAnalyzeRow={r => analyzeRow(r, 'ad')} />
+            </>
+          )}
         </div>
       )}
     </div>
