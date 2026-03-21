@@ -93,8 +93,8 @@ function clientCpc(row) {
 }
 
 // Compute structured all-time / last-7d / last-3d stats for the popup chart + table
-function computeAdStats(adId, dailyRows) {
-  const rows = dailyRows.filter(r => r.ad_id === adId).sort((a, b) => a.date_start < b.date_start ? -1 : 1);
+function computeAdStats(_, dailyRows) {
+  const rows = [...dailyRows].sort((a, b) => a.date_start < b.date_start ? -1 : 1);
   if (!rows.length) return null;
   const cutoff7 = daysAgo(7);
   const cutoff3 = daysAgo(3);
@@ -149,40 +149,18 @@ const TREND_TH = { textAlign: 'right', padding: '4px 8px', borderBottom: '1px so
   fontWeight: 600, fontSize: 11, color: 'var(--text-muted)' };
 const TREND_TD = { textAlign: 'right', padding: '5px 8px', borderBottom: '1px solid var(--border)', fontSize: 12 };
 
-function AdTrendSection({ adId, dailyRows }) {
-  const [extraRows, setExtraRows] = useState(null);
-  const [fetching, setFetching]   = useState(false);
-  const [fetchErr, setFetchErr]   = useState('');
+// Pure rendering component — data is fetched by DrillTable and passed in
+function AdTrendSection({ rows, loading, error }) {
+  const stats = useMemo(() => (rows?.length ? computeAdStats(null, rows) : null), [rows]);
 
-  const allRows = useMemo(() => {
-    const fromStore = dailyRows.filter(r => r.ad_id === adId);
-    if (fromStore.length) return fromStore;
-    return extraRows || [];
-  }, [adId, dailyRows, extraRows]);
-
-  const stats = useMemo(() => allRows.length ? computeAdStats(adId, allRows) : null, [adId, allRows]);
-
-  useEffect(() => {
-    if (stats !== null || fetching || extraRows !== null) return;
-    let cancelled = false;
-    setFetching(true);
-    setFetchErr('');
-    fetch(`${BASE}/api/facebook/daily?date_preset=maximum&ad_ids=${encodeURIComponent(adId)}`)
-      .then(r => r.json())
-      .then(data => { if (!cancelled) setExtraRows(Array.isArray(data) ? data : []); })
-      .catch(e  => { if (!cancelled) { setFetchErr(e.message); setExtraRows([]); } })
-      .finally(() => { if (!cancelled) setFetching(false); });
-    return () => { cancelled = true; };
-  }, [adId, stats, fetching, extraRows]);
-
-  if (fetching) return (
-    <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 16 }}>Loading trend data…</div>
+  if (loading) return (
+    <div style={{ padding: '12px 0 16px', color: 'var(--text-muted)', fontSize: 12 }}>Loading trend data…</div>
   );
-  if (fetchErr) return (
-    <div style={{ fontSize: 12, color: '#dc2626', marginBottom: 16 }}>Trend fetch error: {fetchErr}</div>
+  if (error) return (
+    <div style={{ padding: '12px 0 16px', color: '#dc2626', fontSize: 12 }}>Trend error: {error}</div>
   );
   if (!stats) return (
-    <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 16 }}>
+    <div style={{ padding: '12px 0 16px', color: 'var(--text-muted)', fontSize: 12 }}>
       No historical data available for this ad.
     </div>
   );
@@ -191,26 +169,22 @@ function AdTrendSection({ adId, dailyRows }) {
 
   return (
     <>
-      {/* Daily chart — explicit wrapper div required for ResponsiveContainer inside overflow:auto */}
+      {/* Daily chart — fixed pixel dimensions avoid ResponsiveContainer issues inside overflow:auto */}
       <div style={{ marginBottom: 18 }}>
         <div style={TREND_LABEL}>Daily Performance (all-time)</div>
-        <div style={{ width: '100%', height: 130 }}>
-          <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={chartData} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
-              <XAxis dataKey="date" tick={{ fontSize: 9 }} tickLine={false} interval="preserveStartEnd" />
-              <YAxis yAxisId="l" orientation="left" tick={{ fontSize: 9 }} tickLine={false} width={42}
-                tickFormatter={v => `$${v}`} />
-              <YAxis yAxisId="r" orientation="right" tick={{ fontSize: 9 }} tickLine={false} width={20} />
-              <Tooltip formatter={(v, n) => [n === 'Spend' ? `$${parseFloat(v).toFixed(2)}` : v, n]}
-                contentStyle={{ fontSize: 11 }} />
-              <Line yAxisId="l" type="monotone" dataKey="spend" stroke="#6366f1" dot={false}
-                strokeWidth={1.5} name="Spend" />
-              <Line yAxisId="r" type="monotone" dataKey="leads" stroke="#10b981" dot={false}
-                strokeWidth={1.5} name="Leads" />
-            </LineChart>
-          </ResponsiveContainer>
-        </div>
+        <LineChart width={580} height={130} data={chartData} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+          <XAxis dataKey="date" tick={{ fontSize: 9 }} tickLine={false} interval="preserveStartEnd" />
+          <YAxis yAxisId="l" orientation="left" tick={{ fontSize: 9 }} tickLine={false} width={42}
+            tickFormatter={v => `$${v}`} />
+          <YAxis yAxisId="r" orientation="right" tick={{ fontSize: 9 }} tickLine={false} width={20} />
+          <Tooltip formatter={(v, n) => [n === 'Spend' ? `$${parseFloat(v).toFixed(2)}` : v, n]}
+            contentStyle={{ fontSize: 11 }} />
+          <Line yAxisId="l" type="monotone" dataKey="spend" stroke="#6366f1" dot={false}
+            strokeWidth={1.5} name="Spend" />
+          <Line yAxisId="r" type="monotone" dataKey="leads" stroke="#10b981" dot={false}
+            strokeWidth={1.5} name="Leads" />
+        </LineChart>
       </div>
 
       {/* Stats comparison table */}
@@ -501,9 +475,10 @@ function cellVal(r, key) {
 }
 
 function DrillTable({ rows, onRowClick, label = 'Ad Set', rowAnalyses = {}, onAnalyzeRow, dailyRows = [], level = 'adset' }) {
-  const [sortKey, setSortKey] = useState('_default');
-  const [sortDir, setSortDir] = useState('asc');
-  const [popup, setPopup]     = useState(null); // row id whose popup is open
+  const [sortKey, setSortKey]         = useState('_default');
+  const [sortDir, setSortDir]         = useState('asc');
+  const [popup, setPopup]             = useState(null);
+  const [adDailyCache, setAdDailyCache] = useState({}); // adId → { loading, rows, error }
 
   const sorted = useMemo(() => {
     const arr = [...rows];
@@ -541,6 +516,22 @@ function DrillTable({ rows, onRowClick, label = 'Ad Set', rowAnalyses = {}, onAn
     if (sortKey === key) setSortDir(d => d === 'asc' ? 'desc' : 'asc');
     else { setSortKey(key); setSortDir('asc'); }
   }
+
+  // Fetch daily data for an ad when its popup opens
+  useEffect(() => {
+    if (level !== 'ad' || !popup) return;
+    if (adDailyCache[popup]) return; // already cached
+    const fromProp = dailyRows.filter(r => r.ad_id === popup);
+    if (fromProp.length) {
+      setAdDailyCache(prev => ({ ...prev, [popup]: { rows: fromProp } }));
+      return;
+    }
+    setAdDailyCache(prev => ({ ...prev, [popup]: { loading: true } }));
+    fetch(`${BASE}/api/facebook/daily?date_preset=maximum&ad_ids=${encodeURIComponent(popup)}`)
+      .then(r => r.json())
+      .then(data => setAdDailyCache(prev => ({ ...prev, [popup]: { rows: Array.isArray(data) ? data : [] } })))
+      .catch(e  => setAdDailyCache(prev => ({ ...prev, [popup]: { error: e.message, rows: [] } })));
+  }, [level, popup, adDailyCache, dailyRows]);
 
   function handleAiClick(e, r) {
     e.stopPropagation();
@@ -607,9 +598,10 @@ function DrillTable({ rows, onRowClick, label = 'Ad Set', rowAnalyses = {}, onAn
             </div>
 
             {/* Ad trend section — chart + stats table (ads only) */}
-            {level === 'ad' && popupRow && (
-              <AdTrendSection adId={popupRow.id} dailyRows={dailyRows} />
-            )}
+            {level === 'ad' && popupRow && (() => {
+              const cache = adDailyCache[popupRow.id] || {};
+              return <AdTrendSection rows={cache.rows} loading={!!cache.loading} error={cache.error} />;
+            })()}
 
             {/* Divider between trend and AI analysis */}
             {level === 'ad' && popupAnalysis && !popupAnalysis.loading && !popupAnalysis.error && (
