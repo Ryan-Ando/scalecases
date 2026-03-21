@@ -1830,7 +1830,7 @@ export default function AdsTracking() {
                 const cpc        = totalCases > 0 ? totalSpend / totalCases : null;
                 const isSelected = selectedRows.has(adName);
                 return (
-                  <tr key={adName} className={isSelected ? 'tracking-row-selected' : ''} onClick={selecting ? () => toggleRowSelect(adName) : undefined} style={{ height: rowHeights[adName] ?? undefined, overflow: 'hidden', ...(selecting ? { cursor: 'pointer' } : {}) }}>
+                  <tr key={adName} className={isSelected ? 'tracking-row-selected' : ''} onClick={selecting ? () => toggleRowSelect(adName) : undefined} style={{ height: rowHeights[adName] ?? undefined, ...(selecting ? { cursor: 'pointer' } : {}) }}>
                     {selecting && (
                       <td className="tracking-td-cell" style={{ textAlign: 'center' }}>
                         <input
