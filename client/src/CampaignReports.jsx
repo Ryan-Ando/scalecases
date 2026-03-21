@@ -92,6 +92,138 @@ function clientCpc(row) {
   return null;
 }
 
+// Compute structured all-time / last-7d / last-3d stats for the popup chart + table
+function computeAdStats(adId, dailyRows) {
+  const rows = dailyRows.filter(r => r.ad_id === adId).sort((a, b) => a.date_start < b.date_start ? -1 : 1);
+  if (!rows.length) return null;
+  const cutoff7 = daysAgo(7);
+  const cutoff3 = daysAgo(3);
+  const LEAD_TYPES = ['lead','onsite_conversion.lead_grouped','offsite_conversion.fb_pixel_lead','contact','schedule','submit_application'];
+  function getLeads(r) {
+    for (const t of LEAD_TYPES) {
+      const a = (r.actions || []).find(x => x.action_type === t);
+      if (a) return parseInt(a.value, 10) || 0;
+    }
+    return 0;
+  }
+  function sumPeriod(subset) {
+    const spend = subset.reduce((s, r) => s + (parseFloat(r.spend) || 0), 0);
+    const leads = subset.reduce((s, r) => s + getLeads(r), 0);
+    const days  = subset.length;
+    return { spend, leads, days, cpl: leads > 0 ? spend / leads : null,
+             spendPerDay: days > 0 ? spend / days : 0, leadsPerDay: days > 0 ? leads / days : 0 };
+  }
+  const chartData = rows.map(r => ({
+    date: r.date_start.slice(5),
+    spend: parseFloat(r.spend) || 0,
+    leads: getLeads(r),
+  }));
+  return {
+    all:    sumPeriod(rows),
+    last7:  sumPeriod(rows.filter(r => r.date_start >= cutoff7)),
+    last3:  sumPeriod(rows.filter(r => r.date_start >= cutoff3)),
+    chartData,
+  };
+}
+
+// Trend chart + stats table shown inside the ad analysis popup
+function AdTrendSection({ adId, dailyRows }) {
+  const stats = useMemo(() => computeAdStats(adId, dailyRows), [adId, dailyRows]);
+  if (!stats) return (
+    <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 16 }}>
+      No daily data — sync this ad in Ads Tracking first.
+    </div>
+  );
+  const { all, last7, last3, chartData } = stats;
+
+  function pct(recent, base) {
+    if (base == null || base === 0) return null;
+    return ((recent - base) / Math.abs(base) * 100).toFixed(0);
+  }
+  function PctTag({ val, invert = false }) {
+    if (val == null) return <span style={{ color: 'var(--text-muted)', fontSize: 10 }}>—</span>;
+    const n = parseFloat(val);
+    const bad = invert ? n < 0 : n > 0;
+    return (
+      <span style={{ fontSize: 10, color: bad ? '#dc2626' : '#16a34a', marginLeft: 4 }}>
+        {n > 0 ? '+' : ''}{val}%
+      </span>
+    );
+  }
+
+  const LABEL_STYLE = { fontSize: 11, fontWeight: 700, textTransform: 'uppercase',
+    letterSpacing: '0.05em', color: 'var(--text-muted)', marginBottom: 8 };
+  const TH = { textAlign: 'right', padding: '4px 8px', borderBottom: '1px solid var(--border)',
+    fontWeight: 600, fontSize: 11, color: 'var(--text-muted)' };
+  const TD = { textAlign: 'right', padding: '5px 8px', borderBottom: '1px solid var(--border)', fontSize: 12 };
+
+  return (
+    <>
+      {/* Daily chart */}
+      <div style={{ marginBottom: 18 }}>
+        <div style={LABEL_STYLE}>Daily Performance (all-time)</div>
+        <ResponsiveContainer width="100%" height={130}>
+          <LineChart data={chartData} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+            <XAxis dataKey="date" tick={{ fontSize: 9 }} tickLine={false} interval="preserveStartEnd" />
+            <YAxis yAxisId="l" orientation="left" tick={{ fontSize: 9 }} tickLine={false} width={42}
+              tickFormatter={v => `$${v}`} />
+            <YAxis yAxisId="r" orientation="right" tick={{ fontSize: 9 }} tickLine={false} width={20} />
+            <Tooltip formatter={(v, n) => [n === 'Spend' ? `$${v.toFixed(2)}` : v, n]}
+              contentStyle={{ fontSize: 11 }} />
+            <Line yAxisId="l" type="monotone" dataKey="spend" stroke="#6366f1" dot={false}
+              strokeWidth={1.5} name="Spend" />
+            <Line yAxisId="r" type="monotone" dataKey="leads" stroke="#10b981" dot={false}
+              strokeWidth={1.5} name="Leads" />
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+
+      {/* Stats comparison table */}
+      <div style={{ marginBottom: 16 }}>
+        <div style={LABEL_STYLE}>Performance Trend</div>
+        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+          <thead>
+            <tr>
+              <th style={{ ...TH, textAlign: 'left' }}>Metric</th>
+              <th style={TH}>All-time avg/day</th>
+              <th style={TH}>Last 7d avg/day</th>
+              <th style={TH}>Last 3d avg/day</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td style={{ ...TD, textAlign: 'left' }}>Spend</td>
+              <td style={TD}>{fmt$(all.spendPerDay)}</td>
+              <td style={TD}>{fmt$(last7.spendPerDay)}<PctTag val={pct(last7.spendPerDay, all.spendPerDay)} /></td>
+              <td style={TD}>{fmt$(last3.spendPerDay)}<PctTag val={pct(last3.spendPerDay, all.spendPerDay)} /></td>
+            </tr>
+            <tr>
+              <td style={{ ...TD, textAlign: 'left' }}>Leads</td>
+              <td style={TD}>{all.leadsPerDay.toFixed(2)}</td>
+              <td style={TD}>{last7.leadsPerDay.toFixed(2)}<PctTag val={pct(last7.leadsPerDay, all.leadsPerDay)} invert /></td>
+              <td style={TD}>{last3.leadsPerDay.toFixed(2)}<PctTag val={pct(last3.leadsPerDay, all.leadsPerDay)} invert /></td>
+            </tr>
+            <tr>
+              <td style={{ ...TD, borderBottom: 'none', textAlign: 'left' }}>CPL</td>
+              <td style={{ ...TD, borderBottom: 'none' }}>{all.cpl ? fmt$(all.cpl) : '—'}</td>
+              <td style={{ ...TD, borderBottom: 'none' }}>
+                {last7.cpl ? fmt$(last7.cpl) : '—'}<PctTag val={pct(last7.cpl, all.cpl)} />
+              </td>
+              <td style={{ ...TD, borderBottom: 'none' }}>
+                {last3.cpl ? fmt$(last3.cpl) : '—'}<PctTag val={pct(last3.cpl, all.cpl)} />
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 6, textAlign: 'right' }}>
+          {all.days} days synced · % Δ vs all-time avg/day
+        </div>
+      </div>
+    </>
+  );
+}
+
 // Compute all-time / last-7d / last-3d trend summary for a single ad from daily rows
 function computeAdTrend(adId, dailyRows) {
   const rows = dailyRows.filter(r => r.ad_id === adId);
@@ -334,7 +466,7 @@ function cellVal(r, key) {
   }
 }
 
-function DrillTable({ rows, onRowClick, label = 'Ad Set', rowAnalyses = {}, onAnalyzeRow }) {
+function DrillTable({ rows, onRowClick, label = 'Ad Set', rowAnalyses = {}, onAnalyzeRow, dailyRows = [], level = 'adset' }) {
   const [sortKey, setSortKey] = useState('_default');
   const [sortDir, setSortDir] = useState('asc');
   const [popup, setPopup]     = useState(null); // row id whose popup is open
@@ -423,12 +555,13 @@ function DrillTable({ rows, onRowClick, label = 'Ad Set', rowAnalyses = {}, onAn
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 500,
           display: 'flex', alignItems: 'center', justifyContent: 'center' }}
           onClick={() => setPopup(null)}>
-          <div style={{ background: 'var(--surface)', borderRadius: 14, padding: 24, width: 500,
-            maxHeight: '80vh', overflowY: 'auto', boxShadow: '0 8px 32px rgba(0,0,0,0.2)' }}
+          <div style={{ background: 'var(--surface)', borderRadius: 14, padding: 24,
+            width: level === 'ad' ? 660 : 500, maxWidth: '95vw',
+            maxHeight: '88vh', overflowY: 'auto', boxShadow: '0 8px 32px rgba(0,0,0,0.2)' }}
             onClick={e => e.stopPropagation()}>
 
-            {/* Popup header */}
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 14 }}>
+            {/* Header */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 16 }}>
               <div>
                 <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 6 }}>{popupRow?.name}</div>
                 {popupAnalysis && !popupAnalysis.loading && !popupAnalysis.error && (
@@ -439,6 +572,16 @@ function DrillTable({ rows, onRowClick, label = 'Ad Set', rowAnalyses = {}, onAn
                 cursor: 'pointer', fontSize: 18, color: 'var(--text-muted)', padding: '0 4px', marginLeft: 12 }}>✕</button>
             </div>
 
+            {/* Ad trend section — chart + stats table (ads only) */}
+            {level === 'ad' && popupRow && (
+              <AdTrendSection adId={popupRow.id} dailyRows={dailyRows} />
+            )}
+
+            {/* Divider between trend and AI analysis */}
+            {level === 'ad' && popupAnalysis && !popupAnalysis.loading && !popupAnalysis.error && (
+              <div style={{ borderTop: '1px solid var(--border)', marginBottom: 16 }} />
+            )}
+
             {/* Loading */}
             {(!popupAnalysis || popupAnalysis.loading) && (
               <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>Analyzing…</div>
@@ -446,12 +589,10 @@ function DrillTable({ rows, onRowClick, label = 'Ad Set', rowAnalyses = {}, onAn
 
             {/* Error */}
             {popupAnalysis?.error && (
-              <div style={{ color: '#dc2626', fontSize: 13 }}>
-                Error: {popupAnalysis.error}
-              </div>
+              <div style={{ color: '#dc2626', fontSize: 13 }}>Error: {popupAnalysis.error}</div>
             )}
 
-            {/* Results */}
+            {/* AI results */}
             {popupAnalysis && !popupAnalysis.loading && !popupAnalysis.error && (
               <>
                 <p style={{ fontSize: 13, lineHeight: 1.6, color: 'var(--text)', margin: '0 0 14px' }}>
@@ -471,7 +612,7 @@ function DrillTable({ rows, onRowClick, label = 'Ad Set', rowAnalyses = {}, onAn
                     <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase',
                       letterSpacing: '0.05em', color: 'var(--text-muted)', marginBottom: 6 }}>Recommendations</div>
                     <ul style={{ margin: 0, padding: '0 0 0 16px', fontSize: 12, lineHeight: 1.7, color: '#15803d' }}>
-                      {popupAnalysis.recommendations.map((r, i) => <li key={i}>{r}</li>)}
+                      {popupAnalysis.recommendations.map((rec, i) => <li key={i}>{rec}</li>)}
                     </ul>
                   </div>
                 )}
@@ -481,8 +622,7 @@ function DrillTable({ rows, onRowClick, label = 'Ad Set', rowAnalyses = {}, onAn
             {/* Footer */}
             <div style={{ marginTop: 18, display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
               {popupRow && (
-                <button className="btn btn--sm"
-                  onClick={() => { onAnalyzeRow && onAnalyzeRow(popupRow); }}>
+                <button className="btn btn--sm" onClick={() => { onAnalyzeRow && onAnalyzeRow(popupRow); }}>
                   Re-analyze
                 </button>
               )}
@@ -834,10 +974,11 @@ export default function CampaignReports() {
   const [adLoading, setAdLoading]       = useState(false);
   const [trendData, setTrendData]       = useState([]);
 
-  const [analyses, setAnalyses]       = useState({});
-  const [rowAnalyses, setRowAnalyses] = useState({});
-  const [training, setTraining]       = useState({});
-  const [noteInputs, setNoteInputs]   = useState({});
+  const [analyses, setAnalyses]             = useState({});
+  const [rowAnalyses, setRowAnalyses]       = useState({});
+  const [training, setTraining]             = useState({});
+  const [noteInputs, setNoteInputs]         = useState({});
+  const [adDailyInsights, setAdDailyInsights] = useState([]);
 
   // ── Persist: load KPIs + training from IndexedDB ──────────────────────────
   useEffect(() => {
@@ -859,6 +1000,10 @@ export default function CampaignReports() {
 
     dbGetMeta('campaignAnalyses').then(saved => {
       if (saved && typeof saved === 'object') setAnalyses(saved);
+    }).catch(() => {});
+
+    dbGetAll('adDailyInsights').then(rows => {
+      setAdDailyInsights(rows);
     }).catch(() => {});
   }, []);
 
@@ -1357,7 +1502,7 @@ setCampaigns(data.filter(c => c.effectiveStatus === 'ACTIVE' || c.status === 'AC
 
           {adsetLoading
             ? <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>Loading adsets…</div>
-            : <DrillTable rows={adsets} onRowClick={openAdset} label="Ad Set"
+            : <DrillTable rows={adsets} onRowClick={openAdset} label="Ad Set" level="adset"
                 rowAnalyses={rowAnalyses} onAnalyzeRow={r => analyzeRow(r, 'adset')} />}
         </div>
       )}
@@ -1396,7 +1541,7 @@ setCampaigns(data.filter(c => c.effectiveStatus === 'ACTIVE' || c.status === 'AC
                   })()}
                 </div>
               )}
-              <DrillTable rows={ads} label="Ad"
+              <DrillTable rows={ads} label="Ad" level="ad" dailyRows={adDailyInsights}
                 rowAnalyses={rowAnalyses} onAnalyzeRow={r => analyzeRow(r, 'ad')} />
             </>
           )}
