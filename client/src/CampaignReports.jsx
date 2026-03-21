@@ -126,127 +126,132 @@ function computeAdStats(adId, dailyRows) {
   };
 }
 
-// Trend chart + stats table shown inside the ad analysis popup
-function AdTrendSection({ adId, dailyRows }) {
-  const [extraRows, setExtraRows] = useState(null); // null = not yet fetched
-  const [fetching, setFetching]   = useState(false);
+// Module-level so React sees a stable component reference across renders
+function PctTag({ val, invert = false }) {
+  if (val == null) return <span style={{ color: 'var(--text-muted)', fontSize: 10 }}>—</span>;
+  const n = parseFloat(val);
+  const bad = invert ? n < 0 : n > 0;
+  return (
+    <span style={{ fontSize: 10, color: bad ? '#dc2626' : '#16a34a', marginLeft: 4 }}>
+      {n > 0 ? '+' : ''}{val}%
+    </span>
+  );
+}
 
-  // Prefer pre-synced rows; if none exist, use auto-fetched rows
+function pctChange(recent, base) {
+  if (base == null || base === 0) return null;
+  return ((recent - base) / Math.abs(base) * 100).toFixed(0);
+}
+
+const TREND_LABEL = { fontSize: 11, fontWeight: 700, textTransform: 'uppercase',
+  letterSpacing: '0.05em', color: 'var(--text-muted)', marginBottom: 8 };
+const TREND_TH = { textAlign: 'right', padding: '4px 8px', borderBottom: '1px solid var(--border)',
+  fontWeight: 600, fontSize: 11, color: 'var(--text-muted)' };
+const TREND_TD = { textAlign: 'right', padding: '5px 8px', borderBottom: '1px solid var(--border)', fontSize: 12 };
+
+function AdTrendSection({ adId, dailyRows }) {
+  const [extraRows, setExtraRows] = useState(null);
+  const [fetching, setFetching]   = useState(false);
+  const [fetchErr, setFetchErr]   = useState('');
+
   const allRows = useMemo(() => {
     const fromStore = dailyRows.filter(r => r.ad_id === adId);
     if (fromStore.length) return fromStore;
     return extraRows || [];
   }, [adId, dailyRows, extraRows]);
 
-  const stats = useMemo(() =>
-    allRows.length ? computeAdStats(adId, allRows) : null,
-    [adId, allRows]);
+  const stats = useMemo(() => allRows.length ? computeAdStats(adId, allRows) : null, [adId, allRows]);
 
-  // Auto-fetch if no data available yet
   useEffect(() => {
-    if (stats || fetching || extraRows !== null) return;
+    if (stats !== null || fetching || extraRows !== null) return;
+    let cancelled = false;
     setFetching(true);
+    setFetchErr('');
     fetch(`${BASE}/api/facebook/daily?date_preset=maximum&ad_ids=${encodeURIComponent(adId)}`)
       .then(r => r.json())
-      .then(data => setExtraRows(Array.isArray(data) ? data : []))
-      .catch(() => setExtraRows([]))
-      .finally(() => setFetching(false));
+      .then(data => { if (!cancelled) setExtraRows(Array.isArray(data) ? data : []); })
+      .catch(e  => { if (!cancelled) { setFetchErr(e.message); setExtraRows([]); } })
+      .finally(() => { if (!cancelled) setFetching(false); });
+    return () => { cancelled = true; };
   }, [adId, stats, fetching, extraRows]);
 
   if (fetching) return (
-    <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 16 }}>
-      Loading trend data…
-    </div>
+    <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 16 }}>Loading trend data…</div>
+  );
+  if (fetchErr) return (
+    <div style={{ fontSize: 12, color: '#dc2626', marginBottom: 16 }}>Trend fetch error: {fetchErr}</div>
   );
   if (!stats) return (
     <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 16 }}>
       No historical data available for this ad.
     </div>
   );
+
   const { all, last7, last3, chartData } = stats;
-
-  function pct(recent, base) {
-    if (base == null || base === 0) return null;
-    return ((recent - base) / Math.abs(base) * 100).toFixed(0);
-  }
-  function PctTag({ val, invert = false }) {
-    if (val == null) return <span style={{ color: 'var(--text-muted)', fontSize: 10 }}>—</span>;
-    const n = parseFloat(val);
-    const bad = invert ? n < 0 : n > 0;
-    return (
-      <span style={{ fontSize: 10, color: bad ? '#dc2626' : '#16a34a', marginLeft: 4 }}>
-        {n > 0 ? '+' : ''}{val}%
-      </span>
-    );
-  }
-
-  const LABEL_STYLE = { fontSize: 11, fontWeight: 700, textTransform: 'uppercase',
-    letterSpacing: '0.05em', color: 'var(--text-muted)', marginBottom: 8 };
-  const TH = { textAlign: 'right', padding: '4px 8px', borderBottom: '1px solid var(--border)',
-    fontWeight: 600, fontSize: 11, color: 'var(--text-muted)' };
-  const TD = { textAlign: 'right', padding: '5px 8px', borderBottom: '1px solid var(--border)', fontSize: 12 };
 
   return (
     <>
-      {/* Daily chart */}
+      {/* Daily chart — explicit wrapper div required for ResponsiveContainer inside overflow:auto */}
       <div style={{ marginBottom: 18 }}>
-        <div style={LABEL_STYLE}>Daily Performance (all-time)</div>
-        <ResponsiveContainer width="100%" height={130}>
-          <LineChart data={chartData} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
-            <XAxis dataKey="date" tick={{ fontSize: 9 }} tickLine={false} interval="preserveStartEnd" />
-            <YAxis yAxisId="l" orientation="left" tick={{ fontSize: 9 }} tickLine={false} width={42}
-              tickFormatter={v => `$${v}`} />
-            <YAxis yAxisId="r" orientation="right" tick={{ fontSize: 9 }} tickLine={false} width={20} />
-            <Tooltip formatter={(v, n) => [n === 'Spend' ? `$${v.toFixed(2)}` : v, n]}
-              contentStyle={{ fontSize: 11 }} />
-            <Line yAxisId="l" type="monotone" dataKey="spend" stroke="#6366f1" dot={false}
-              strokeWidth={1.5} name="Spend" />
-            <Line yAxisId="r" type="monotone" dataKey="leads" stroke="#10b981" dot={false}
-              strokeWidth={1.5} name="Leads" />
-          </LineChart>
-        </ResponsiveContainer>
+        <div style={TREND_LABEL}>Daily Performance (all-time)</div>
+        <div style={{ width: '100%', height: 130 }}>
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart data={chartData} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+              <XAxis dataKey="date" tick={{ fontSize: 9 }} tickLine={false} interval="preserveStartEnd" />
+              <YAxis yAxisId="l" orientation="left" tick={{ fontSize: 9 }} tickLine={false} width={42}
+                tickFormatter={v => `$${v}`} />
+              <YAxis yAxisId="r" orientation="right" tick={{ fontSize: 9 }} tickLine={false} width={20} />
+              <Tooltip formatter={(v, n) => [n === 'Spend' ? `$${parseFloat(v).toFixed(2)}` : v, n]}
+                contentStyle={{ fontSize: 11 }} />
+              <Line yAxisId="l" type="monotone" dataKey="spend" stroke="#6366f1" dot={false}
+                strokeWidth={1.5} name="Spend" />
+              <Line yAxisId="r" type="monotone" dataKey="leads" stroke="#10b981" dot={false}
+                strokeWidth={1.5} name="Leads" />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
       </div>
 
       {/* Stats comparison table */}
       <div style={{ marginBottom: 16 }}>
-        <div style={LABEL_STYLE}>Performance Trend</div>
+        <div style={TREND_LABEL}>Performance Trend</div>
         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
           <thead>
             <tr>
-              <th style={{ ...TH, textAlign: 'left' }}>Metric</th>
-              <th style={TH}>All-time avg/day</th>
-              <th style={TH}>Last 7d avg/day</th>
-              <th style={TH}>Last 3d avg/day</th>
+              <th style={{ ...TREND_TH, textAlign: 'left' }}>Metric</th>
+              <th style={TREND_TH}>All-time avg/day</th>
+              <th style={TREND_TH}>Last 7d avg/day</th>
+              <th style={TREND_TH}>Last 3d avg/day</th>
             </tr>
           </thead>
           <tbody>
             <tr>
-              <td style={{ ...TD, textAlign: 'left' }}>Spend</td>
-              <td style={TD}>{fmt$(all.spendPerDay)}</td>
-              <td style={TD}>{fmt$(last7.spendPerDay)}<PctTag val={pct(last7.spendPerDay, all.spendPerDay)} /></td>
-              <td style={TD}>{fmt$(last3.spendPerDay)}<PctTag val={pct(last3.spendPerDay, all.spendPerDay)} /></td>
+              <td style={{ ...TREND_TD, textAlign: 'left' }}>Spend</td>
+              <td style={TREND_TD}>{fmt$(all.spendPerDay)}</td>
+              <td style={TREND_TD}>{fmt$(last7.spendPerDay)}<PctTag val={pctChange(last7.spendPerDay, all.spendPerDay)} /></td>
+              <td style={TREND_TD}>{fmt$(last3.spendPerDay)}<PctTag val={pctChange(last3.spendPerDay, all.spendPerDay)} /></td>
             </tr>
             <tr>
-              <td style={{ ...TD, textAlign: 'left' }}>Leads</td>
-              <td style={TD}>{all.leadsPerDay.toFixed(2)}</td>
-              <td style={TD}>{last7.leadsPerDay.toFixed(2)}<PctTag val={pct(last7.leadsPerDay, all.leadsPerDay)} invert /></td>
-              <td style={TD}>{last3.leadsPerDay.toFixed(2)}<PctTag val={pct(last3.leadsPerDay, all.leadsPerDay)} invert /></td>
+              <td style={{ ...TREND_TD, textAlign: 'left' }}>Leads</td>
+              <td style={TREND_TD}>{all.leadsPerDay.toFixed(2)}</td>
+              <td style={TREND_TD}>{last7.leadsPerDay.toFixed(2)}<PctTag val={pctChange(last7.leadsPerDay, all.leadsPerDay)} invert /></td>
+              <td style={TREND_TD}>{last3.leadsPerDay.toFixed(2)}<PctTag val={pctChange(last3.leadsPerDay, all.leadsPerDay)} invert /></td>
             </tr>
             <tr>
-              <td style={{ ...TD, borderBottom: 'none', textAlign: 'left' }}>CPL</td>
-              <td style={{ ...TD, borderBottom: 'none' }}>{all.cpl ? fmt$(all.cpl) : '—'}</td>
-              <td style={{ ...TD, borderBottom: 'none' }}>
-                {last7.cpl ? fmt$(last7.cpl) : '—'}<PctTag val={pct(last7.cpl, all.cpl)} />
+              <td style={{ ...TREND_TD, borderBottom: 'none', textAlign: 'left' }}>CPL</td>
+              <td style={{ ...TREND_TD, borderBottom: 'none' }}>{all.cpl ? fmt$(all.cpl) : '—'}</td>
+              <td style={{ ...TREND_TD, borderBottom: 'none' }}>
+                {last7.cpl ? fmt$(last7.cpl) : '—'}<PctTag val={pctChange(last7.cpl, all.cpl)} />
               </td>
-              <td style={{ ...TD, borderBottom: 'none' }}>
-                {last3.cpl ? fmt$(last3.cpl) : '—'}<PctTag val={pct(last3.cpl, all.cpl)} />
+              <td style={{ ...TREND_TD, borderBottom: 'none' }}>
+                {last3.cpl ? fmt$(last3.cpl) : '—'}<PctTag val={pctChange(last3.cpl, all.cpl)} />
               </td>
             </tr>
           </tbody>
         </table>
         <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 6, textAlign: 'right' }}>
-          {all.days} days synced · % Δ vs all-time avg/day
+          {all.days} days of data · % Δ vs all-time avg/day
         </div>
       </div>
     </>
