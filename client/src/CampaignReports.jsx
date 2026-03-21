@@ -22,20 +22,16 @@ function extractState(name) {
   return null;
 }
 
-const TIMEFRAMES = [
-  { label: 'Today', days: 0 },
-  { label: '3d',    days: 3 },
-  { label: '7d',    days: 7 },
-  { label: '14d',   days: 14 },
-  { label: '30d',   days: 30 },
-];
+function todayStr() { return new Date().toISOString().slice(0, 10); }
+function daysAgo(n) { return new Date(Date.now() - n * 864e5).toISOString().slice(0, 10); }
 
-function getDateRange(days) {
-  const today = new Date().toISOString().slice(0, 10);
-  if (days === 0) return { start: today, end: today };
-  const start = new Date(Date.now() - days * 864e5).toISOString().slice(0, 10);
-  return { start, end: today };
-}
+const PRESETS = [
+  { label: 'Today', start: () => todayStr(), end: () => todayStr() },
+  { label: '7d',    start: () => daysAgo(7),  end: () => todayStr() },
+  { label: '14d',   start: () => daysAgo(14), end: () => todayStr() },
+  { label: '30d',   start: () => daysAgo(30), end: () => todayStr() },
+  { label: '90d',   start: () => daysAgo(90), end: () => todayStr() },
+];
 
 function fmt$(v)   { return v != null && v !== '' && !isNaN(parseFloat(v)) ? `$${parseFloat(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '—'; }
 function fmtN(v)   { return v != null && v !== '' && !isNaN(parseFloat(v)) ? parseFloat(v).toLocaleString('en-US', { maximumFractionDigits: 2 }) : '—'; }
@@ -380,9 +376,12 @@ function DrillTable({ rows, onRowClick, label = 'Ad Set' }) {
 
 // ── Main component ────────────────────────────────────────────────────────────
 export default function CampaignReports() {
-  const [tfDays, setTfDays]       = useState(7);
-  const [kpisMap, setKpisMap]     = useState({});  // { [campaignId]: { targetCpl, ... } }
-  const [kpiModal, setKpiModal]   = useState(null); // { campaignId, campaignName } | null
+  const [dateRange, setDateRange] = useState({ start: daysAgo(7), end: todayStr() });
+  const { start, end } = dateRange;
+  const tfLabel = `${start} – ${end}`;
+
+  const [kpisMap, setKpisMap]     = useState({});
+  const [kpiModal, setKpiModal]   = useState(null);
 
   const [campaigns, setCampaigns] = useState([]);
   const [loading, setLoading]     = useState(true);
@@ -400,9 +399,6 @@ export default function CampaignReports() {
   const [analyses, setAnalyses]   = useState({});
   const [training, setTraining]   = useState({});
   const [noteInputs, setNoteInputs] = useState({});
-
-  const { start, end } = useMemo(() => getDateRange(tfDays), [tfDays]);
-  const tfLabel = tfDays === 0 ? 'Today' : `Last ${tfDays} days`;
 
   // ── Persist: load KPIs + training from IndexedDB ──────────────────────────
   useEffect(() => {
@@ -441,13 +437,13 @@ export default function CampaignReports() {
   useEffect(() => { loadCampaigns(); }, [start, end]);
 
   // ── Drill: campaign → adsets ──────────────────────────────────────────────
-  async function openCampaign(campaign) {
-    setSelCampaign(campaign); setView('adsets'); setAdsets([]); setTrendData([]);
+  async function fetchAdsetData(campaign, s, e) {
+    setAdsets([]); setTrendData([]);
     setAdsetLoading(true);
     try {
       const [ar, tr] = await Promise.all([
-        fetch(`${BASE}/api/facebook/adsets?campaign_id=${campaign.id}&start=${start}&end=${end}`),
-        fetch(`${BASE}/api/facebook/daily?start=${start}&end=${end}&level=campaign`),
+        fetch(`${BASE}/api/facebook/adsets?campaign_id=${campaign.id}&start=${s}&end=${e}`),
+        fetch(`${BASE}/api/facebook/daily?start=${s}&end=${e}&level=campaign`),
       ]);
       const adsetsData = await ar.json();
       const trendRaw   = await tr.json();
@@ -471,12 +467,22 @@ export default function CampaignReports() {
     }
   }
 
+  function openCampaign(campaign) {
+    setSelCampaign(campaign); setView('adsets');
+    fetchAdsetData(campaign, start, end);
+  }
+
+  // Re-fetch adset data when date range changes while in adset view
+  useEffect(() => {
+    if (view === 'adsets' && selCampaign) fetchAdsetData(selCampaign, start, end);
+  }, [start, end, view]);
+
   // ── Drill: adset → ads ────────────────────────────────────────────────────
-  async function openAdset(adset) {
-    setSelAdset(adset); setView('ads'); setAds([]);
+  async function fetchAdData(adset, s, e) {
+    setAds([]);
     setAdLoading(true);
     try {
-      const res  = await fetch(`${BASE}/api/facebook/ads?adset_id=${adset.id}&start=${start}&end=${end}`);
+      const res  = await fetch(`${BASE}/api/facebook/ads?adset_id=${adset.id}&start=${s}&end=${e}`);
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
       setAds(data);
@@ -486,6 +492,16 @@ export default function CampaignReports() {
       setAdLoading(false);
     }
   }
+
+  function openAdset(adset) {
+    setSelAdset(adset); setView('ads');
+    fetchAdData(adset, start, end);
+  }
+
+  // Re-fetch ad data when date range changes while in ads view
+  useEffect(() => {
+    if (view === 'ads' && selAdset) fetchAdData(selAdset, start, end);
+  }, [start, end, view]);
 
   // ── AI analysis ───────────────────────────────────────────────────────────
   async function analyze(campaign, adsetsForCampaign = []) {
@@ -545,16 +561,32 @@ export default function CampaignReports() {
       {/* Header */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 20, flexWrap: 'wrap' }}>
         <div style={{ fontSize: 20, fontWeight: 700, color: 'var(--text)' }}>Campaign Reports</div>
-        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 6 }}>
-          {TIMEFRAMES.map(tf => (
-            <button key={tf.days}
-              className="btn btn--sm"
-              onClick={() => setTfDays(tf.days)}
-              style={tfDays === tf.days ? { background: 'var(--green)', color: '#fff', border: 'none' } : {}}>
-              {tf.label}
-            </button>
-          ))}
-          <button className="btn btn--sm" onClick={loadCampaigns} disabled={loading} style={{ marginLeft: 8 }}>
+        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          {/* Preset buttons */}
+          {PRESETS.map(p => {
+            const ps = p.start(), pe = p.end();
+            const active = start === ps && end === pe;
+            return (
+              <button key={p.label} className="btn btn--sm"
+                onClick={() => setDateRange({ start: ps, end: pe })}
+                style={active ? { background: 'var(--green)', color: '#fff', border: 'none' } : {}}>
+                {p.label}
+              </button>
+            );
+          })}
+          {/* Date range inputs */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginLeft: 4 }}>
+            <input type="date" value={start} max={end}
+              onChange={e => setDateRange(d => ({ ...d, start: e.target.value }))}
+              style={{ padding: '4px 8px', borderRadius: 7, border: '1px solid var(--border)',
+                background: 'var(--bg)', color: 'var(--text)', fontSize: 12 }} />
+            <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>→</span>
+            <input type="date" value={end} min={start} max={todayStr()}
+              onChange={e => setDateRange(d => ({ ...d, end: e.target.value }))}
+              style={{ padding: '4px 8px', borderRadius: 7, border: '1px solid var(--border)',
+                background: 'var(--bg)', color: 'var(--text)', fontSize: 12 }} />
+          </div>
+          <button className="btn btn--sm" onClick={loadCampaigns} disabled={loading} style={{ marginLeft: 4 }}>
             {loading ? 'Loading…' : 'Refresh'}
           </button>
         </div>
