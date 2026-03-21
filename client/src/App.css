@@ -735,9 +735,10 @@ tfoot .td-name { font-family: var(--sans); font-weight: 700; font-size: 13px; }
   text-transform: uppercase;
   letter-spacing: 0.06em;
   min-width: 240px;
-  position: sticky;
+  position: sticky !important;
+  top: 0;
   left: 0;
-  z-index: 4;
+  z-index: 5 !important;
 }
 
 /* Summary columns (Spend / CPL / CPC / Total) — slightly tinted bg */
