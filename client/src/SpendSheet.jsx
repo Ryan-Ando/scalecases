@@ -73,7 +73,7 @@ export default function SpendSheet() {
   const budgetByState = useMemo(() => {
     const map = {};
     for (const a of adsets) {
-      if (a.status !== 'ACTIVE') continue;
+      if (a.effectiveStatus !== 'ACTIVE') continue;
       const state = extractState(a.campaignName);
       if (!state) continue;
       const budget = parseFloat(a.dailyBudget) / 100 || 0;
