@@ -61,9 +61,24 @@ function videoSecs(arr) {
   return v ? parseFloat(v.value) || 0 : 0;
 }
 
+// cost_per_result from FB is sometimes an array [{indicator,values:[{value}]}], not a scalar
+function parseCprClient(raw) {
+  if (!raw) return null;
+  if (!Array.isArray(raw)) {
+    const v = parseFloat(raw);
+    return (!isNaN(v) && v > 0) ? raw : null;
+  }
+  if (raw.length > 0) {
+    const v = parseFloat(raw[0]?.values?.[0]?.value ?? raw[0]?.value);
+    return (!isNaN(v) && v > 0) ? v.toFixed(2) : null;
+  }
+  return null;
+}
+
 // Client-side CPL/CPC fallbacks — computed from available fields when server value is absent
 function clientCpl(row) {
-  if (row.cost_per_result) return row.cost_per_result;
+  const fromFb = parseCprClient(row.cost_per_result);
+  if (fromFb) return fromFb;
   const spend = parseFloat(row.spend);
   const results = row.results;
   if (results > 0 && spend > 0) return (spend / results).toFixed(2);
@@ -824,17 +839,7 @@ export default function CampaignReports() {
       const res  = await fetch(`${BASE}/api/facebook/campaigns?start=${start}&end=${end}`);
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || res.statusText);
-      // TEMP DEBUG — open browser console (F12) to see this
-      if (data[0]) console.log('[CPL DEBUG] first campaign raw fields:', {
-        name: data[0].name,
-        spend: data[0].spend,
-        results: data[0].results,
-        cost_per_result: data[0].cost_per_result,
-        unique_clicks: data[0].unique_clicks,
-        cost_per_unique_click: data[0].cost_per_unique_click,
-        action_types: (data[0].actions || []).map(a => `${a.action_type}=${a.value}`),
-      });
-      setCampaigns(data.filter(c => c.effectiveStatus === 'ACTIVE' || c.status === 'ACTIVE'));
+setCampaigns(data.filter(c => c.effectiveStatus === 'ACTIVE' || c.status === 'ACTIVE'));
     } catch (e) {
       setError(e.message);
     } finally {

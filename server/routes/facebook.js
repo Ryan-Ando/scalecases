@@ -59,7 +59,8 @@ function extractResults(insightRow) {
   if (broadLead) return { results: parseInt(broadLead.value, 10) || 0, resultType: 'Leads' };
 
   // Fall back to computing from spend ÷ cost_per_result if available
-  const cpr = parseFloat(insightRow.cost_per_result);
+  const cprStr = parseCpr(insightRow.cost_per_result);
+  const cpr = parseFloat(cprStr);
   const spend = parseFloat(insightRow.spend);
   if (cpr > 0 && spend > 0) {
     return { results: Math.round(spend / cpr), resultType: 'Results' };
@@ -69,8 +70,23 @@ function extractResults(insightRow) {
 }
 
 // Compute CPL from spend ÷ leads when FB doesn't return cost_per_result
+// cost_per_result from FB can be a scalar string OR an array [{indicator, values:[{value}]}]
+function parseCpr(raw) {
+  if (!raw) return null;
+  if (!Array.isArray(raw)) {
+    const v = parseFloat(raw);
+    return (!isNaN(v) && v > 0) ? raw : null;
+  }
+  if (raw.length > 0) {
+    const v = parseFloat(raw[0]?.values?.[0]?.value ?? raw[0]?.value);
+    return (!isNaN(v) && v > 0) ? v.toFixed(2) : null;
+  }
+  return null;
+}
+
 function computedCpl(ins, extracted) {
-  if (ins.cost_per_result) return ins.cost_per_result;
+  const fromFb = parseCpr(ins.cost_per_result);
+  if (fromFb) return fromFb;
   const spend = parseFloat(ins.spend);
   if (extracted.results > 0 && spend > 0) return (spend / extracted.results).toFixed(2);
   return null;
