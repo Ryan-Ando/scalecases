@@ -108,4 +108,79 @@ Never suggest pausing or directly editing ads — only provide observations and 
   }
 });
 
+// POST /api/reports/analyze-row
+// Body: { row, level, kpis, timeframeLabel, globalRules, campaignRules }
+// Returns: { rating, summary, insights, recommendations }
+router.post('/analyze-row', async (req, res) => {
+  const { row, level = 'adset', kpis = {}, timeframeLabel = '7 days',
+          globalRules = '', campaignRules = '' } = req.body;
+  if (!row) return res.status(400).json({ error: 'row required' });
+
+  const levelLabel = level === 'ad' ? 'AD' : 'AD SET';
+
+  const kpiBlock = [
+    kpis.targetCpl     ? `Target CPL: $${kpis.targetCpl}` : null,
+    kpis.targetCpc     ? `Target CPC: $${kpis.targetCpc}` : null,
+    kpis.targetCpm     ? `Target CPM: $${kpis.targetCpm}` : null,
+    kpis.targetCtr     ? `Target Unique CTR: ${kpis.targetCtr}%` : null,
+    kpis.maxFrequency  ? `Max acceptable frequency: ${kpis.maxFrequency}` : null,
+    kpis.targetSpend   ? `Target daily spend: $${kpis.targetSpend}` : null,
+    kpis.minLeads      ? `Min leads per day: ${kpis.minLeads}` : null,
+    kpis.minVideoTime  ? `Min video avg play time: ${kpis.minVideoTime}s` : null,
+    kpis.notes         ? `Additional context: ${kpis.notes}` : null,
+  ].filter(Boolean).join('\n') || 'No KPI targets set — use general best practices.';
+
+  const prompt = `You are an expert Facebook advertising analyst for a law firm. Analyze this ${levelLabel.toLowerCase()} and return a JSON performance report.
+
+${levelLabel}: ${row.name}
+TIMEFRAME: ${timeframeLabel}
+STATUS: ${row.effectiveStatus || row.status}
+BUDGET: ${fmtBudget(row)}
+SPEND: $${parseFloat(row.spend || 0).toFixed(2)}
+RESULTS/LEADS: ${row.results || 0}
+COST PER RESULT: ${row.cost_per_result ? '$' + parseFloat(row.cost_per_result).toFixed(2) : 'N/A'}
+IMPRESSIONS: ${row.impressions || 0}
+UNIQUE LINK CLICKS: ${row.unique_clicks || 0}
+COST PER UNIQUE CLICK: ${row.cost_per_unique_click ? '$' + parseFloat(row.cost_per_unique_click).toFixed(2) : 'N/A'}
+CPM: ${row.cpm ? '$' + parseFloat(row.cpm).toFixed(2) : 'N/A'}
+FREQUENCY: ${row.frequency ? parseFloat(row.frequency).toFixed(2) : 'N/A'}
+UNIQUE CTR: ${row.unique_ctr ? parseFloat(row.unique_ctr).toFixed(2) + '%' : 'N/A'}
+VIDEO AVG PLAY TIME: ${fmtVideoTime(row.video_avg_time_watched_actions)}
+${row.campaignName ? `CAMPAIGN: ${row.campaignName}` : ''}
+
+KPI TARGETS:
+${kpiBlock}
+${globalRules.trim() ? `\nSTANDING RULES (apply to ALL campaigns — follow strictly):\n${globalRules.trim()}` : ''}
+${campaignRules.trim() ? `\nCAMPAIGN-SPECIFIC RULES (for this campaign only):\n${campaignRules.trim()}` : ''}
+
+Return ONLY valid JSON with this exact structure (no markdown, no explanation):
+{
+  "rating": "good" | "warning" | "poor",
+  "summary": "2–3 sentence plain-English summary referencing actual numbers",
+  "insights": ["specific data-driven insight", "another insight"],
+  "recommendations": ["one actionable recommendation", "another recommendation"]
+}
+
+Rating guide: "good" = on target or better, "warning" = mixed/needs attention, "poor" = significantly off target or high CPL.
+Never suggest pausing or directly editing ads — only provide observations and advice.`;
+
+  try {
+    const message = await client.messages.create({
+      model: 'claude-opus-4-6',
+      max_tokens: 500,
+      messages: [{ role: 'user', content: prompt }],
+    });
+
+    const text = message.content[0]?.text || '';
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) throw new Error('No JSON in AI response');
+    const result = JSON.parse(jsonMatch[0]);
+    if (!result.rating || !result.summary) throw new Error('Invalid AI response structure');
+    res.json(result);
+  } catch (err) {
+    console.error('Row analysis error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 export default router;

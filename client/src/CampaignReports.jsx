@@ -221,6 +221,7 @@ const COLS = [
   { key: 'name',                  label: 'Name',        align: 'left',  sticky: true },
   { key: 'status',                label: 'On/Off',      align: 'center' },
   { key: 'effectiveStatus',       label: 'Delivery',    align: 'center' },
+  { key: 'aiStatus',              label: 'AI Review',   align: 'center' },
   { key: 'budget',                label: 'Budget',      align: 'right'  },
   { key: 'spend',                 label: 'Spent',       align: 'right'  },
   { key: 'results',               label: 'Results',     align: 'right'  },
@@ -274,10 +275,10 @@ function cellVal(r, key) {
   }
 }
 
-function DrillTable({ rows, onRowClick, label = 'Ad Set' }) {
-  // Default: ACTIVE first, then newest created
+function DrillTable({ rows, onRowClick, label = 'Ad Set', rowAnalyses = {}, onAnalyzeRow }) {
   const [sortKey, setSortKey] = useState('_default');
   const [sortDir, setSortDir] = useState('asc');
+  const [popup, setPopup]     = useState(null); // row id whose popup is open
 
   const sorted = useMemo(() => {
     const arr = [...rows];
@@ -287,7 +288,19 @@ function DrillTable({ rows, onRowClick, label = 'Ad Set' }) {
         if (d !== 0) return d;
         const ca = a.createdTime || a.created_time || '';
         const cb = b.createdTime || b.created_time || '';
-        return cb.localeCompare(ca); // newest first
+        return cb.localeCompare(ca);
+      });
+    }
+    if (sortKey === 'aiStatus') {
+      const ratingOrder = r => {
+        const a = rowAnalyses[r.id];
+        if (!a || a.loading || a.error) return 3;
+        return { good: 0, warning: 1, poor: 2 }[a.rating] ?? 3;
+      };
+      return arr.sort((a, b) => {
+        const av = ratingOrder(a), bv = ratingOrder(b);
+        if (av !== bv) return sortDir === 'asc' ? av - bv : bv - av;
+        return 0;
       });
     }
     return arr.sort((a, b) => {
@@ -297,11 +310,35 @@ function DrillTable({ rows, onRowClick, label = 'Ad Set' }) {
       if (av > bv) return sortDir === 'asc' ?  1 : -1;
       return 0;
     });
-  }, [rows, sortKey, sortDir]);
+  }, [rows, sortKey, sortDir, rowAnalyses]);
 
   function handleSort(key) {
     if (sortKey === key) setSortDir(d => d === 'asc' ? 'desc' : 'asc');
     else { setSortKey(key); setSortDir('asc'); }
+  }
+
+  function handleAiClick(e, r) {
+    e.stopPropagation();
+    if (!rowAnalyses[r.id] || rowAnalyses[r.id].error) onAnalyzeRow && onAnalyzeRow(r);
+    setPopup(r.id);
+  }
+
+  function renderAiCell(r) {
+    const a = rowAnalyses[r.id];
+    if (!a) return (
+      <button className="btn btn--sm" style={{ fontSize: 10, padding: '2px 8px' }}
+        onClick={e => handleAiClick(e, r)}>Analyze</button>
+    );
+    if (a.loading) return <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>…</span>;
+    if (a.error) return (
+      <button className="btn btn--sm" style={{ fontSize: 10, color: '#dc2626' }}
+        onClick={e => handleAiClick(e, r)}>Retry</button>
+    );
+    return (
+      <div onClick={e => handleAiClick(e, r)} style={{ cursor: 'pointer', display: 'inline-block' }}>
+        <RatingBadge rating={a.rating} />
+      </div>
+    );
   }
 
   const thBase = {
@@ -317,59 +354,138 @@ function DrillTable({ rows, onRowClick, label = 'Ad Set' }) {
 
   const displayLabel = col => col.key === 'name' ? label : col.label;
 
+  const popupRow      = popup ? rows.find(r => r.id === popup) : null;
+  const popupAnalysis = popup ? rowAnalyses[popup] : null;
+
   return (
-    <div style={{ overflowX: 'auto', overflowY: 'auto', maxHeight: 'calc(100vh - 320px)',
-      border: '1px solid var(--border)', borderRadius: 10 }}>
-      <table style={{ borderCollapse: 'collapse', width: '100%', minWidth: 1200 }}>
-        <thead>
-          <tr>
-            {COLS.map(col => (
-              <th key={col.key}
-                style={{
-                  ...thBase,
-                  textAlign: col.align || 'right',
-                  ...(col.sticky ? { position: 'sticky', left: 0, zIndex: 3, top: 0 } : {}),
-                }}
-                onClick={() => handleSort(col.key)}
-                title={`Sort by ${col.label}`}
-              >
-                {displayLabel(col)}
-                {sortKey === col.key
-                  ? <span style={{ marginLeft: 4, fontSize: 9 }}>{sortDir === 'asc' ? '▲' : '▼'}</span>
-                  : <span style={{ marginLeft: 4, fontSize: 9, opacity: 0.3 }}>⇅</span>
-                }
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {sorted.map(r => (
-            <tr key={r.id}
-              onClick={onRowClick ? () => onRowClick(r) : undefined}
-              style={{ cursor: onRowClick ? 'pointer' : 'default' }}
-              onMouseEnter={e => { if (onRowClick) e.currentTarget.style.background = 'var(--bg)'; }}
-              onMouseLeave={e => { e.currentTarget.style.background = ''; }}>
+    <div>
+      {/* AI analysis popup */}
+      {popup && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 500,
+          display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+          onClick={() => setPopup(null)}>
+          <div style={{ background: 'var(--surface)', borderRadius: 14, padding: 24, width: 500,
+            maxHeight: '80vh', overflowY: 'auto', boxShadow: '0 8px 32px rgba(0,0,0,0.2)' }}
+            onClick={e => e.stopPropagation()}>
+
+            {/* Popup header */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 14 }}>
+              <div>
+                <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 6 }}>{popupRow?.name}</div>
+                {popupAnalysis && !popupAnalysis.loading && !popupAnalysis.error && (
+                  <RatingBadge rating={popupAnalysis.rating} />
+                )}
+              </div>
+              <button onClick={() => setPopup(null)} style={{ background: 'none', border: 'none',
+                cursor: 'pointer', fontSize: 18, color: 'var(--text-muted)', padding: '0 4px', marginLeft: 12 }}>✕</button>
+            </div>
+
+            {/* Loading */}
+            {(!popupAnalysis || popupAnalysis.loading) && (
+              <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>Analyzing…</div>
+            )}
+
+            {/* Error */}
+            {popupAnalysis?.error && (
+              <div style={{ color: '#dc2626', fontSize: 13 }}>
+                Error: {popupAnalysis.error}
+              </div>
+            )}
+
+            {/* Results */}
+            {popupAnalysis && !popupAnalysis.loading && !popupAnalysis.error && (
+              <>
+                <p style={{ fontSize: 13, lineHeight: 1.6, color: 'var(--text)', margin: '0 0 14px' }}>
+                  {popupAnalysis.summary}
+                </p>
+                {popupAnalysis.insights?.length > 0 && (
+                  <div style={{ marginBottom: 14 }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase',
+                      letterSpacing: '0.05em', color: 'var(--text-muted)', marginBottom: 6 }}>Insights</div>
+                    <ul style={{ margin: 0, padding: '0 0 0 16px', fontSize: 12, lineHeight: 1.7 }}>
+                      {popupAnalysis.insights.map((ins, i) => <li key={i}>{ins}</li>)}
+                    </ul>
+                  </div>
+                )}
+                {popupAnalysis.recommendations?.length > 0 && (
+                  <div>
+                    <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase',
+                      letterSpacing: '0.05em', color: 'var(--text-muted)', marginBottom: 6 }}>Recommendations</div>
+                    <ul style={{ margin: 0, padding: '0 0 0 16px', fontSize: 12, lineHeight: 1.7, color: '#15803d' }}>
+                      {popupAnalysis.recommendations.map((r, i) => <li key={i}>{r}</li>)}
+                    </ul>
+                  </div>
+                )}
+              </>
+            )}
+
+            {/* Footer */}
+            <div style={{ marginTop: 18, display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              {popupRow && (
+                <button className="btn btn--sm"
+                  onClick={() => { onAnalyzeRow && onAnalyzeRow(popupRow); }}>
+                  Re-analyze
+                </button>
+              )}
+              <button className="btn btn--sm" onClick={() => setPopup(null)}>Close</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div style={{ overflowX: 'auto', overflowY: 'auto', maxHeight: 'calc(100vh - 320px)',
+        border: '1px solid var(--border)', borderRadius: 10 }}>
+        <table style={{ borderCollapse: 'collapse', width: '100%', minWidth: 1300 }}>
+          <thead>
+            <tr>
               {COLS.map(col => (
-                <td key={col.key} style={{
-                  ...tdBase,
-                  textAlign: col.align || 'right',
-                  ...(col.sticky ? {
-                    position: 'sticky', left: 0, zIndex: 1,
-                    background: 'var(--surface)', maxWidth: 240,
-                    overflow: 'hidden', textOverflow: 'ellipsis',
-                  } : {}),
-                }}>
-                  {cellVal(r, col.key)}
-                </td>
+                <th key={col.key}
+                  style={{
+                    ...thBase,
+                    textAlign: col.align || 'right',
+                    ...(col.sticky ? { position: 'sticky', left: 0, zIndex: 3, top: 0 } : {}),
+                  }}
+                  onClick={() => handleSort(col.key)}
+                  title={`Sort by ${col.label}`}
+                >
+                  {displayLabel(col)}
+                  {sortKey === col.key
+                    ? <span style={{ marginLeft: 4, fontSize: 9 }}>{sortDir === 'asc' ? '▲' : '▼'}</span>
+                    : <span style={{ marginLeft: 4, fontSize: 9, opacity: 0.3 }}>⇅</span>
+                  }
+                </th>
               ))}
             </tr>
-          ))}
-          {rows.length === 0 && (
-            <tr><td colSpan={COLS.length} style={{ ...tdBase, textAlign: 'center',
-              color: 'var(--text-muted)', padding: 24 }}>No data</td></tr>
-          )}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {sorted.map(r => (
+              <tr key={r.id}
+                onClick={onRowClick ? () => onRowClick(r) : undefined}
+                style={{ cursor: onRowClick ? 'pointer' : 'default' }}
+                onMouseEnter={e => { if (onRowClick) e.currentTarget.style.background = 'var(--bg)'; }}
+                onMouseLeave={e => { e.currentTarget.style.background = ''; }}>
+                {COLS.map(col => (
+                  <td key={col.key} style={{
+                    ...tdBase,
+                    textAlign: col.align || 'right',
+                    ...(col.sticky ? {
+                      position: 'sticky', left: 0, zIndex: 1,
+                      background: 'var(--surface)', maxWidth: 240,
+                      overflow: 'hidden', textOverflow: 'ellipsis',
+                    } : {}),
+                  }}>
+                    {col.key === 'aiStatus' ? renderAiCell(r) : cellVal(r, col.key)}
+                  </td>
+                ))}
+              </tr>
+            ))}
+            {rows.length === 0 && (
+              <tr><td colSpan={COLS.length} style={{ ...tdBase, textAlign: 'center',
+                color: 'var(--text-muted)', padding: 24 }}>No data</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }
@@ -659,9 +775,10 @@ export default function CampaignReports() {
   const [adLoading, setAdLoading]       = useState(false);
   const [trendData, setTrendData]       = useState([]);
 
-  const [analyses, setAnalyses]   = useState({});
-  const [training, setTraining]   = useState({});
-  const [noteInputs, setNoteInputs] = useState({});
+  const [analyses, setAnalyses]       = useState({});
+  const [rowAnalyses, setRowAnalyses] = useState({});
+  const [training, setTraining]       = useState({});
+  const [noteInputs, setNoteInputs]   = useState({});
 
   // ── Persist: load KPIs + training from IndexedDB ──────────────────────────
   useEffect(() => {
@@ -701,7 +818,7 @@ export default function CampaignReports() {
 
   // ── Drill: campaign → adsets ──────────────────────────────────────────────
   async function fetchAdsetData(campaign, s, e) {
-    setAdsets([]); setTrendData([]);
+    setAdsets([]); setTrendData([]); setRowAnalyses({});
     setAdsetLoading(true);
     try {
       const [ar, tr] = await Promise.all([
@@ -795,6 +912,33 @@ export default function CampaignReports() {
       setAnalyses(prev => ({ ...prev, [id]: data }));
     } catch (e) {
       setAnalyses(prev => ({ ...prev, [id]: { error: e.message } }));
+    }
+  }
+
+  // ── Row-level AI analysis (adset or ad) ──────────────────────────────────
+  async function analyzeRow(row, level) {
+    const id = row.id;
+    setRowAnalyses(prev => ({ ...prev, [id]: { loading: true } }));
+    const campaignId = row.campaignId || selCampaign?.id;
+    const kpis = campaignId ? (kpisMap[campaignId] || {}) : {};
+    const [globalRules, campaignRules] = await Promise.all([
+      dbGetMeta('aiRules_global').catch(() => ''),
+      campaignId ? dbGetMeta(`aiRules_${campaignId}`).catch(() => '') : Promise.resolve(''),
+    ]);
+    try {
+      const res = await fetch(`${BASE}/api/reports/analyze-row`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          row, level, kpis, timeframeLabel: tfLabel,
+          globalRules: globalRules || '', campaignRules: campaignRules || '',
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      setRowAnalyses(prev => ({ ...prev, [id]: data }));
+    } catch (e) {
+      setRowAnalyses(prev => ({ ...prev, [id]: { error: e.message } }));
     }
   }
 
@@ -1079,7 +1223,8 @@ export default function CampaignReports() {
 
           {adsetLoading
             ? <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>Loading adsets…</div>
-            : <DrillTable rows={adsets} onRowClick={openAdset} label="Ad Set" />}
+            : <DrillTable rows={adsets} onRowClick={openAdset} label="Ad Set"
+                rowAnalyses={rowAnalyses} onAnalyzeRow={r => analyzeRow(r, 'adset')} />}
         </div>
       )}
 
@@ -1093,7 +1238,8 @@ export default function CampaignReports() {
           </div>
           {adLoading
             ? <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>Loading ads…</div>
-            : <DrillTable rows={ads} label="Ad" />}
+            : <DrillTable rows={ads} label="Ad"
+                rowAnalyses={rowAnalyses} onAnalyzeRow={r => analyzeRow(r, 'ad')} />}
         </div>
       )}
     </div>
