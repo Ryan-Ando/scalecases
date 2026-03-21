@@ -3,7 +3,7 @@ import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
   Legend, ResponsiveContainer,
 } from 'recharts';
-import { dbGetAll, dbUpsert } from './db.js';
+import { dbGetAll, dbUpsert, dbGetMeta, dbSetMeta } from './db.js';
 
 const BASE = import.meta.env.VITE_API_URL || 'http://localhost:3001';
 
@@ -374,14 +374,133 @@ function DrillTable({ rows, onRowClick, label = 'Ad Set' }) {
   );
 }
 
+// ── AI Rules Modal ────────────────────────────────────────────────────────────
+function AiRulesModal({ campaigns, onClose }) {
+  const [activeTab, setActiveTab] = useState('global');
+  const [rules, setRules]         = useState({});
+  const [savedTab, setSavedTab]   = useState(null);
+
+  // Load all rules on open
+  useEffect(() => {
+    async function load() {
+      const global = await dbGetMeta('aiRules_global').catch(() => '') || '';
+      const map    = { global };
+      for (const c of campaigns) {
+        map[c.id] = await dbGetMeta(`aiRules_${c.id}`).catch(() => '') || '';
+      }
+      setRules(map);
+    }
+    load();
+  }, []);
+
+  async function save(key) {
+    await dbSetMeta(`aiRules_${key}`, rules[key] || '');
+    setSavedTab(key);
+    setTimeout(() => setSavedTab(k => k === key ? null : k), 2000);
+  }
+
+  const tabCampaign = activeTab !== 'global' ? campaigns.find(c => c.id === activeTab) : null;
+  const tabLabel    = activeTab === 'global' ? 'All Campaigns (Global)' : (tabCampaign?.name || '');
+  const tabPlaceholder = activeTab === 'global'
+    ? `Rules that apply to every campaign analysis.\n\nExamples:\n- Flag if CPL exceeds $100\n- AZ campaigns historically have higher CPL in winter\n- Frequency above 3.5 is a red flag — refresh creative\n- We prioritise lead quality over volume\n- A CPM over $20 usually means audience saturation`
+    : `Rules specific to this campaign.\n\nExamples:\n- Target CPL for this state is $80–120\n- This campaign targets personal injury cases\n- Best performing creatives here use testimonials\n- Historically this campaign underperforms in December`;
+
+  const sidebarBtn = (key, label, sub) => (
+    <button key={key} onClick={() => setActiveTab(key)}
+      style={{
+        display: 'block', width: '100%', textAlign: 'left',
+        padding: '9px 14px', border: 'none', borderRadius: 0,
+        background: activeTab === key ? 'var(--green-light)' : 'transparent',
+        borderLeft: activeTab === key ? '3px solid var(--green)' : '3px solid transparent',
+        cursor: 'pointer', fontSize: 13, fontWeight: activeTab === key ? 700 : 400,
+        color: activeTab === key ? 'var(--green-dark)' : 'var(--text)',
+      }}>
+      {label}
+      {sub && <div style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 400, marginTop: 1 }}>{sub}</div>}
+    </button>
+  );
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 1000,
+      display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+      onClick={onClose}>
+      <div style={{ background: 'var(--surface)', borderRadius: 14, width: 720, maxHeight: '88vh',
+        display: 'flex', flexDirection: 'column', boxShadow: '0 12px 40px rgba(0,0,0,0.22)', overflow: 'hidden' }}
+        onClick={e => e.stopPropagation()}>
+
+        {/* Modal header */}
+        <div style={{ padding: '18px 22px', borderBottom: '1px solid var(--border)',
+          display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span style={{ fontSize: 18 }}>🧠</span>
+          <div>
+            <div style={{ fontSize: 16, fontWeight: 700 }}>AI Rules</div>
+            <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+              Standing instructions the AI follows in every analysis. Global rules apply to all campaigns; campaign tabs let you add campaign-specific context.
+            </div>
+          </div>
+          <button onClick={onClose} style={{ marginLeft: 'auto', background: 'none', border: 'none',
+            fontSize: 18, cursor: 'pointer', color: 'var(--text-muted)', padding: '0 4px' }}>✕</button>
+        </div>
+
+        {/* Body: sidebar + editor */}
+        <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
+
+          {/* Sidebar */}
+          <div style={{ width: 210, borderRight: '1px solid var(--border)', overflowY: 'auto',
+            background: 'var(--bg)', flexShrink: 0, paddingTop: 8 }}>
+            {sidebarBtn('global', '🌐 All Campaigns', 'Global rules')}
+            <div style={{ padding: '10px 14px 4px', fontSize: 10, fontWeight: 700,
+              textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-muted)' }}>
+              Per Campaign
+            </div>
+            {campaigns.map(c => {
+              const state = extractState(c.name);
+              return sidebarBtn(c.id, state ? `${state} — ${c.name.slice(0, 22)}` : c.name.slice(0, 28), null);
+            })}
+          </div>
+
+          {/* Editor */}
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', padding: 20, gap: 12, overflow: 'hidden' }}>
+            <div>
+              <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 2 }}>{tabLabel}</div>
+              {activeTab === 'global' && (
+                <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                  These rules are injected into the AI prompt for every campaign analysis.
+                </div>
+              )}
+            </div>
+            <textarea
+              value={rules[activeTab] || ''}
+              onChange={e => setRules(r => ({ ...r, [activeTab]: e.target.value }))}
+              placeholder={tabPlaceholder}
+              style={{ flex: 1, minHeight: 280, padding: '12px 14px', borderRadius: 10, fontSize: 13,
+                border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)',
+                resize: 'none', fontFamily: 'inherit', lineHeight: 1.6 }}
+            />
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+              <button className="btn btn--sm" onClick={onClose}>Close</button>
+              <button className="btn btn--sm"
+                style={{ background: 'var(--green)', color: '#fff', minWidth: 90 }}
+                onClick={() => save(activeTab)}>
+                {savedTab === activeTab ? '✓ Saved' : 'Save Rules'}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
 export default function CampaignReports() {
   const [dateRange, setDateRange] = useState({ start: daysAgo(7), end: todayStr() });
   const { start, end } = dateRange;
   const tfLabel = `${start} – ${end}`;
 
-  const [kpisMap, setKpisMap]     = useState({});
-  const [kpiModal, setKpiModal]   = useState(null);
+  const [kpisMap, setKpisMap]       = useState({});
+  const [kpiModal, setKpiModal]     = useState(null);
+  const [showRules, setShowRules]   = useState(false);
 
   const [campaigns, setCampaigns] = useState([]);
   const [loading, setLoading]     = useState(true);
@@ -509,11 +628,18 @@ export default function CampaignReports() {
     setAnalyses(prev => ({ ...prev, [id]: { loading: true } }));
     const notes = (training[id] || []).slice(0, 8).map(n => ({ type: n.type, text: n.text }));
     const kpis  = kpisMap[id] || {};
+    const [globalRules, campaignRules] = await Promise.all([
+      dbGetMeta('aiRules_global').catch(() => ''),
+      dbGetMeta(`aiRules_${id}`).catch(() => ''),
+    ]);
     try {
       const res  = await fetch(`${BASE}/api/reports/analyze`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ campaign, adsets: adsetsForCampaign, kpis, trainingNotes: notes, timeframeLabel: tfLabel }),
+        body: JSON.stringify({
+          campaign, adsets: adsetsForCampaign, kpis, trainingNotes: notes, timeframeLabel: tfLabel,
+          globalRules: globalRules || '', campaignRules: campaignRules || '',
+        }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
@@ -547,6 +673,11 @@ export default function CampaignReports() {
   return (
     <div style={{ padding: '24px 28px', minHeight: '100%', boxSizing: 'border-box' }}>
 
+      {/* AI Rules modal */}
+      {showRules && (
+        <AiRulesModal campaigns={campaigns} onClose={() => setShowRules(false)} />
+      )}
+
       {/* Per-campaign KPI modal */}
       {kpiModal && (
         <KpiModal
@@ -561,6 +692,11 @@ export default function CampaignReports() {
       {/* Header */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 20, flexWrap: 'wrap' }}>
         <div style={{ fontSize: 20, fontWeight: 700, color: 'var(--text)' }}>Campaign Reports</div>
+        <button className="btn btn--sm" onClick={() => setShowRules(true)}
+          title="Manage AI rules and standing instructions"
+          style={{ fontSize: 13, display: 'flex', alignItems: 'center', gap: 5 }}>
+          🧠 AI Rules
+        </button>
         <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
           {/* Preset buttons */}
           {PRESETS.map(p => {

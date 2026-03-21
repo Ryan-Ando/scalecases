@@ -22,7 +22,8 @@ function fmtVideoTime(videoActions) {
 // Body: { campaign, adsets, kpis, trainingNotes, timeframeLabel }
 // Returns: { rating, summary, insights, recommendations }
 router.post('/analyze', async (req, res) => {
-  const { campaign, adsets = [], kpis = {}, trainingNotes = [], timeframeLabel = '7 days' } = req.body;
+  const { campaign, adsets = [], kpis = {}, trainingNotes = [], timeframeLabel = '7 days',
+          globalRules = '', campaignRules = '' } = req.body;
   if (!campaign) return res.status(400).json({ error: 'campaign required' });
 
   const kpiBlock = [
@@ -74,6 +75,8 @@ KPI TARGETS:
 ${kpiBlock}
 
 ${trainingBlock}
+${globalRules.trim() ? `\nSTANDING RULES (apply to ALL campaigns — follow strictly):\n${globalRules.trim()}` : ''}
+${campaignRules.trim() ? `\nCAMPAIGN-SPECIFIC RULES (for this campaign only):\n${campaignRules.trim()}` : ''}
 
 Return ONLY valid JSON with this exact structure (no markdown, no explanation):
 {
