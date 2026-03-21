@@ -54,6 +54,10 @@ function extractResults(insightRow) {
     if (action) return { results: parseInt(action.value, 10) || 0, resultType: 'Leads' };
   }
 
+  // Broad fallback: any action type containing 'lead'
+  const broadLead = actions.find(a => a.action_type.includes('lead'));
+  if (broadLead) return { results: parseInt(broadLead.value, 10) || 0, resultType: 'Leads' };
+
   // Fall back to computing from spend ÷ cost_per_result if available
   const cpr = parseFloat(insightRow.cost_per_result);
   const spend = parseFloat(insightRow.spend);

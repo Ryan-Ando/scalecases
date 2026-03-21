@@ -61,6 +61,22 @@ function videoSecs(arr) {
   return v ? parseFloat(v.value) || 0 : 0;
 }
 
+// Client-side CPL/CPC fallbacks — computed from available fields when server value is absent
+function clientCpl(row) {
+  if (row.cost_per_result) return row.cost_per_result;
+  const spend = parseFloat(row.spend);
+  const results = row.results;
+  if (results > 0 && spend > 0) return (spend / results).toFixed(2);
+  return null;
+}
+function clientCpc(row) {
+  if (row.cost_per_unique_click) return row.cost_per_unique_click;
+  const spend = parseFloat(row.spend);
+  const clicks = parseFloat(row.unique_clicks);
+  if (clicks > 0 && spend > 0) return (spend / clicks).toFixed(2);
+  return null;
+}
+
 function fmtDate(iso) {
   if (!iso) return '—';
   return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: '2-digit' });
@@ -245,9 +261,9 @@ function getSortVal(r, key) {
     case 'budget':                return parseFloat(r.dailyBudget || r.lifetimeBudget || 0) / 100;
     case 'spend':                 return parseFloat(r.spend || 0);
     case 'results':               return r.results || 0;
-    case 'cost_per_result':       return parseFloat(r.cost_per_result || 0) || 1e9;
+    case 'cost_per_result':       return parseFloat(clientCpl(r) || 0) || 1e9;
     case 'unique_clicks':         return parseFloat(r.unique_clicks || 0);
-    case 'cost_per_unique_click': return parseFloat(r.cost_per_unique_click || 0) || 1e9;
+    case 'cost_per_unique_click': return parseFloat(clientCpc(r) || 0) || 1e9;
     case 'frequency':             return parseFloat(r.frequency || 0);
     case 'cpm':                   return parseFloat(r.cpm || 0);
     case 'unique_ctr':            return parseFloat(r.unique_ctr || 0);
@@ -265,9 +281,9 @@ function cellVal(r, key) {
     case 'budget':                return fmtBudget(r);
     case 'spend':                 return fmt$(r.spend);
     case 'results':               return r.results ?? '—';
-    case 'cost_per_result':       return fmt$(r.cost_per_result);
+    case 'cost_per_result':       return fmt$(clientCpl(r));
     case 'unique_clicks':         return fmtN(r.unique_clicks);
-    case 'cost_per_unique_click': return fmt$(r.cost_per_unique_click);
+    case 'cost_per_unique_click': return fmt$(clientCpc(r));
     case 'frequency':             return fmtN(r.frequency);
     case 'cpm':                   return fmt$(r.cpm);
     case 'unique_ctr':            return fmtPct(r.unique_ctr);
@@ -1129,7 +1145,7 @@ export default function CampaignReports() {
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16 }}>
                     <StatBox label="Spent"  value={fmt$(c.spend)} />
                     <StatBox label="Leads"  value={c.results ?? '—'} />
-                    <StatBox label="CPL"    value={fmt$(c.cost_per_result)} />
+                    <StatBox label="CPL"    value={fmt$(clientCpl(c))} />
                     <StatBox label="Clicks" value={fmtN(c.unique_clicks)} />
                     <StatBox label="CPM"    value={fmt$(c.cpm)} />
                     <StatBox label="Freq"   value={fmtN(c.frequency)} />
@@ -1224,7 +1240,7 @@ export default function CampaignReports() {
             padding: '14px 18px', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 10 }}>
             <StatBox label="Spent"  value={fmt$(selCampaign.spend)} />
             <StatBox label="Leads"  value={selCampaign.results ?? '—'} />
-            <StatBox label="CPL"    value={fmt$(selCampaign.cost_per_result)} />
+            <StatBox label="CPL"    value={fmt$(clientCpl(selCampaign))} />
             <StatBox label="Clicks" value={fmtN(selCampaign.unique_clicks)} />
             <StatBox label="CPM"    value={fmt$(selCampaign.cpm)} />
             <StatBox label="CTR"    value={fmtPct(selCampaign.unique_ctr)} />
