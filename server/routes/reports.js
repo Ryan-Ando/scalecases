@@ -236,13 +236,13 @@ Never suggest pausing or directly editing ads — only provide observations and 
   try {
     const message = await client.messages.create({
       model: 'claude-opus-4-6',
-      max_tokens: 500,
+      max_tokens: 1024,
       messages: [{ role: 'user', content: prompt }],
     });
 
     const text = message.content[0]?.text || '';
     const jsonMatch = text.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) throw new Error('No JSON in AI response');
+    if (!jsonMatch) throw new Error(`No JSON in AI response: ${text.slice(0, 200)}`);
     const result = JSON.parse(jsonMatch[0]);
     if (!result.rating || !result.summary) throw new Error('Invalid AI response structure');
     res.json(result);
