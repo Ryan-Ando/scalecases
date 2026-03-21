@@ -830,6 +830,10 @@ export default function CampaignReports() {
       for (const id of Object.keys(map)) map[id].sort((a, b) => b.ts - a.ts).splice(20);
       setTraining(map);
     }).catch(() => {});
+
+    dbGetMeta('campaignAnalyses').then(saved => {
+      if (saved && typeof saved === 'object') setAnalyses(saved);
+    }).catch(() => {});
   }, []);
 
   // ── Load campaigns ────────────────────────────────────────────────────────
@@ -858,7 +862,9 @@ setCampaigns(data.filter(c => c.effectiveStatus === 'ACTIVE' || c.status === 'AC
 
   // ── Drill: campaign → adsets ──────────────────────────────────────────────
   async function fetchAdsetData(campaign, s, e) {
-    setAdsets([]); setTrendData([]); setRowAnalyses({});
+    setAdsets([]); setTrendData([]);
+    const savedRows = await dbGetMeta(`rowAnalyses_${campaign.id}`).catch(() => null);
+    setRowAnalyses(savedRows && typeof savedRows === 'object' ? savedRows : {});
     setAdsetLoading(true);
     try {
       const [ar, tr] = await Promise.all([
@@ -949,7 +955,11 @@ setCampaigns(data.filter(c => c.effectiveStatus === 'ACTIVE' || c.status === 'AC
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
-      setAnalyses(prev => ({ ...prev, [id]: data }));
+      setAnalyses(prev => {
+        const next = { ...prev, [id]: data };
+        dbSetMeta('campaignAnalyses', next).catch(() => {});
+        return next;
+      });
     } catch (e) {
       setAnalyses(prev => ({ ...prev, [id]: { error: e.message } }));
     }
@@ -976,7 +986,12 @@ setCampaigns(data.filter(c => c.effectiveStatus === 'ACTIVE' || c.status === 'AC
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
-      setRowAnalyses(prev => ({ ...prev, [id]: data }));
+      setRowAnalyses(prev => {
+        const next = { ...prev, [id]: data };
+        const cid = selCampaign?.id;
+        if (cid) dbSetMeta(`rowAnalyses_${cid}`, next).catch(() => {});
+        return next;
+      });
     } catch (e) {
       setRowAnalyses(prev => ({ ...prev, [id]: { error: e.message } }));
     }
@@ -1011,6 +1026,8 @@ setCampaigns(data.filter(c => c.effectiveStatus === 'ACTIVE' || c.status === 'AC
       setRowAnalyses(prev => {
         const next = { ...prev };
         for (const item of data) next[item.id] = item;
+        const cid = selCampaign?.id;
+        if (cid) dbSetMeta(`rowAnalyses_${cid}`, next).catch(() => {});
         return next;
       });
     } catch (e) {
