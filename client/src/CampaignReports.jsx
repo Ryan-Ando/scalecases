@@ -304,10 +304,17 @@ function DeliveryBadge({ status }) {
   );
 }
 
+const RATING_MAP = {
+  good:           ['Good',           '#16a34a', '#f0fdf4'],
+  leave_on:       ['Leave On',       '#2563eb', '#eff6ff'],
+  needs_attention:['Needs Attention', '#f59e0b', '#fffbeb'],
+  underperforming:['Underperforming', '#ea580c', '#fff7ed'],
+  turn_off:       ['Turn Off',        '#dc2626', '#fef2f2'],
+};
+
 function RatingBadge({ rating }) {
   if (!rating) return null;
-  const map = { good: ['Good', '#16a34a', '#f0fdf4'], warning: ['Needs Attention', '#f59e0b', '#fffbeb'], poor: ['Underperforming', '#dc2626', '#fef2f2'] };
-  const [label, color, bg] = map[rating] || ['Unknown', '#94a3b8', '#f8fafc'];
+  const [label, color, bg] = RATING_MAP[rating] || ['Unknown', '#94a3b8', '#f8fafc'];
   return (
     <span style={{ fontSize: 11, fontWeight: 700, padding: '3px 10px', borderRadius: 20,
       color, background: bg, border: `1px solid ${color}44` }}>{label}</span>
@@ -315,9 +322,8 @@ function RatingBadge({ rating }) {
 }
 
 function ratingColors(rating) {
-  if (rating === 'good')    return { border: '#16a34a', bg: '#f0fdf4' };
-  if (rating === 'warning') return { border: '#f59e0b', bg: '#fffbeb' };
-  if (rating === 'poor')    return { border: '#dc2626', bg: '#fef2f2' };
+  const entry = RATING_MAP[rating];
+  if (entry) return { border: entry[1], bg: entry[2] };
   return { border: 'var(--border)', bg: 'var(--surface)' };
 }
 
@@ -509,7 +515,7 @@ function DrillTable({ rows, onRowClick, label = 'Ad Set', rowAnalyses = {}, onAn
       const ratingOrder = r => {
         const a = rowAnalyses[r.id];
         if (!a || a.loading || a.error) return 3;
-        return { good: 0, warning: 1, poor: 2 }[a.rating] ?? 3;
+        return { good: 0, leave_on: 1, needs_attention: 2, underperforming: 3, turn_off: 4 }[a.rating] ?? 5;
       };
       return arr.sort((a, b) => {
         const av = ratingOrder(a), bv = ratingOrder(b);

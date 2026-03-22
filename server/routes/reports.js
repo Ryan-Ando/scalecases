@@ -80,13 +80,19 @@ ${campaignRules.trim() ? `\nCAMPAIGN-SPECIFIC RULES (for this campaign only):\n$
 
 Return ONLY valid JSON with this exact structure (no markdown, no explanation):
 {
-  "rating": "good" | "warning" | "poor",
+  "rating": "good" | "leave_on" | "needs_attention" | "underperforming" | "turn_off",
   "summary": "2–3 sentence plain-English summary referencing actual numbers",
   "insights": ["specific data-driven insight", "another insight", "another insight"],
   "recommendations": ["one actionable recommendation", "another recommendation"]
 }
 
-Rating guide: "good" = on target or better, "warning" = mixed/needs attention, "poor" = significantly off target, not spending, or high CPL.
+Rating guide (pick exactly one):
+- "good"            — Hitting or beating KPI targets. Performing well, keep running.
+- "leave_on"        — CPL is acceptable but secondary stats (CTR, frequency, CPM, clicks) are weak or declining. Leave running for now but monitor.
+- "needs_attention" — Stats were good but showing signs of decline; on the edge. Watching to see if it recovers.
+- "underperforming" — Below targets but the call to turn it off is unclear — context-dependent, not objectively bad yet.
+- "turn_off"        — Objectively poor performance. High CPL, weak engagement, no signs of recovery. Should be turned off.
+If trend data is present, weight recent performance (last 3d and 7d) more heavily than all-time.
 Never suggest pausing or directly editing ads — only provide observations and advice.`;
 
   try {
@@ -152,9 +158,15 @@ ${levelLabel.toUpperCase()}S TO ANALYZE:
 ${rowsBlock}
 
 Return ONLY a valid JSON array with exactly ${rows.length} entries — one per ${levelLabel.toLowerCase()} — using their exact IDs (no markdown, no explanation):
-[{"id":"<exact id>","rating":"good"|"warning"|"poor","summary":"1–2 sentences with actual numbers","insights":["insight"],"recommendations":["recommendation"]}]
+[{"id":"<exact id>","rating":"good"|"leave_on"|"needs_attention"|"underperforming"|"turn_off","summary":"1–2 sentences with actual numbers","insights":["insight"],"recommendations":["recommendation"]}]
 
-Rating guide: "good" = on target or better, "warning" = mixed/needs attention, "poor" = significantly off target or high CPL. Where trend data is available, weight recent performance (last 3d and 7d) more heavily than all-time — an ad with good all-time CPL but sharply worsening recent CPL should be rated "warning" or "poor".
+Rating guide (pick exactly one per row):
+- "good"            — Hitting or beating KPI targets. Performing well, keep running.
+- "leave_on"        — CPL is acceptable but secondary stats (CTR, frequency, CPM, clicks) are weak or declining. Leave running for now but monitor.
+- "needs_attention" — Stats were good but showing signs of decline; on the edge. Watching to see if it recovers.
+- "underperforming" — Below targets but the call to turn it off is unclear — context-dependent, not objectively bad yet.
+- "turn_off"        — Objectively poor performance. High CPL, weak engagement, no signs of recovery. Should be turned off.
+If trend data is present, weight recent performance (last 3d and 7d) more heavily than all-time.
 Never suggest pausing or directly editing ads.`;
 
   try {
@@ -224,13 +236,19 @@ ${campaignRules.trim() ? `\nCAMPAIGN-SPECIFIC RULES (for this campaign only):\n$
 
 Return ONLY valid JSON with this exact structure (no markdown, no explanation):
 {
-  "rating": "good" | "warning" | "poor",
+  "rating": "good" | "leave_on" | "needs_attention" | "underperforming" | "turn_off",
   "summary": "2–3 sentence plain-English summary referencing actual numbers",
   "insights": ["specific data-driven insight", "another insight"],
   "recommendations": ["one actionable recommendation", "another recommendation"]
 }
 
-Rating guide: "good" = on target or better, "warning" = mixed/needs attention, "poor" = significantly off target or high CPL. If trend data is present, weight recent performance (last 3d and 7d) more heavily than all-time averages when assigning the rating — an ad with a good all-time CPL but sharply rising recent CPL should be rated "warning" or "poor".
+Rating guide (pick exactly one):
+- "good"            — Hitting or beating KPI targets. Performing well, keep running.
+- "leave_on"        — CPL is acceptable but secondary stats (CTR, frequency, CPM, clicks) are weak or declining. Leave running for now but monitor.
+- "needs_attention" — Stats were good but showing signs of decline; on the edge. Watching to see if it recovers.
+- "underperforming" — Below targets but the call to turn it off is unclear — context-dependent, not objectively bad yet.
+- "turn_off"        — Objectively poor performance. High CPL, weak engagement, no signs of recovery. Should be turned off.
+If trend data is present, weight recent performance (last 3d and 7d) more heavily than all-time.
 Never suggest pausing or directly editing ads — only provide observations and advice.`;
 
   try {
