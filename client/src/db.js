@@ -115,7 +115,8 @@ export async function dbClearAll(clearImport = false) {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
     req.onsuccess = e => {
       const db = e.target.result;
-      const stores = ['ghlContacts', 'fbDailyInsights', 'fbAds', 'adDailyInsights', 'meta'];
+      // 'meta' intentionally excluded — it holds user-authored AI rules and analyses that should survive syncs
+      const stores = ['ghlContacts', 'fbDailyInsights', 'fbAds', 'adDailyInsights'];
       if (clearImport) stores.push('sheetImport');
       const tx = db.transaction(stores, 'readwrite');
       for (const s of stores) tx.objectStore(s).clear();
