@@ -495,11 +495,13 @@ function cellVal(r, key) {
   }
 }
 
-function DrillTable({ rows, onRowClick, label = 'Ad Set', rowAnalyses = {}, onAnalyzeRow, dailyRows = [], level = 'adset' }) {
+function DrillTable({ rows, onRowClick, label = 'Ad Set', rowAnalyses = {}, onAnalyzeRow, dailyRows = [], level = 'adset', toggleable = false }) {
   const [sortKey, setSortKey]         = useState('_default');
   const [sortDir, setSortDir]         = useState('asc');
   const [popup, setPopup]             = useState(null);
   const [adDailyCache, setAdDailyCache] = useState({}); // adId → { loading, rows, error }
+  const [statusOverrides, setStatusOverrides] = useState({}); // id → 'ACTIVE'|'PAUSED'
+  const [togglingIds, setTogglingIds]         = useState(new Set());
 
   const sorted = useMemo(() => {
     const arr = [...rows];
@@ -555,6 +557,48 @@ function DrillTable({ rows, onRowClick, label = 'Ad Set', rowAnalyses = {}, onAn
       .then(data => setAdDailyCache(prev => ({ ...prev, [popup]: { rows: Array.isArray(data) ? data : [] } })))
       .catch(e  => setAdDailyCache(prev => ({ ...prev, [popup]: { error: e.message, rows: [] } })));
   }, [level, popup, adDailyCache, dailyRows]);
+
+  async function handleToggle(e, r) {
+    e.stopPropagation();
+    const current = statusOverrides[r.id] || r.status;
+    const next    = current === 'ACTIVE' ? 'PAUSED' : 'ACTIVE';
+    const action  = next === 'PAUSED' ? 'Pause' : 'Enable';
+    if (!window.confirm(`${action} "${r.name}"?`)) return;
+    setTogglingIds(prev => new Set([...prev, r.id]));
+    setStatusOverrides(prev => ({ ...prev, [r.id]: next }));
+    try {
+      const res  = await fetch(`${BASE}/api/facebook/${level}/${r.id}/status`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: next }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+    } catch (err) {
+      setStatusOverrides(prev => { const n = { ...prev }; delete n[r.id]; return n; });
+      alert(`Failed: ${err.message}`);
+    } finally {
+      setTogglingIds(prev => { const n = new Set(prev); n.delete(r.id); return n; });
+    }
+  }
+
+  function renderStatusCell(r) {
+    const rawStatus = statusOverrides[r.id] || r.status;
+    const isPaused  = rawStatus !== 'ACTIVE';
+    const isToggling = togglingIds.has(r.id);
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+        <DeliveryBadge status={statusOverrides[r.id] || r.effectiveStatus || r.status} />
+        {toggleable && (
+          <button className="btn btn--sm" disabled={isToggling}
+            onClick={e => handleToggle(e, r)}
+            title={`${isPaused ? 'Enable' : 'Pause'} this ${level}`}
+            style={{ fontSize: 10, padding: '1px 6px', minWidth: 22 }}>
+            {isToggling ? '…' : isPaused ? '▶' : '⏸'}
+          </button>
+        )}
+      </div>
+    );
+  }
 
   function handleAiClick(e, r) {
     e.stopPropagation();
@@ -724,7 +768,9 @@ function DrillTable({ rows, onRowClick, label = 'Ad Set', rowAnalyses = {}, onAn
                       overflow: 'hidden', textOverflow: 'ellipsis',
                     } : {}),
                   }}>
-                    {col.key === 'aiStatus' ? renderAiCell(r) : cellVal(r, col.key)}
+                    {col.key === 'aiStatus' ? renderAiCell(r)
+                      : col.key === 'status'  ? renderStatusCell(r)
+                      : cellVal(r, col.key)}
                   </td>
                 ))}
               </tr>
@@ -1031,6 +1077,9 @@ export default function CampaignReports() {
   const [noteInputs, setNoteInputs]         = useState({});
   const [adDailyInsights, setAdDailyInsights] = useState([]);
 
+  const [campaignStatusOverrides, setCampaignStatusOverrides] = useState({}); // id → 'ACTIVE'|'PAUSED'
+  const [togglingCampaigns, setTogglingCampaigns]             = useState(new Set());
+
   // ── Persist: load KPIs + training from IndexedDB ──────────────────────────
   useEffect(() => {
     dbGetAll('campaignKpis').then(rows => {
@@ -1301,6 +1350,29 @@ setCampaigns(data.filter(c => c.effectiveStatus === 'ACTIVE' || c.status === 'AC
     setTraining(prev => ({ ...prev, [campaignId]: [entry, ...(prev[campaignId] || [])].slice(0, 20) }));
   }
 
+  // ── Campaign status toggle ────────────────────────────────────────────────
+  async function toggleCampaign(c) {
+    const current = campaignStatusOverrides[c.id] || c.status;
+    const next    = current === 'ACTIVE' ? 'PAUSED' : 'ACTIVE';
+    const action  = next === 'PAUSED' ? 'Pause' : 'Enable';
+    if (!window.confirm(`${action} campaign "${c.name}"?`)) return;
+    setTogglingCampaigns(prev => new Set([...prev, c.id]));
+    setCampaignStatusOverrides(prev => ({ ...prev, [c.id]: next }));
+    try {
+      const res  = await fetch(`${BASE}/api/facebook/campaign/${c.id}/status`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: next }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+    } catch (e) {
+      setCampaignStatusOverrides(prev => { const n = { ...prev }; delete n[c.id]; return n; });
+      alert(`Failed: ${e.message}`);
+    } finally {
+      setTogglingCampaigns(prev => { const n = new Set(prev); n.delete(c.id); return n; });
+    }
+  }
+
   // ── Navigation ────────────────────────────────────────────────────────────
   function navTo(level) {
     if (level === 'campaigns') { setView('campaigns'); setSelCampaign(null); setSelAdset(null); }
@@ -1417,7 +1489,13 @@ setCampaigns(data.filter(c => c.effectiveStatus === 'ACTIVE' || c.status === 'AC
                         style={{ fontSize: 11, color: hasKpis ? 'var(--green-dark)' : 'var(--text-muted)' }}>
                         ⚙ KPIs{hasKpis ? ' ✓' : ''}
                       </button>
-                      <DeliveryBadge status={c.effectiveStatus || c.status} />
+                      <DeliveryBadge status={campaignStatusOverrides[c.id] || c.effectiveStatus || c.status} />
+                      <button className="btn btn--sm" disabled={togglingCampaigns.has(c.id)}
+                        onClick={() => toggleCampaign(c)}
+                        title={(campaignStatusOverrides[c.id] || c.status) === 'ACTIVE' ? 'Pause campaign' : 'Enable campaign'}
+                        style={{ fontSize: 11, padding: '2px 8px', minWidth: 28 }}>
+                        {togglingCampaigns.has(c.id) ? '…' : (campaignStatusOverrides[c.id] || c.status) === 'ACTIVE' ? '⏸' : '▶'}
+                      </button>
                     </div>
                   </div>
 
@@ -1572,7 +1650,7 @@ setCampaigns(data.filter(c => c.effectiveStatus === 'ACTIVE' || c.status === 'AC
           {adsetLoading
             ? <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>Loading adsets…</div>
             : <DrillTable rows={adsets} onRowClick={openAdset} label="Ad Set" level="adset"
-                rowAnalyses={rowAnalyses} onAnalyzeRow={r => analyzeRow(r, 'adset')} />}
+                rowAnalyses={rowAnalyses} onAnalyzeRow={r => analyzeRow(r, 'adset')} toggleable />}
         </div>
       )}
 
@@ -1611,7 +1689,7 @@ setCampaigns(data.filter(c => c.effectiveStatus === 'ACTIVE' || c.status === 'AC
                 </div>
               )}
               <DrillTable rows={ads} label="Ad" level="ad" dailyRows={adDailyInsights}
-                rowAnalyses={rowAnalyses} onAnalyzeRow={r => analyzeRow(r, 'ad')} />
+                rowAnalyses={rowAnalyses} onAnalyzeRow={r => analyzeRow(r, 'ad')} toggleable />
             </>
           )}
         </div>
