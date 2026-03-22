@@ -809,11 +809,29 @@ export default function CampaignReports() {
   // Accordion data
   const [allAdsets, setAllAdsets] = useState({});     // campaignId → adsets[]
   const [allAds, setAllAds]       = useState({});     // adsetId → ads[]
-  const [expandedCampaigns, setExpandedCampaigns] = useState(new Set());
-  const [expandedAdsets, setExpandedAdsets]       = useState(new Set());
-  const [showPausedCampaigns, setShowPausedCampaigns] = useState(false);
-  const [showPausedAdsets, setShowPausedAdsets]   = useState({}); // campaignId → bool
-  const [showPausedAds, setShowPausedAds]         = useState({}); // adsetId → bool
+
+  // Persist expanded/paused state across refreshes and date changes
+  const [expandedCampaigns, setExpandedCampaigns] = useState(() => {
+    try { return new Set(JSON.parse(localStorage.getItem('sc_expandedCampaigns') || '[]')); } catch { return new Set(); }
+  });
+  const [expandedAdsets, setExpandedAdsets] = useState(() => {
+    try { return new Set(JSON.parse(localStorage.getItem('sc_expandedAdsets') || '[]')); } catch { return new Set(); }
+  });
+  const [showPausedCampaigns, setShowPausedCampaigns] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('sc_showPausedCampaigns') || 'false'); } catch { return false; }
+  });
+  const [showPausedAdsets, setShowPausedAdsets] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('sc_showPausedAdsets') || '{}'); } catch { return {}; }
+  });
+  const [showPausedAds, setShowPausedAds] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('sc_showPausedAds') || '{}'); } catch { return {}; }
+  });
+
+  useEffect(() => { localStorage.setItem('sc_expandedCampaigns',  JSON.stringify([...expandedCampaigns])); }, [expandedCampaigns]);
+  useEffect(() => { localStorage.setItem('sc_expandedAdsets',     JSON.stringify([...expandedAdsets])); },   [expandedAdsets]);
+  useEffect(() => { localStorage.setItem('sc_showPausedCampaigns',JSON.stringify(showPausedCampaigns)); },   [showPausedCampaigns]);
+  useEffect(() => { localStorage.setItem('sc_showPausedAdsets',   JSON.stringify(showPausedAdsets)); },      [showPausedAdsets]);
+  useEffect(() => { localStorage.setItem('sc_showPausedAds',      JSON.stringify(showPausedAds)); },         [showPausedAds]);
   const [sortKey, setSortKey] = useState('_default');
   const [sortDir, setSortDir] = useState('asc');
 
@@ -869,7 +887,6 @@ export default function CampaignReports() {
   // ── Load all data ─────────────────────────────────────────────────────────
   async function loadAll() {
     setLoading(true); setError('');
-    setAllAdsets({}); setAllAds({});
     try {
       const res  = await fetch(`${BASE}/api/facebook/campaigns?start=${start}&end=${end}`);
       const data = await res.json();
