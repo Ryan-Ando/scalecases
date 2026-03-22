@@ -305,11 +305,12 @@ function DeliveryBadge({ status }) {
 }
 
 const RATING_MAP = {
-  good:           ['Good',           '#16a34a', '#f0fdf4'],
-  leave_on:       ['Leave On',       '#2563eb', '#eff6ff'],
-  needs_attention:['Needs Attention', '#f59e0b', '#fffbeb'],
-  underperforming:['Underperforming', '#ea580c', '#fff7ed'],
-  turn_off:       ['Turn Off',        '#dc2626', '#fef2f2'],
+  good:           ['Good',            '#16a34a', '#f0fdf4'],
+  leave_on:       ['Leave On',        '#2563eb', '#eff6ff'],
+  needs_attention:['Needs Attention',  '#f59e0b', '#fffbeb'],
+  underperforming:['Underperforming',  '#ea580c', '#fff7ed'],
+  turn_off:       ['Turn Off',         '#dc2626', '#fef2f2'],
+  wait:           ['Wait',             '#64748b', '#f1f5f9'],
 };
 
 function RatingBadge({ rating }) {
@@ -515,7 +516,7 @@ function DrillTable({ rows, onRowClick, label = 'Ad Set', rowAnalyses = {}, onAn
       const ratingOrder = r => {
         const a = rowAnalyses[r.id];
         if (!a || a.loading || a.error) return 3;
-        return { good: 0, leave_on: 1, needs_attention: 2, underperforming: 3, turn_off: 4 }[a.rating] ?? 5;
+        return { good: 0, leave_on: 1, needs_attention: 2, underperforming: 3, turn_off: 4, wait: 5 }[a.rating] ?? 6;
       };
       return arr.sort((a, b) => {
         const av = ratingOrder(a), bv = ratingOrder(b);

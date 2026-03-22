@@ -80,7 +80,7 @@ ${campaignRules.trim() ? `\nCAMPAIGN-SPECIFIC RULES (for this campaign only):\n$
 
 Return ONLY valid JSON with this exact structure (no markdown, no explanation):
 {
-  "rating": "good" | "leave_on" | "needs_attention" | "underperforming" | "turn_off",
+  "rating": "good" | "leave_on" | "needs_attention" | "underperforming" | "turn_off" | "wait",
   "summary": "2–3 sentence plain-English summary referencing actual numbers",
   "insights": ["specific data-driven insight", "another insight", "another insight"],
   "recommendations": ["one actionable recommendation", "another recommendation"]
@@ -92,6 +92,7 @@ Rating guide (pick exactly one):
 - "needs_attention" — Stats were good but showing signs of decline; on the edge. Watching to see if it recovers.
 - "underperforming" — Below targets but the call to turn it off is unclear — context-dependent, not objectively bad yet.
 - "turn_off"        — Objectively poor performance. High CPL, weak engagement, no signs of recovery. Should be turned off.
+- "wait"            — Spent under $50 with no leads yet. Too early to judge — use this rating only when spend is below $50 AND leads = 0. Once a lead exists, use one of the other ratings regardless of spend.
 If trend data is present, weight recent performance (last 3d and 7d) more heavily than all-time.
 Never suggest pausing or directly editing ads — only provide observations and advice.`;
 
@@ -158,7 +159,7 @@ ${levelLabel.toUpperCase()}S TO ANALYZE:
 ${rowsBlock}
 
 Return ONLY a valid JSON array with exactly ${rows.length} entries — one per ${levelLabel.toLowerCase()} — using their exact IDs (no markdown, no explanation):
-[{"id":"<exact id>","rating":"good"|"leave_on"|"needs_attention"|"underperforming"|"turn_off","summary":"1–2 sentences with actual numbers","insights":["insight"],"recommendations":["recommendation"]}]
+[{"id":"<exact id>","rating":"good"|"leave_on"|"needs_attention"|"underperforming"|"turn_off"|"wait","summary":"1–2 sentences with actual numbers","insights":["insight"],"recommendations":["recommendation"]}]
 
 Rating guide (pick exactly one per row):
 - "good"            — Hitting or beating KPI targets. Performing well, keep running.
@@ -166,6 +167,7 @@ Rating guide (pick exactly one per row):
 - "needs_attention" — Stats were good but showing signs of decline; on the edge. Watching to see if it recovers.
 - "underperforming" — Below targets but the call to turn it off is unclear — context-dependent, not objectively bad yet.
 - "turn_off"        — Objectively poor performance. High CPL, weak engagement, no signs of recovery. Should be turned off.
+- "wait"            — Spent under $50 with no leads yet. Too early to judge — use this rating only when spend is below $50 AND leads = 0. Once a lead exists, use one of the other ratings regardless of spend.
 If trend data is present, weight recent performance (last 3d and 7d) more heavily than all-time.
 Never suggest pausing or directly editing ads.`;
 
@@ -236,7 +238,7 @@ ${campaignRules.trim() ? `\nCAMPAIGN-SPECIFIC RULES (for this campaign only):\n$
 
 Return ONLY valid JSON with this exact structure (no markdown, no explanation):
 {
-  "rating": "good" | "leave_on" | "needs_attention" | "underperforming" | "turn_off",
+  "rating": "good" | "leave_on" | "needs_attention" | "underperforming" | "turn_off" | "wait",
   "summary": "2–3 sentence plain-English summary referencing actual numbers",
   "insights": ["specific data-driven insight", "another insight"],
   "recommendations": ["one actionable recommendation", "another recommendation"]
@@ -248,6 +250,7 @@ Rating guide (pick exactly one):
 - "needs_attention" — Stats were good but showing signs of decline; on the edge. Watching to see if it recovers.
 - "underperforming" — Below targets but the call to turn it off is unclear — context-dependent, not objectively bad yet.
 - "turn_off"        — Objectively poor performance. High CPL, weak engagement, no signs of recovery. Should be turned off.
+- "wait"            — Spent under $50 with no leads yet. Too early to judge — use this rating only when spend is below $50 AND leads = 0. Once a lead exists, use one of the other ratings regardless of spend.
 If trend data is present, weight recent performance (last 3d and 7d) more heavily than all-time.
 Never suggest pausing or directly editing ads — only provide observations and advice.`;
 
