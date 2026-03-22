@@ -110,7 +110,7 @@ function computeAdStats(_, dailyRows) {
     const spend       = subset.reduce((s, r) => s + (parseFloat(r.spend) || 0), 0);
     const leads       = subset.reduce((s, r) => s + getLeads(r), 0);
     const impressions = subset.reduce((s, r) => s + (parseFloat(r.impressions) || 0), 0);
-    const clicks      = subset.reduce((s, r) => s + (parseFloat(r.unique_clicks) || 0), 0);
+    const clicks      = subset.reduce((s, r) => s + (parseFloat(r.unique_inline_link_clicks ?? r.unique_clicks) || 0), 0);
     const days        = subset.length;
     return {
       spend, leads, impressions, clicks, days,
@@ -129,7 +129,7 @@ function computeAdStats(_, dailyRows) {
     spend:       parseFloat(r.spend) || 0,
     leads:       getLeads(r),
     impressions: parseFloat(r.impressions) || 0,
-    clicks:      parseFloat(r.unique_clicks) || 0,
+    clicks:      parseFloat(r.unique_inline_link_clicks ?? r.unique_clicks) || 0,
   }));
   return {
     all:    sumPeriod(rows),
