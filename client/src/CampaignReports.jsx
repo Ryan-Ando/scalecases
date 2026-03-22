@@ -1118,6 +1118,8 @@ export default function CampaignReports() {
     letterSpacing: '0.05em', color: 'var(--text-muted)', borderBottom: '2px solid var(--border)',
     whiteSpace: 'nowrap', background: 'var(--surface)', position: 'sticky', top: 0,
     cursor: 'pointer', userSelect: 'none', textAlign: col.align || 'right',
+    zIndex: col.key === 'name' ? 12 : 10,
+    ...(col.key === 'name' ? { left: 36 } : {}),
   });
 
   const tdBase = {
@@ -1317,6 +1319,7 @@ export default function CampaignReports() {
                 ...campRowBase,
                 textAlign: col.align || 'right',
                 ...extraStyle,
+                ...(col.sticky ? { position: 'sticky', left: 36, zIndex: 2 } : {}),
               }}>
                 {campaignCellContent(col)}
               </td>
@@ -1367,7 +1370,10 @@ export default function CampaignReports() {
             {isExpanded ? '▾' : '▸'}
           </td>
           {COLS.map(col => (
-            <td key={col.key} style={{ ...tdBase, textAlign: col.align || 'right' }}>
+            <td key={col.key} style={{
+              ...tdBase, textAlign: col.align || 'right',
+              ...(col.sticky ? { position: 'sticky', left: 36, zIndex: 1 } : {}),
+            }}>
               {col.key === 'aiStatus' ? renderAiCell(a, 'adset', campaignId)
                 : col.key === 'status' ? renderStatusCell(a, 'adset')
                 : col.key === 'name' ? <span style={{ fontWeight: 600, paddingLeft: 4 }} title={a.name}>{a.name}</span>
@@ -1410,10 +1416,20 @@ export default function CampaignReports() {
         {/* No chevron for ads */}
         <td style={{ ...adTdBase, paddingLeft: 36, width: 36 }} />
         {COLS.map(col => (
-          <td key={col.key} style={{ ...adTdBase, textAlign: col.align || 'right' }}>
+          <td key={col.key} style={{
+            ...adTdBase, textAlign: col.align || 'right',
+            ...(col.sticky ? { position: 'sticky', left: 36, zIndex: 1, background: '#f8fafc' } : {}),
+          }}>
             {col.key === 'aiStatus' ? renderAiCell(ad, 'ad', campaignId)
               : col.key === 'status' ? renderStatusCell(ad, 'ad')
-              : col.key === 'name' ? <span title={ad.name}>{ad.name}</span>
+              : col.key === 'name'
+                ? <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <span title={ad.name} style={{ overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 180 }}>{ad.name}</span>
+                    <button className="btn btn--sm"
+                      onClick={e => { e.stopPropagation(); window.open(`${BASE}/api/facebook/ad/${ad.id}/preview`, '_blank'); }}
+                      title="Preview ad creative"
+                      style={{ fontSize: 10, padding: '1px 6px', flexShrink: 0 }}>👁 Preview</button>
+                  </div>
               : cellVal(ad, col.key)}
           </td>
         ))}
@@ -1565,7 +1581,7 @@ export default function CampaignReports() {
             <thead>
               <tr>
                 <th style={{ width: 36, padding: '9px 4px', borderBottom: '2px solid var(--border)',
-                  background: 'var(--surface)', position: 'sticky', top: 0 }} />
+                  background: 'var(--surface)', position: 'sticky', top: 0, left: 0, zIndex: 12 }} />
                 {COLS.map(col => (
                   <th key={col.key} style={thStyle(col)} onClick={() => handleSort(col.key)}
                     title={`Sort by ${col.label}`}>

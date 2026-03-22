@@ -462,6 +462,25 @@ router.post('/adset/:id/status', async (req, res) => {
   }
 });
 
+// GET /api/facebook/ad/:id/preview — opens an HTML page with the FB ad preview iframe
+router.get('/ad/:id/preview', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const r = await fetch(
+      `${FB_API}/${id}/previews?ad_format=MOBILE_FEED_STANDARD&access_token=${token()}`
+    );
+    const json = await r.json();
+    if (json.error) throw new Error(json.error.message);
+    const iframeBody = json.data?.[0]?.body;
+    if (!iframeBody) throw new Error('No preview available for this ad');
+    res.send(`<!DOCTYPE html><html><head><title>Ad Preview</title>
+<style>body{margin:0;display:flex;justify-content:center;align-items:flex-start;padding:32px;background:#f0f2f5;min-height:100vh;box-sizing:border-box;}
+</style></head><body>${iframeBody}</body></html>`);
+  } catch (err) {
+    res.status(500).send(`<h3 style="font-family:sans-serif;color:#dc2626;padding:32px">Preview unavailable: ${err.message}</h3>`);
+  }
+});
+
 // POST /api/facebook/campaign/:id/status  body: { status: 'ACTIVE'|'PAUSED' }
 router.post('/campaign/:id/status', async (req, res) => {
   try {
