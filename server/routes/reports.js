@@ -4,6 +4,41 @@ import Anthropic from '@anthropic-ai/sdk';
 const router = Router();
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
+// Extracts the first complete JSON array from text using bracket depth tracking.
+// Avoids greedy-regex pitfalls where trailing commentary contains extra brackets.
+function extractJsonArray(text) {
+  const start = text.indexOf('[');
+  if (start === -1) return null;
+  let depth = 0, inStr = false, escape = false;
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (escape)            { escape = false; continue; }
+    if (ch === '\\' && inStr) { escape = true; continue; }
+    if (ch === '"')        { inStr = !inStr; continue; }
+    if (inStr)             continue;
+    if (ch === '[' || ch === '{') depth++;
+    if (ch === ']' || ch === '}') { depth--; if (depth === 0) return text.slice(start, i + 1); }
+  }
+  return null;
+}
+
+// Same for a single JSON object.
+function extractJsonObject(text) {
+  const start = text.indexOf('{');
+  if (start === -1) return null;
+  let depth = 0, inStr = false, escape = false;
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (escape)            { escape = false; continue; }
+    if (ch === '\\' && inStr) { escape = true; continue; }
+    if (ch === '"')        { inStr = !inStr; continue; }
+    if (inStr)             continue;
+    if (ch === '[' || ch === '{') depth++;
+    if (ch === ']' || ch === '}') { depth--; if (depth === 0) return text.slice(start, i + 1); }
+  }
+  return null;
+}
+
 function fmtBudget(item) {
   if (item.dailyBudget) return `$${(parseFloat(item.dailyBudget) / 100).toFixed(0)}/day`;
   if (item.lifetimeBudget) return `$${(parseFloat(item.lifetimeBudget) / 100).toFixed(0)} lifetime`;
@@ -104,9 +139,9 @@ Never suggest pausing or directly editing ads — only provide observations and 
     });
 
     const text = message.content[0]?.text || '';
-    const jsonMatch = text.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) throw new Error('No JSON in AI response');
-    const result = JSON.parse(jsonMatch[0]);
+    const jsonStr = extractJsonObject(text);
+    if (!jsonStr) throw new Error('No JSON in AI response');
+    const result = JSON.parse(jsonStr);
     if (!result.rating || !result.summary) throw new Error('Invalid AI response structure');
     res.json(result);
   } catch (err) {
@@ -174,14 +209,14 @@ Never suggest pausing or directly editing ads.`;
   try {
     const message = await client.messages.create({
       model: 'claude-opus-4-6',
-      max_tokens: 4096,
+      max_tokens: 8192,
       messages: [{ role: 'user', content: prompt }],
     });
 
     const text = message.content[0]?.text || '';
-    const jsonMatch = text.match(/\[[\s\S]*\]/);
-    if (!jsonMatch) throw new Error('No JSON array in AI response');
-    const results = JSON.parse(jsonMatch[0]);
+    const jsonStr = extractJsonArray(text);
+    if (!jsonStr) throw new Error('No JSON array in AI response');
+    const results = JSON.parse(jsonStr);
     if (!Array.isArray(results)) throw new Error('Invalid AI response structure');
     res.json(results);
   } catch (err) {
@@ -262,9 +297,9 @@ Never suggest pausing or directly editing ads — only provide observations and 
     });
 
     const text = message.content[0]?.text || '';
-    const jsonMatch = text.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) throw new Error(`No JSON in AI response: ${text.slice(0, 200)}`);
-    const result = JSON.parse(jsonMatch[0]);
+    const jsonStr = extractJsonObject(text);
+    if (!jsonStr) throw new Error(`No JSON in AI response: ${text.slice(0, 200)}`);
+    const result = JSON.parse(jsonStr);
     if (!result.rating || !result.summary) throw new Error('Invalid AI response structure');
     res.json(result);
   } catch (err) {
