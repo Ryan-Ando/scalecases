@@ -1306,6 +1306,7 @@ export default function CampaignReports() {
             textAlign: 'center',
             borderLeft: `4px solid ${borderColor}`,
             borderRadius: '8px 0 0 8px',
+            position: 'sticky', left: 0, zIndex: 3,
           }}>
             {isExpanded ? '▾' : '▸'}
           </td>
@@ -1361,7 +1362,7 @@ export default function CampaignReports() {
           onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg)'; }}
           onMouseLeave={e => { e.currentTarget.style.background = ''; }}>
           {/* Chevron cell */}
-          <td style={{ ...tdBase, paddingLeft: 20, textAlign: 'center', width: 36, cursor: 'pointer' }}
+          <td style={{ ...tdBase, paddingLeft: 20, textAlign: 'center', width: 36, cursor: 'pointer', position: 'sticky', left: 0, zIndex: 2 }}
             onClick={() => setExpandedAdsets(prev => {
               const next = new Set(prev);
               if (next.has(a.id)) next.delete(a.id); else next.add(a.id);
@@ -1414,7 +1415,7 @@ export default function CampaignReports() {
         onMouseEnter={e => { e.currentTarget.style.background = '#f1f5f9'; }}
         onMouseLeave={e => { e.currentTarget.style.background = ''; }}>
         {/* No chevron for ads */}
-        <td style={{ ...adTdBase, paddingLeft: 36, width: 36 }} />
+        <td style={{ ...adTdBase, paddingLeft: 36, width: 36, position: 'sticky', left: 0, zIndex: 2 }} />
         {COLS.map(col => (
           <td key={col.key} style={{
             ...adTdBase, textAlign: col.align || 'right',
@@ -1576,7 +1577,7 @@ export default function CampaignReports() {
       {loading ? (
         <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>Loading…</div>
       ) : (
-        <div style={{ overflowX: 'auto' }}>
+        <div style={{ overflowX: 'auto', overflowY: 'auto', maxHeight: 'calc(100vh - 160px)' }}>
           <table style={{ borderCollapse: 'separate', borderSpacing: '0 3px', width: '100%', minWidth: 1400 }}>
             <thead>
               <tr>
