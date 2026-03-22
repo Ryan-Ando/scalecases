@@ -22,12 +22,12 @@ const INSIGHTS_FIELDS = [
   'impressions',
   'reach',
   'clicks',
-  'unique_clicks',
+  'unique_inline_link_clicks',
   'cpm',
   'ctr',
   'unique_ctr',
   'frequency',
-  'cost_per_unique_click',
+  'cost_per_unique_inline_link_click',
   'cost_per_result',
   'actions',
   'video_avg_time_watched_actions',
@@ -93,9 +93,9 @@ function computedCpl(ins, extracted) {
 }
 
 function computedCpc(ins) {
-  if (ins.cost_per_unique_click) return ins.cost_per_unique_click;
+  if (ins.cost_per_unique_inline_link_click) return ins.cost_per_unique_inline_link_click;
   const spend = parseFloat(ins.spend);
-  const clicks = parseFloat(ins.unique_clicks);
+  const clicks = parseFloat(ins.unique_inline_link_clicks);
   if (clicks > 0 && spend > 0) return (spend / clicks).toFixed(2);
   return null;
 }
@@ -210,6 +210,7 @@ router.get('/campaigns', async (req, res) => {
         ...ins,
         ...ext,
         cost_per_result: computedCpl(ins, ext),
+        unique_clicks: ins.unique_inline_link_clicks,
         cost_per_unique_click: computedCpc(ins),
       };
     });
@@ -273,6 +274,7 @@ router.get('/adsets', async (req, res) => {
         ...ins,
         ...ext,
         cost_per_result: computedCpl(ins, ext),
+        unique_clicks: ins.unique_inline_link_clicks,
         cost_per_unique_click: computedCpc(ins),
       };
     });
@@ -344,6 +346,7 @@ router.get('/ads', async (req, res) => {
         ...ins,
         ...ext,
         cost_per_result: computedCpl(ins, ext),
+        unique_clicks: ins.unique_inline_link_clicks,
         cost_per_unique_click: computedCpc(ins),
       };
     });
@@ -372,9 +375,9 @@ router.get('/daily', async (req, res) => {
     const cached = cacheGet(cacheKey);
     if (cached) return res.json(cached);
     const fields = level === 'ad'
-      ? `ad_id,ad_name,campaign_name,spend,impressions,unique_clicks,cpm,actions,date_start,date_stop`
+      ? `ad_id,ad_name,campaign_name,spend,impressions,unique_inline_link_clicks,cpm,actions,date_start,date_stop`
       : level === 'adset'
-      ? `adset_id,adset_name,campaign_name,spend,impressions,unique_clicks,cpm,actions,date_start,date_stop`
+      ? `adset_id,adset_name,campaign_name,spend,impressions,unique_inline_link_clicks,cpm,actions,date_start,date_stop`
       : `campaign_id,campaign_name,spend,impressions,cpm,actions,date_start,date_stop`;
 
     const accounts = adAccounts();
