@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef, useMemo, Fragment } from 'react';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
   Legend, ResponsiveContainer,
@@ -162,7 +162,7 @@ const TREND_TH = { textAlign: 'right', padding: '4px 8px', borderBottom: '1px so
   fontWeight: 600, fontSize: 11, color: 'var(--text-muted)' };
 const TREND_TD = { textAlign: 'right', padding: '5px 8px', borderBottom: '1px solid var(--border)', fontSize: 12 };
 
-// Pure rendering component — data is fetched by DrillTable and passed in
+// Pure rendering component — data is fetched by parent and passed in
 function AdTrendSection({ rows, loading, error }) {
   const stats = useMemo(() => (rows?.length ? computeAdStats(null, rows) : null), [rows]);
 
@@ -328,6 +328,41 @@ function ratingColors(rating) {
   return { border: 'var(--border)', bg: 'var(--surface)' };
 }
 
+// ── Module-level helpers ──────────────────────────────────────────────────────
+
+function campaignSummaryRating(adsets, rowAnalyses) {
+  const order = { turn_off: 0, underperforming: 1, needs_attention: 2, leave_on: 3, good: 4, wait: 5 };
+  let worst = null;
+  for (const a of adsets) {
+    const r = rowAnalyses[a.id];
+    if (r?.rating && !r.loading && !r.error) {
+      if (worst === null || (order[r.rating] ?? 99) < (order[worst] ?? 99)) worst = r.rating;
+    }
+  }
+  return worst;
+}
+
+function isActive(r) { return (r.effectiveStatus || r.status) === 'ACTIVE'; }
+
+function sortRows(rows, sortKey, sortDir) {
+  const arr = [...rows];
+  if (sortKey === '_default') {
+    return arr.sort((a, b) => {
+      const d = deliveryOrder(a) - deliveryOrder(b);
+      if (d !== 0) return d;
+      const ra = { good: 0, leave_on: 1, needs_attention: 2, underperforming: 3, turn_off: 4, wait: 5 }[a.rating] ?? 6;
+      const rb = { good: 0, leave_on: 1, needs_attention: 2, underperforming: 3, turn_off: 4, wait: 5 }[b.rating] ?? 6;
+      return ra - rb;
+    });
+  }
+  return arr.sort((a, b) => {
+    const av = getSortVal(a, sortKey), bv = getSortVal(b, sortKey);
+    if (av < bv) return sortDir === 'asc' ? -1 : 1;
+    if (av > bv) return sortDir === 'asc' ? 1 : -1;
+    return 0;
+  });
+}
+
 // ── KPI Modal (per-campaign) ──────────────────────────────────────────────────
 const KPI_FIELDS = [
   { key: 'targetCpl',      label: 'Target CPL — Cost per Lead ($)',               ph: 'e.g. 80',   dataKey: 'cost_per_result' },
@@ -436,7 +471,7 @@ function StatBox({ label, value }) {
   );
 }
 
-// ── Sortable drill-down table ─────────────────────────────────────────────────
+// ── Column definitions ────────────────────────────────────────────────────────
 const COLS = [
   { key: 'name',                  label: 'Name',        align: 'left',  sticky: true },
   { key: 'status',                label: 'On/Off',      align: 'center' },
@@ -493,297 +528,6 @@ function cellVal(r, key) {
     case 'createdTime':           return fmtDate(r.createdTime || r.created_time);
     default:                      return '—';
   }
-}
-
-function DrillTable({ rows, onRowClick, label = 'Ad Set', rowAnalyses = {}, onAnalyzeRow, dailyRows = [], level = 'adset', toggleable = false }) {
-  const [sortKey, setSortKey]         = useState('_default');
-  const [sortDir, setSortDir]         = useState('asc');
-  const [popup, setPopup]             = useState(null);
-  const [adDailyCache, setAdDailyCache] = useState({}); // adId → { loading, rows, error }
-  const [statusOverrides, setStatusOverrides] = useState({}); // id → 'ACTIVE'|'PAUSED'
-  const [togglingIds, setTogglingIds]         = useState(new Set());
-
-  const sorted = useMemo(() => {
-    const arr = [...rows];
-    if (sortKey === '_default') {
-      return arr.sort((a, b) => {
-        const d = deliveryOrder(a) - deliveryOrder(b);
-        if (d !== 0) return d;
-        const ca = a.createdTime || a.created_time || '';
-        const cb = b.createdTime || b.created_time || '';
-        return cb.localeCompare(ca);
-      });
-    }
-    if (sortKey === 'aiStatus') {
-      const ratingOrder = r => {
-        const a = rowAnalyses[r.id];
-        if (!a || a.loading || a.error) return 3;
-        return { good: 0, leave_on: 1, needs_attention: 2, underperforming: 3, turn_off: 4, wait: 5 }[a.rating] ?? 6;
-      };
-      return arr.sort((a, b) => {
-        const av = ratingOrder(a), bv = ratingOrder(b);
-        if (av !== bv) return sortDir === 'asc' ? av - bv : bv - av;
-        return 0;
-      });
-    }
-    return arr.sort((a, b) => {
-      const av = getSortVal(a, sortKey);
-      const bv = getSortVal(b, sortKey);
-      if (av < bv) return sortDir === 'asc' ? -1 : 1;
-      if (av > bv) return sortDir === 'asc' ?  1 : -1;
-      return 0;
-    });
-  }, [rows, sortKey, sortDir, rowAnalyses]);
-
-  function handleSort(key) {
-    if (sortKey === key) setSortDir(d => d === 'asc' ? 'desc' : 'asc');
-    else { setSortKey(key); setSortDir('asc'); }
-  }
-
-  // Fetch daily data when a popup opens (works for both ads and adsets)
-  useEffect(() => {
-    if (!popup) return;
-    if (adDailyCache[popup]) return;
-    const idField  = level === 'ad' ? 'ad_id' : 'adset_id';
-    const param    = level === 'ad' ? 'ad_ids' : 'adset_ids';
-    const fromProp = dailyRows.filter(r => r[idField] === popup);
-    if (fromProp.length) {
-      setAdDailyCache(prev => ({ ...prev, [popup]: { rows: fromProp } }));
-      return;
-    }
-    setAdDailyCache(prev => ({ ...prev, [popup]: { loading: true } }));
-    fetch(`${BASE}/api/facebook/daily?date_preset=maximum&${param}=${encodeURIComponent(popup)}`)
-      .then(r => r.json())
-      .then(data => setAdDailyCache(prev => ({ ...prev, [popup]: { rows: Array.isArray(data) ? data : [] } })))
-      .catch(e  => setAdDailyCache(prev => ({ ...prev, [popup]: { error: e.message, rows: [] } })));
-  }, [level, popup, adDailyCache, dailyRows]);
-
-  async function handleToggle(e, r) {
-    e.stopPropagation();
-    const current = statusOverrides[r.id] || r.status;
-    const next    = current === 'ACTIVE' ? 'PAUSED' : 'ACTIVE';
-    const action  = next === 'PAUSED' ? 'Pause' : 'Enable';
-    if (!window.confirm(`${action} "${r.name}"?`)) return;
-    setTogglingIds(prev => new Set([...prev, r.id]));
-    setStatusOverrides(prev => ({ ...prev, [r.id]: next }));
-    try {
-      const res  = await fetch(`${BASE}/api/facebook/${level}/${r.id}/status`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status: next }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
-    } catch (err) {
-      setStatusOverrides(prev => { const n = { ...prev }; delete n[r.id]; return n; });
-      alert(`Failed: ${err.message}`);
-    } finally {
-      setTogglingIds(prev => { const n = new Set(prev); n.delete(r.id); return n; });
-    }
-  }
-
-  function renderStatusCell(r) {
-    const rawStatus = statusOverrides[r.id] || r.status;
-    const isPaused  = rawStatus !== 'ACTIVE';
-    const isToggling = togglingIds.has(r.id);
-    return (
-      <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-        <DeliveryBadge status={statusOverrides[r.id] || r.effectiveStatus || r.status} />
-        {toggleable && (
-          <button className="btn btn--sm" disabled={isToggling}
-            onClick={e => handleToggle(e, r)}
-            title={`${isPaused ? 'Enable' : 'Pause'} this ${level}`}
-            style={{ fontSize: 10, padding: '1px 6px', minWidth: 22 }}>
-            {isToggling ? '…' : isPaused ? '▶' : '⏸'}
-          </button>
-        )}
-      </div>
-    );
-  }
-
-  function handleAiClick(e, r) {
-    e.stopPropagation();
-    if (!rowAnalyses[r.id] || rowAnalyses[r.id].error) onAnalyzeRow && onAnalyzeRow(r);
-    setPopup(r.id);
-  }
-
-  function renderAiCell(r) {
-    const a = rowAnalyses[r.id];
-    if (!a) return (
-      <button className="btn btn--sm" style={{ fontSize: 10, padding: '2px 8px' }}
-        onClick={e => handleAiClick(e, r)}>Analyze</button>
-    );
-    if (a.loading) return <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>…</span>;
-    if (a.error) return (
-      <button className="btn btn--sm" style={{ fontSize: 10, color: '#dc2626' }}
-        onClick={e => handleAiClick(e, r)}>Retry</button>
-    );
-    return (
-      <div onClick={e => handleAiClick(e, r)} style={{ cursor: 'pointer', display: 'inline-block' }}>
-        <RatingBadge rating={a.rating} />
-      </div>
-    );
-  }
-
-  const thBase = {
-    padding: '9px 12px', fontSize: 11, fontWeight: 700, textTransform: 'uppercase',
-    letterSpacing: '0.05em', color: 'var(--text-muted)', borderBottom: '2px solid var(--border)',
-    whiteSpace: 'nowrap', background: 'var(--surface)', position: 'sticky', top: 0,
-    cursor: 'pointer', userSelect: 'none',
-  };
-  const tdBase = {
-    padding: '8px 12px', fontSize: 12, borderBottom: '1px solid var(--border)',
-    whiteSpace: 'nowrap', color: 'var(--text)',
-  };
-
-  const displayLabel = col => col.key === 'name' ? label : col.label;
-
-  const popupRow      = popup ? rows.find(r => r.id === popup) : null;
-  const popupAnalysis = popup ? rowAnalyses[popup] : null;
-
-  return (
-    <div>
-      {/* AI analysis popup */}
-      {popup && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 500,
-          display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-          onDoubleClick={() => setPopup(null)}>
-          <div style={{ background: 'var(--surface)', borderRadius: 14, padding: 24,
-            width: 680, maxWidth: '95vw',
-            minWidth: 360, minHeight: 200,
-            maxHeight: '92vh', overflowY: 'auto',
-            resize: 'both', boxShadow: '0 8px 32px rgba(0,0,0,0.2)' }}
-            onClick={e => e.stopPropagation()}>
-
-            {/* Header */}
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 16 }}>
-              <div>
-                <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 6 }}>{popupRow?.name}</div>
-                {popupAnalysis && !popupAnalysis.loading && !popupAnalysis.error && (
-                  <RatingBadge rating={popupAnalysis.rating} />
-                )}
-              </div>
-              <button onClick={() => setPopup(null)} style={{ background: 'none', border: 'none',
-                cursor: 'pointer', fontSize: 18, color: 'var(--text-muted)', padding: '0 4px', marginLeft: 12 }}>✕</button>
-            </div>
-
-            {/* Trend section — chart + stats table */}
-            {popupRow && (() => {
-              const cache = adDailyCache[popupRow.id] || {};
-              return <AdTrendSection rows={cache.rows} loading={!!cache.loading} error={cache.error} />;
-            })()}
-
-            {/* Divider between trend and AI analysis */}
-            {popupAnalysis && !popupAnalysis.loading && !popupAnalysis.error && (
-              <div style={{ borderTop: '1px solid var(--border)', marginBottom: 16 }} />
-            )}
-
-            {/* Loading */}
-            {(!popupAnalysis || popupAnalysis.loading) && (
-              <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>Analyzing…</div>
-            )}
-
-            {/* Error */}
-            {popupAnalysis?.error && (
-              <div style={{ color: '#dc2626', fontSize: 13 }}>Error: {popupAnalysis.error}</div>
-            )}
-
-            {/* AI results */}
-            {popupAnalysis && !popupAnalysis.loading && !popupAnalysis.error && (
-              <>
-                <p style={{ fontSize: 13, lineHeight: 1.6, color: 'var(--text)', margin: '0 0 14px' }}>
-                  {popupAnalysis.summary}
-                </p>
-                {popupAnalysis.insights?.length > 0 && (
-                  <div style={{ marginBottom: 14 }}>
-                    <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase',
-                      letterSpacing: '0.05em', color: 'var(--text-muted)', marginBottom: 6 }}>Insights</div>
-                    <ul style={{ margin: 0, padding: '0 0 0 16px', fontSize: 12, lineHeight: 1.7 }}>
-                      {popupAnalysis.insights.map((ins, i) => <li key={i}>{ins}</li>)}
-                    </ul>
-                  </div>
-                )}
-                {popupAnalysis.recommendations?.length > 0 && (
-                  <div>
-                    <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase',
-                      letterSpacing: '0.05em', color: 'var(--text-muted)', marginBottom: 6 }}>Recommendations</div>
-                    <ul style={{ margin: 0, padding: '0 0 0 16px', fontSize: 12, lineHeight: 1.7, color: '#15803d' }}>
-                      {popupAnalysis.recommendations.map((rec, i) => <li key={i}>{rec}</li>)}
-                    </ul>
-                  </div>
-                )}
-              </>
-            )}
-
-            {/* Footer */}
-            <div style={{ marginTop: 18, display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-              {popupRow && (
-                <button className="btn btn--sm" onClick={() => { onAnalyzeRow && onAnalyzeRow(popupRow); }}>
-                  Re-analyze
-                </button>
-              )}
-              <button className="btn btn--sm" onClick={() => setPopup(null)}>Close</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      <div style={{ overflowX: 'auto', overflowY: 'auto', maxHeight: 'calc(100vh - 320px)',
-        border: '1px solid var(--border)', borderRadius: 10 }}>
-        <table style={{ borderCollapse: 'collapse', width: '100%', minWidth: 1300 }}>
-          <thead>
-            <tr>
-              {COLS.map(col => (
-                <th key={col.key}
-                  style={{
-                    ...thBase,
-                    textAlign: col.align || 'right',
-                    ...(col.sticky ? { position: 'sticky', left: 0, zIndex: 3, top: 0 } : {}),
-                  }}
-                  onClick={() => handleSort(col.key)}
-                  title={`Sort by ${col.label}`}
-                >
-                  {displayLabel(col)}
-                  {sortKey === col.key
-                    ? <span style={{ marginLeft: 4, fontSize: 9 }}>{sortDir === 'asc' ? '▲' : '▼'}</span>
-                    : <span style={{ marginLeft: 4, fontSize: 9, opacity: 0.3 }}>⇅</span>
-                  }
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {sorted.map(r => (
-              <tr key={r.id}
-                onClick={onRowClick ? () => onRowClick(r) : undefined}
-                style={{ cursor: onRowClick ? 'pointer' : 'default' }}
-                onMouseEnter={e => { if (onRowClick) e.currentTarget.style.background = 'var(--bg)'; }}
-                onMouseLeave={e => { e.currentTarget.style.background = ''; }}>
-                {COLS.map(col => (
-                  <td key={col.key} style={{
-                    ...tdBase,
-                    textAlign: col.align || 'right',
-                    ...(col.sticky ? {
-                      position: 'sticky', left: 0, zIndex: 1,
-                      background: 'var(--surface)', maxWidth: 240,
-                      overflow: 'hidden', textOverflow: 'ellipsis',
-                    } : {}),
-                  }}>
-                    {col.key === 'aiStatus' ? renderAiCell(r)
-                      : col.key === 'status'  ? renderStatusCell(r)
-                      : cellVal(r, col.key)}
-                  </td>
-                ))}
-              </tr>
-            ))}
-            {rows.length === 0 && (
-              <tr><td colSpan={COLS.length} style={{ ...tdBase, textAlign: 'center',
-                color: 'var(--text-muted)', padding: 24 }}>No data</td></tr>
-            )}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
 }
 
 // ── AI Rules Modal ────────────────────────────────────────────────────────────
@@ -1062,23 +806,34 @@ export default function CampaignReports() {
   const [loading, setLoading]     = useState(true);
   const [error, setError]         = useState('');
 
-  const [view, setView]               = useState('campaigns');
-  const [selCampaign, setSelCampaign] = useState(null);
-  const [selAdset, setSelAdset]       = useState(null);
-  const [adsets, setAdsets]           = useState([]);
-  const [ads, setAds]                 = useState([]);
-  const [adsetLoading, setAdsetLoading] = useState(false);
-  const [adLoading, setAdLoading]       = useState(false);
-  const [trendData, setTrendData]       = useState([]);
+  // Accordion data
+  const [allAdsets, setAllAdsets] = useState({});     // campaignId → adsets[]
+  const [allAds, setAllAds]       = useState({});     // adsetId → ads[]
+  const [expandedCampaigns, setExpandedCampaigns] = useState(new Set());
+  const [expandedAdsets, setExpandedAdsets]       = useState(new Set());
+  const [showPausedCampaigns, setShowPausedCampaigns] = useState(false);
+  const [showPausedAdsets, setShowPausedAdsets]   = useState({}); // campaignId → bool
+  const [showPausedAds, setShowPausedAds]         = useState({}); // adsetId → bool
+  const [sortKey, setSortKey] = useState('_default');
+  const [sortDir, setSortDir] = useState('asc');
+
+  // Popup state
+  const [popup, setPopup]               = useState(null);
+  const [adDailyCache, setAdDailyCache] = useState({});
+
+  // Status toggles for adsets/ads
+  const [statusOverrides, setStatusOverrides] = useState({});
+  const [togglingIds, setTogglingIds]         = useState(new Set());
+
+  // Campaign status toggles
+  const [campaignStatusOverrides, setCampaignStatusOverrides] = useState({});
+  const [togglingCampaigns, setTogglingCampaigns]             = useState(new Set());
 
   const [analyses, setAnalyses]             = useState({});
   const [rowAnalyses, setRowAnalyses]       = useState({});
   const [training, setTraining]             = useState({});
   const [noteInputs, setNoteInputs]         = useState({});
   const [adDailyInsights, setAdDailyInsights] = useState([]);
-
-  const [campaignStatusOverrides, setCampaignStatusOverrides] = useState({}); // id → 'ACTIVE'|'PAUSED'
-  const [togglingCampaigns, setTogglingCampaigns]             = useState(new Set());
 
   // ── Persist: load KPIs + training from IndexedDB ──────────────────────────
   useEffect(() => {
@@ -1102,19 +857,58 @@ export default function CampaignReports() {
       if (saved && typeof saved === 'object') setAnalyses(saved);
     }).catch(() => {});
 
+    dbGetMeta('rowAnalyses_all').then(saved => {
+      if (saved && typeof saved === 'object') setRowAnalyses(saved);
+    }).catch(() => {});
+
     dbGetAll('adDailyInsights').then(rows => {
       setAdDailyInsights(rows);
     }).catch(() => {});
   }, []);
 
-  // ── Load campaigns ────────────────────────────────────────────────────────
-  async function loadCampaigns() {
+  // ── Load all data ─────────────────────────────────────────────────────────
+  async function loadAll() {
     setLoading(true); setError('');
+    setAllAdsets({}); setAllAds({});
     try {
       const res  = await fetch(`${BASE}/api/facebook/campaigns?start=${start}&end=${end}`);
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || res.statusText);
-setCampaigns(data.filter(c => c.effectiveStatus === 'ACTIVE' || c.status === 'ACTIVE'));
+      setCampaigns(data); // keep ALL campaigns (filter active/paused in UI)
+
+      // Load adsets for all campaigns in parallel
+      const adsetResults = await Promise.allSettled(
+        data.map(c =>
+          fetch(`${BASE}/api/facebook/adsets?campaign_id=${c.id}&start=${start}&end=${end}`)
+            .then(r => r.json())
+            .then(adsets => ({ campaignId: c.id, adsets: Array.isArray(adsets) ? adsets : [] }))
+            .catch(() => ({ campaignId: c.id, adsets: [] }))
+        )
+      );
+      const adsetMap = {};
+      const flatAdsets = [];
+      for (const r of adsetResults) {
+        if (r.status === 'fulfilled') {
+          adsetMap[r.value.campaignId] = r.value.adsets;
+          flatAdsets.push(...r.value.adsets);
+        }
+      }
+      setAllAdsets(adsetMap);
+
+      // Load ads for all adsets in parallel
+      const adResults = await Promise.allSettled(
+        flatAdsets.map(a =>
+          fetch(`${BASE}/api/facebook/ads?adset_id=${a.id}&start=${start}&end=${end}`)
+            .then(r => r.json())
+            .then(ads => ({ adsetId: a.id, ads: Array.isArray(ads) ? ads : [] }))
+            .catch(() => ({ adsetId: a.id, ads: [] }))
+        )
+      );
+      const adMap = {};
+      for (const r of adResults) {
+        if (r.status === 'fulfilled') adMap[r.value.adsetId] = r.value.ads;
+      }
+      setAllAds(adMap);
     } catch (e) {
       setError(e.message);
     } finally {
@@ -1122,88 +916,23 @@ setCampaigns(data.filter(c => c.effectiveStatus === 'ACTIVE' || c.status === 'AC
     }
   }
 
-  useEffect(() => { loadCampaigns(); }, [start, end]);
+  useEffect(() => { loadAll(); }, [start, end]);
 
-  // Keep selCampaign stats fresh when campaigns reload (date range change)
+  // ── Fetch daily data when popup opens ─────────────────────────────────────
   useEffect(() => {
-    if (!selCampaign) return;
-    const updated = campaigns.find(c => c.id === selCampaign.id);
-    if (updated) setSelCampaign(updated);
-  }, [campaigns]);
-
-  // ── Drill: campaign → adsets ──────────────────────────────────────────────
-  async function fetchAdsetData(campaign, s, e) {
-    setAdsets([]); setTrendData([]);
-    const savedRows = await dbGetMeta(`rowAnalyses_${campaign.id}`).catch(() => null);
-    setRowAnalyses(savedRows && typeof savedRows === 'object' ? savedRows : {});
-    setAdsetLoading(true);
-    try {
-      const [ar, tr] = await Promise.all([
-        fetch(`${BASE}/api/facebook/adsets?campaign_id=${campaign.id}&start=${s}&end=${e}`),
-        fetch(`${BASE}/api/facebook/daily?start=${s}&end=${e}&level=campaign`),
-      ]);
-      const adsetsData = await ar.json();
-      const trendRaw   = await tr.json();
-      if (!ar.ok) throw new Error(adsetsData.error);
-      setAdsets(adsetsData);
-      const filtered = (Array.isArray(trendRaw) ? trendRaw : [])
-        .filter(r => r.campaign_id === campaign.id)
-        .map(r => ({
-          date: r.date_start?.slice(5),
-          spend: parseFloat(r.spend) || 0,
-          leads: (() => {
-            const types = ['lead','onsite_conversion.lead_grouped','offsite_conversion.fb_pixel_lead','contact','schedule','submit_application'];
-            for (const t of types) {
-              const a = (r.actions || []).find(x => x.action_type === t);
-              if (a) return parseInt(a.value, 10) || 0;
-            }
-            return 0;
-          })(),
-        }))
-        .sort((a, b) => a.date < b.date ? -1 : 1);
-      setTrendData(filtered);
-    } catch (e) {
-      console.error('Adset load error:', e.message);
-    } finally {
-      setAdsetLoading(false);
-    }
-  }
-
-  function openCampaign(campaign) {
-    setSelCampaign(campaign); setView('adsets');
-    fetchAdsetData(campaign, start, end);
-  }
-
-  // Re-fetch adset data when date range changes while in adset view
-  useEffect(() => {
-    if (view === 'adsets' && selCampaign) fetchAdsetData(selCampaign, start, end);
-  }, [start, end, view]);
-
-  // ── Drill: adset → ads ────────────────────────────────────────────────────
-  async function fetchAdData(adset, s, e) {
-    setAds([]);
-    setAdLoading(true);
-    try {
-      const res  = await fetch(`${BASE}/api/facebook/ads?adset_id=${adset.id}&start=${s}&end=${e}`);
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
-      setAds(data);
-    } catch (e) {
-      console.error('Ad load error:', e.message);
-    } finally {
-      setAdLoading(false);
-    }
-  }
-
-  function openAdset(adset) {
-    setSelAdset(adset); setView('ads');
-    fetchAdData(adset, start, end);
-  }
-
-  // Re-fetch ad data when date range changes while in ads view
-  useEffect(() => {
-    if (view === 'ads' && selAdset) fetchAdData(selAdset, start, end);
-  }, [start, end, view]);
+    if (!popup) return;
+    if (adDailyCache[popup]) return;
+    const allRows = [...Object.values(allAdsets).flat(), ...Object.values(allAds).flat()];
+    const row = allRows.find(r => r.id === popup);
+    if (!row) return;
+    const isAdRow = Object.values(allAds).flat().some(a => a.id === popup);
+    const idField = isAdRow ? 'ad_ids' : 'adset_ids';
+    setAdDailyCache(prev => ({ ...prev, [popup]: { loading: true } }));
+    fetch(`${BASE}/api/facebook/daily?date_preset=maximum&${idField}=${encodeURIComponent(popup)}`)
+      .then(r => r.json())
+      .then(data => setAdDailyCache(prev => ({ ...prev, [popup]: { rows: Array.isArray(data) ? data : [] } })))
+      .catch(e => setAdDailyCache(prev => ({ ...prev, [popup]: { error: e.message, rows: [] } })));
+  }, [popup]);
 
   // ── AI analysis ───────────────────────────────────────────────────────────
   async function analyze(campaign, adsetsForCampaign = []) {
@@ -1240,7 +969,7 @@ setCampaigns(data.filter(c => c.effectiveStatus === 'ACTIVE' || c.status === 'AC
   async function analyzeRow(row, level) {
     const id = row.id;
     setRowAnalyses(prev => ({ ...prev, [id]: { loading: true } }));
-    const campaignId = row.campaignId || selCampaign?.id;
+    const campaignId = row.campaignId || row.campaign_id;
     const kpis = campaignId ? (kpisMap[campaignId] || {}) : {};
     const [globalRules, campaignRules, storedDaily] = await Promise.all([
       dbGetMeta('aiRules_global').catch(() => ''),
@@ -1270,8 +999,7 @@ setCampaigns(data.filter(c => c.effectiveStatus === 'ACTIVE' || c.status === 'AC
       if (!res.ok) throw new Error(data.error);
       setRowAnalyses(prev => {
         const next = { ...prev, [id]: data };
-        const cid = selCampaign?.id;
-        if (cid) dbSetMeta(`rowAnalyses_${cid}`, next).catch(() => {});
+        dbSetMeta('rowAnalyses_all', next).catch(() => {});
         return next;
       });
     } catch (e) {
@@ -1280,18 +1008,17 @@ setCampaigns(data.filter(c => c.effectiveStatus === 'ACTIVE' || c.status === 'AC
   }
 
   // ── Batch AI analysis — one API call for all rows ────────────────────────
-  async function analyzeAllRows(rows, level) {
+  async function analyzeAllRows(rows, level, campaignId) {
     if (!rows.length) return;
     setRowAnalyses(prev => {
       const next = { ...prev };
       for (const r of rows) next[r.id] = { loading: true };
       return next;
     });
-    const campaignId = selCampaign?.id;
     const kpis = campaignId ? (kpisMap[campaignId] || {}) : {};
-    const [globalRules, campaignRules, storedDaily] = await Promise.all([
+    const campaignRules = campaignId ? await dbGetMeta(`aiRules_${campaignId}`).catch(() => '') : '';
+    const [globalRules, storedDaily] = await Promise.all([
       dbGetMeta('aiRules_global').catch(() => ''),
-      campaignId ? dbGetMeta(`aiRules_${campaignId}`).catch(() => '') : Promise.resolve(''),
       level === 'ad' ? dbGetAll('adDailyInsights').catch(() => []) : Promise.resolve([]),
     ]);
     let dailyRows = storedDaily;
@@ -1323,8 +1050,7 @@ setCampaigns(data.filter(c => c.effectiveStatus === 'ACTIVE' || c.status === 'AC
       setRowAnalyses(prev => {
         const next = { ...prev };
         for (const item of data) next[item.id] = item;
-        const cid = selCampaign?.id;
-        if (cid) dbSetMeta(`rowAnalyses_${cid}`, next).catch(() => {});
+        dbSetMeta('rowAnalyses_all', next).catch(() => {});
         return next;
       });
     } catch (e) {
@@ -1373,22 +1099,342 @@ setCampaigns(data.filter(c => c.effectiveStatus === 'ACTIVE' || c.status === 'AC
     }
   }
 
-  // ── Navigation ────────────────────────────────────────────────────────────
-  function navTo(level) {
-    if (level === 'campaigns') { setView('campaigns'); setSelCampaign(null); setSelAdset(null); }
-    if (level === 'adsets')    { setView('adsets'); setSelAdset(null); }
+  // ── Render helpers ────────────────────────────────────────────────────────
+
+  function handleSort(key) {
+    setSortKey(prev => {
+      setSortDir(d => prev === key ? (d === 'asc' ? 'desc' : 'asc') : 'asc');
+      return key;
+    });
   }
+
+  function sortIndicator(key) {
+    if (sortKey === key) return <span style={{ marginLeft: 4, fontSize: 9 }}>{sortDir === 'asc' ? '▲' : '▼'}</span>;
+    return <span style={{ marginLeft: 4, fontSize: 9, opacity: 0.3 }}>⇅</span>;
+  }
+
+  const thStyle = (col) => ({
+    padding: '9px 12px', fontSize: 11, fontWeight: 700, textTransform: 'uppercase',
+    letterSpacing: '0.05em', color: 'var(--text-muted)', borderBottom: '2px solid var(--border)',
+    whiteSpace: 'nowrap', background: 'var(--surface)', position: 'sticky', top: 0,
+    cursor: 'pointer', userSelect: 'none', textAlign: col.align || 'right',
+  });
+
+  const tdBase = {
+    padding: '8px 12px', fontSize: 12, borderBottom: '1px solid var(--border)',
+    whiteSpace: 'nowrap', color: 'var(--text)', background: 'var(--surface)',
+  };
+
+  const pausedFooterStyle = {
+    textAlign: 'center', padding: '6px', color: 'var(--text-muted)',
+    fontSize: 12, background: 'var(--bg)',
+  };
+
+  // renderAiCell for adsets and ads
+  function renderAiCell(r, level, campaignId) {
+    const a = rowAnalyses[r.id];
+    if (!a) return (
+      <button className="btn btn--sm" style={{ fontSize: 10, padding: '2px 8px' }}
+        onClick={e => { e.stopPropagation(); analyzeRow(r, level); setPopup(r.id); }}>Analyze</button>
+    );
+    if (a.loading) return <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>…</span>;
+    if (a.error) return (
+      <button className="btn btn--sm" style={{ fontSize: 10, color: '#dc2626' }}
+        onClick={e => { e.stopPropagation(); analyzeRow(r, level); }}>Retry</button>
+    );
+    return (
+      <div onClick={e => { e.stopPropagation(); setPopup(r.id); }} style={{ cursor: 'pointer', display: 'inline-block' }}>
+        <RatingBadge rating={a.rating} />
+      </div>
+    );
+  }
+
+  // renderCampaignAiCell for campaign rows
+  function renderCampaignAiCell(c) {
+    const adsets = (allAdsets[c.id] || []).filter(isActive);
+    const analyzed = adsets.filter(a => rowAnalyses[a.id] && !rowAnalyses[a.id].loading && !rowAnalyses[a.id].error);
+    const anyLoading = adsets.some(a => rowAnalyses[a.id]?.loading);
+    const worst = campaignSummaryRating(adsets, rowAnalyses);
+
+    if (anyLoading) return <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Analyzing…</span>;
+
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
+        {worst && <RatingBadge rating={worst} />}
+        <button className="btn btn--sm" style={{ fontSize: 10 }}
+          onClick={e => { e.stopPropagation(); analyzeAllRows(adsets, 'adset', c.id); }}>
+          {analyzed.length > 0 ? `↺ ${analyzed.length}/${adsets.length}` : '✦ Analyze'}
+        </button>
+      </div>
+    );
+  }
+
+  // renderStatusCell for adsets and ads
+  function renderStatusCell(r, type) {
+    const rawStatus = statusOverrides[r.id] || r.status;
+    const isPaused  = rawStatus !== 'ACTIVE';
+    const isToggling = togglingIds.has(r.id);
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+        <button className="btn btn--sm" disabled={isToggling}
+          onClick={async e => {
+            e.stopPropagation();
+            const current = statusOverrides[r.id] || r.status;
+            const next = current === 'ACTIVE' ? 'PAUSED' : 'ACTIVE';
+            const action = next === 'PAUSED' ? 'Pause' : 'Enable';
+            if (!window.confirm(`${action} "${r.name}"?`)) return;
+            setTogglingIds(prev => new Set([...prev, r.id]));
+            setStatusOverrides(prev => ({ ...prev, [r.id]: next }));
+            try {
+              const res = await fetch(`${BASE}/api/facebook/${type}/${r.id}/status`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ status: next }),
+              });
+              const data = await res.json();
+              if (!res.ok) throw new Error(data.error);
+            } catch (err) {
+              setStatusOverrides(prev => { const n = {...prev}; delete n[r.id]; return n; });
+              alert(`Failed: ${err.message}`);
+            } finally {
+              setTogglingIds(prev => { const n = new Set(prev); n.delete(r.id); return n; });
+            }
+          }}
+          title={`${isPaused ? 'Enable' : 'Pause'} this ${type}`}
+          style={{ fontSize: 10, padding: '1px 6px', minWidth: 22 }}>
+          {isToggling ? '…' : isPaused ? '▶' : '⏸'}
+        </button>
+      </div>
+    );
+  }
+
+  // Render a single campaign group (campaign row + adsets + ads)
+  function renderCampaignGroup(c) {
+    const adsets = allAdsets[c.id] || [];
+    const activeAdsets = adsets.filter(isActive);
+    const pausedAdsets = adsets.filter(a => !isActive(a));
+    const isExpanded = expandedCampaigns.has(c.id);
+    const worstRating = campaignSummaryRating(adsets, rowAnalyses);
+    const { border: borderColor, bg: ratingBg } = ratingColors(worstRating);
+    const hasKpis = KPI_FIELDS.some(f => kpisMap[c.id]?.[f.key]);
+
+    const campStatus = campaignStatusOverrides[c.id] || c.status;
+    const campIsPaused = campStatus !== 'ACTIVE';
+    const campIsToggling = togglingCampaigns.has(c.id);
+
+    // Campaign row cells in COLS order
+    const campaignCellContent = (col) => {
+      switch (col.key) {
+        case 'name':
+          return (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+              <span style={{ fontWeight: 700 }} title={c.name}>{c.name}</span>
+              <button className="btn btn--sm"
+                onClick={e => { e.stopPropagation(); setKpiModal({ campaignId: c.id, campaignName: c.name }); }}
+                title={hasKpis ? 'Edit KPIs' : 'Set KPIs (no targets yet)'}
+                style={{ fontSize: 10, color: hasKpis ? 'var(--green-dark)' : 'var(--text-muted)', padding: '1px 6px' }}>
+                ⚙ KPI{hasKpis ? ' ✓' : ''}
+              </button>
+            </div>
+          );
+        case 'status':
+          return (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+              <button className="btn btn--sm" disabled={campIsToggling}
+                onClick={e => { e.stopPropagation(); toggleCampaign(c); }}
+                title={campIsPaused ? 'Enable campaign' : 'Pause campaign'}
+                style={{ fontSize: 10, padding: '1px 6px', minWidth: 22 }}>
+                {campIsToggling ? '…' : campIsPaused ? '▶' : '⏸'}
+              </button>
+            </div>
+          );
+        case 'effectiveStatus':
+          return <DeliveryBadge status={campaignStatusOverrides[c.id] || c.effectiveStatus || c.status} />;
+        case 'aiStatus':
+          return renderCampaignAiCell(c);
+        case 'budget':
+          return fmtBudget(c);
+        case 'spend':
+          return fmt$(c.spend);
+        case 'results':
+          return c.results ?? '—';
+        case 'cost_per_result':
+          return fmt$(clientCpl(c));
+        case 'unique_clicks':
+          return fmtN(c.unique_clicks);
+        case 'cost_per_unique_click':
+          return fmt$(clientCpc(c));
+        case 'frequency':
+          return fmtN(c.frequency);
+        case 'cpm':
+          return fmt$(c.cpm);
+        case 'unique_ctr':
+          return fmtPct(c.unique_ctr);
+        case 'videoTime':
+          return '—';
+        case 'createdTime':
+          return fmtDate(c.createdTime || c.created_time);
+        default:
+          return '—';
+      }
+    };
+
+    const campRowBase = {
+      background: ratingBg,
+      padding: '10px 12px',
+      fontSize: 14,
+      fontWeight: 700,
+      height: 52,
+      whiteSpace: 'nowrap',
+      borderTop: `1px solid ${borderColor}`,
+      borderBottom: `1px solid ${borderColor}`,
+    };
+
+    return (
+      <Fragment key={c.id}>
+        {/* Campaign row */}
+        <tr style={{ cursor: 'pointer' }} onClick={() => setExpandedCampaigns(prev => {
+          const next = new Set(prev);
+          if (next.has(c.id)) next.delete(c.id); else next.add(c.id);
+          return next;
+        })}>
+          {/* Chevron cell */}
+          <td style={{
+            ...campRowBase,
+            width: 36,
+            textAlign: 'center',
+            borderLeft: `4px solid ${borderColor}`,
+            borderRadius: '8px 0 0 8px',
+          }}>
+            {isExpanded ? '▾' : '▸'}
+          </td>
+          {COLS.map((col, idx) => {
+            const isLast = idx === COLS.length - 1;
+            const extraStyle = isLast
+              ? { borderRadius: '0 8px 8px 0', borderRight: `1px solid ${borderColor}` }
+              : {};
+            return (
+              <td key={col.key} style={{
+                ...campRowBase,
+                textAlign: col.align || 'right',
+                ...extraStyle,
+              }}>
+                {campaignCellContent(col)}
+              </td>
+            );
+          })}
+        </tr>
+
+        {/* Adset rows when expanded */}
+        {isExpanded && (
+          <>
+            {sortRows(activeAdsets, sortKey, sortDir).map(a => renderAdsetRow(a, c.id))}
+
+            {/* Paused adsets footer */}
+            {pausedAdsets.length > 0 && (
+              <>
+                <tr style={{ cursor: 'pointer' }} onClick={() => setShowPausedAdsets(prev => ({ ...prev, [c.id]: !prev[c.id] }))}>
+                  <td colSpan={COLS.length + 1} style={pausedFooterStyle}>
+                    {showPausedAdsets[c.id] ? '▾' : '▸'} {pausedAdsets.length} paused ad set{pausedAdsets.length !== 1 ? 's' : ''}
+                  </td>
+                </tr>
+                {showPausedAdsets[c.id] && sortRows(pausedAdsets, sortKey, sortDir).map(a => renderAdsetRow(a, c.id))}
+              </>
+            )}
+          </>
+        )}
+      </Fragment>
+    );
+  }
+
+  function renderAdsetRow(a, campaignId) {
+    const ads = allAds[a.id] || [];
+    const activeAds = ads.filter(isActive);
+    const pausedAds = ads.filter(ad => !isActive(ad));
+    const isExpanded = expandedAdsets.has(a.id);
+
+    return (
+      <Fragment key={a.id}>
+        <tr
+          onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg)'; }}
+          onMouseLeave={e => { e.currentTarget.style.background = ''; }}>
+          {/* Chevron cell */}
+          <td style={{ ...tdBase, paddingLeft: 20, textAlign: 'center', width: 36, cursor: 'pointer' }}
+            onClick={() => setExpandedAdsets(prev => {
+              const next = new Set(prev);
+              if (next.has(a.id)) next.delete(a.id); else next.add(a.id);
+              return next;
+            })}>
+            {isExpanded ? '▾' : '▸'}
+          </td>
+          {COLS.map(col => (
+            <td key={col.key} style={{ ...tdBase, textAlign: col.align || 'right' }}>
+              {col.key === 'aiStatus' ? renderAiCell(a, 'adset', campaignId)
+                : col.key === 'status' ? renderStatusCell(a, 'adset')
+                : col.key === 'name' ? <span style={{ fontWeight: 600, paddingLeft: 4 }} title={a.name}>{a.name}</span>
+                : cellVal(a, col.key)}
+            </td>
+          ))}
+        </tr>
+
+        {/* Ad rows when adset expanded */}
+        {isExpanded && (
+          <>
+            {sortRows(activeAds, sortKey, sortDir).map(ad => renderAdRow(ad, campaignId))}
+
+            {/* Paused ads footer */}
+            {pausedAds.length > 0 && (
+              <>
+                <tr style={{ cursor: 'pointer' }} onClick={() => setShowPausedAds(prev => ({ ...prev, [a.id]: !prev[a.id] }))}>
+                  <td colSpan={COLS.length + 1} style={pausedFooterStyle}>
+                    {showPausedAds[a.id] ? '▾' : '▸'} {pausedAds.length} paused ad{pausedAds.length !== 1 ? 's' : ''}
+                  </td>
+                </tr>
+                {showPausedAds[a.id] && sortRows(pausedAds, sortKey, sortDir).map(ad => renderAdRow(ad, campaignId))}
+              </>
+            )}
+          </>
+        )}
+      </Fragment>
+    );
+  }
+
+  function renderAdRow(ad, campaignId) {
+    const adTdBase = {
+      padding: '6px 12px', fontSize: 11, borderBottom: '1px solid #e2e8f0',
+      whiteSpace: 'nowrap', color: '#64748b', background: '#f8fafc',
+    };
+    return (
+      <tr key={ad.id}
+        onMouseEnter={e => { e.currentTarget.style.background = '#f1f5f9'; }}
+        onMouseLeave={e => { e.currentTarget.style.background = ''; }}>
+        {/* No chevron for ads */}
+        <td style={{ ...adTdBase, paddingLeft: 36, width: 36 }} />
+        {COLS.map(col => (
+          <td key={col.key} style={{ ...adTdBase, textAlign: col.align || 'right' }}>
+            {col.key === 'aiStatus' ? renderAiCell(ad, 'ad', campaignId)
+              : col.key === 'status' ? renderStatusCell(ad, 'ad')
+              : col.key === 'name' ? <span title={ad.name}>{ad.name}</span>
+              : cellVal(ad, col.key)}
+          </td>
+        ))}
+      </tr>
+    );
+  }
+
+  // ── Popup ─────────────────────────────────────────────────────────────────
+  const popupRow = popup
+    ? [...Object.values(allAdsets).flat(), ...Object.values(allAds).flat()].find(r => r.id === popup)
+    : null;
+  const popupAnalysis = popup ? rowAnalyses[popup] : null;
+  const popupIsAd = popup ? Object.values(allAds).flat().some(a => a.id === popup) : false;
+  const popupLevel = popupIsAd ? 'ad' : 'adset';
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
     <div style={{ padding: '24px 28px', minHeight: '100%', boxSizing: 'border-box' }}>
 
-      {/* AI Rules modal */}
-      {showRules && (
-        <AiRulesModal campaigns={campaigns} onClose={() => setShowRules(false)} />
-      )}
-
-      {/* Per-campaign KPI modal */}
+      {/* Modals */}
+      {showRules && <AiRulesModal campaigns={campaigns} onClose={() => setShowRules(false)} />}
       {kpiModal && (
         <KpiModal
           campaignId={kpiModal.campaignId}
@@ -1397,6 +1443,89 @@ setCampaigns(data.filter(c => c.effectiveStatus === 'ACTIVE' || c.status === 'AC
           onSave={saveKpis}
           onClose={() => setKpiModal(null)}
         />
+      )}
+
+      {/* AI Analysis Popup */}
+      {popup && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 500,
+          display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+          onDoubleClick={() => setPopup(null)}>
+          <div style={{ background: 'var(--surface)', borderRadius: 14, padding: 24, width: 680,
+            maxWidth: '95vw', minWidth: 360, minHeight: 200, maxHeight: '92vh', overflowY: 'auto',
+            resize: 'both', boxShadow: '0 8px 32px rgba(0,0,0,0.2)' }}
+            onClick={e => e.stopPropagation()}>
+
+            {/* Header */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 16 }}>
+              <div>
+                <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 6 }}>{popupRow?.name}</div>
+                {popupAnalysis && !popupAnalysis.loading && !popupAnalysis.error && (
+                  <RatingBadge rating={popupAnalysis.rating} />
+                )}
+              </div>
+              <button onClick={() => setPopup(null)} style={{ background: 'none', border: 'none',
+                cursor: 'pointer', fontSize: 18, color: 'var(--text-muted)', padding: '0 4px', marginLeft: 12 }}>✕</button>
+            </div>
+
+            {/* Trend section */}
+            {popupRow && (() => {
+              const cache = adDailyCache[popupRow.id] || {};
+              return <AdTrendSection rows={cache.rows} loading={!!cache.loading} error={cache.error} />;
+            })()}
+
+            {/* Divider */}
+            {popupAnalysis && !popupAnalysis.loading && !popupAnalysis.error && (
+              <div style={{ borderTop: '1px solid var(--border)', marginBottom: 16 }} />
+            )}
+
+            {/* Loading */}
+            {(!popupAnalysis || popupAnalysis.loading) && (
+              <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>Analyzing…</div>
+            )}
+
+            {/* Error */}
+            {popupAnalysis?.error && (
+              <div style={{ color: '#dc2626', fontSize: 13 }}>Error: {popupAnalysis.error}</div>
+            )}
+
+            {/* AI results */}
+            {popupAnalysis && !popupAnalysis.loading && !popupAnalysis.error && (
+              <>
+                <p style={{ fontSize: 13, lineHeight: 1.6, color: 'var(--text)', margin: '0 0 14px' }}>
+                  {popupAnalysis.summary}
+                </p>
+                {popupAnalysis.insights?.length > 0 && (
+                  <div style={{ marginBottom: 14 }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase',
+                      letterSpacing: '0.05em', color: 'var(--text-muted)', marginBottom: 6 }}>Insights</div>
+                    <ul style={{ margin: 0, padding: '0 0 0 16px', fontSize: 12, lineHeight: 1.7 }}>
+                      {popupAnalysis.insights.map((ins, i) => <li key={i}>{ins}</li>)}
+                    </ul>
+                  </div>
+                )}
+                {popupAnalysis.recommendations?.length > 0 && (
+                  <div>
+                    <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase',
+                      letterSpacing: '0.05em', color: 'var(--text-muted)', marginBottom: 6 }}>Recommendations</div>
+                    <ul style={{ margin: 0, padding: '0 0 0 16px', fontSize: 12, lineHeight: 1.7, color: '#15803d' }}>
+                      {popupAnalysis.recommendations.map((rec, i) => <li key={i}>{rec}</li>)}
+                    </ul>
+                  </div>
+                )}
+              </>
+            )}
+
+            {/* Footer */}
+            <div style={{ marginTop: 18, display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              {popupRow && (
+                <button className="btn btn--sm" onClick={() => analyzeRow(popupRow, popupLevel)}>
+                  Re-analyze
+                </button>
+              )}
+              <button className="btn btn--sm" onClick={() => setPopup(null)}>Close</button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Header */}
@@ -1408,7 +1537,6 @@ setCampaigns(data.filter(c => c.effectiveStatus === 'ACTIVE' || c.status === 'AC
           🧠 AI Rules
         </button>
         <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-          {/* Preset buttons */}
           {PRESETS.map(p => {
             const ps = p.start(), pe = p.end();
             const active = start === ps && end === pe;
@@ -1421,277 +1549,48 @@ setCampaigns(data.filter(c => c.effectiveStatus === 'ACTIVE' || c.status === 'AC
             );
           })}
           <DateRangePicker start={start} end={end} onChange={setDateRange} />
-          <button className="btn btn--sm" onClick={loadCampaigns} disabled={loading} style={{ marginLeft: 4 }}>
+          <button className="btn btn--sm" onClick={loadAll} disabled={loading} style={{ marginLeft: 4 }}>
             {loading ? 'Loading…' : 'Refresh'}
           </button>
         </div>
       </div>
 
-      {/* Breadcrumb */}
-      {view !== 'campaigns' && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13,
-          color: 'var(--text-muted)', marginBottom: 16 }}>
-          <button className="btn btn--sm" onClick={() => navTo('campaigns')}>← Campaigns</button>
-          {selCampaign && (
-            <>
-              <span>/</span>
-              {view === 'ads'
-                ? <button className="btn btn--sm" onClick={() => navTo('adsets')}>{selCampaign.name}</button>
-                : <span style={{ color: 'var(--text)', fontWeight: 600 }}>{selCampaign.name}</span>}
-            </>
-          )}
-          {view === 'ads' && selAdset && (
-            <><span>/</span><span style={{ color: 'var(--text)', fontWeight: 600 }}>{selAdset.name}</span></>
-          )}
-        </div>
-      )}
-
       {error && <div style={{ color: '#dc2626', fontSize: 13, marginBottom: 16 }}>Error: {error}</div>}
 
-      {/* ── Campaign grid ─────────────────────────────────────────────────── */}
-      {view === 'campaigns' && (
-        loading ? (
-          <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>Loading campaigns…</div>
-        ) : campaigns.length === 0 ? (
-          <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>No active campaigns found.</div>
-        ) : (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(520px, 1fr))', gap: 16 }}>
-            {campaigns.map(c => {
-              const state    = extractState(c.name);
-              const analysis = analyses[c.id];
-              const { border, bg } = ratingColors(analysis?.rating);
-              const notes    = training[c.id] || [];
-              const hasKpis  = KPI_FIELDS.some(f => kpisMap[c.id]?.[f.key]);
+      {loading ? (
+        <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>Loading…</div>
+      ) : (
+        <div style={{ overflowX: 'auto' }}>
+          <table style={{ borderCollapse: 'separate', borderSpacing: '0 3px', width: '100%', minWidth: 1400 }}>
+            <thead>
+              <tr>
+                <th style={{ width: 36, padding: '9px 4px', borderBottom: '2px solid var(--border)',
+                  background: 'var(--surface)', position: 'sticky', top: 0 }} />
+                {COLS.map(col => (
+                  <th key={col.key} style={thStyle(col)} onClick={() => handleSort(col.key)}
+                    title={`Sort by ${col.label}`}>
+                    {col.label}{sortIndicator(col.key)}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {/* Active campaigns */}
+              {sortRows(campaigns.filter(isActive), sortKey, sortDir).map(c => renderCampaignGroup(c))}
 
-              return (
-                <div key={c.id} style={{ border: `1px solid ${border}`, borderLeft: `4px solid ${border}`,
-                  borderRadius: 10, background: bg, padding: 20, display: 'flex', flexDirection: 'column', gap: 14 }}>
-
-                  {/* Header */}
-                  <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8 }}>
-                    <div>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                        <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text)' }}>{c.name}</div>
-                        {state && (
-                          <span style={{ fontSize: 11, fontWeight: 700, padding: '2px 8px',
-                            borderRadius: 20, background: '#dbeafe', color: '#1d4ed8' }}>{state}</span>
-                        )}
-                        {analysis?.rating && <RatingBadge rating={analysis.rating} />}
-                      </div>
-                      <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 3 }}>
-                        {c.objective} · Budget {fmtBudget(c)}
-                      </div>
-                    </div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
-                      <button className="btn btn--sm"
-                        onClick={() => setKpiModal({ campaignId: c.id, campaignName: c.name })}
-                        title={hasKpis ? 'Edit KPIs' : 'Set KPIs (no targets yet)'}
-                        style={{ fontSize: 11, color: hasKpis ? 'var(--green-dark)' : 'var(--text-muted)' }}>
-                        ⚙ KPIs{hasKpis ? ' ✓' : ''}
-                      </button>
-                      <DeliveryBadge status={campaignStatusOverrides[c.id] || c.effectiveStatus || c.status} />
-                      <button className="btn btn--sm" disabled={togglingCampaigns.has(c.id)}
-                        onClick={() => toggleCampaign(c)}
-                        title={(campaignStatusOverrides[c.id] || c.status) === 'ACTIVE' ? 'Pause campaign' : 'Enable campaign'}
-                        style={{ fontSize: 11, padding: '2px 8px', minWidth: 28 }}>
-                        {togglingCampaigns.has(c.id) ? '…' : (campaignStatusOverrides[c.id] || c.status) === 'ACTIVE' ? '⏸' : '▶'}
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* Stats */}
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16 }}>
-                    <StatBox label="Spent"  value={fmt$(c.spend)} />
-                    <StatBox label="Leads"  value={c.results ?? '—'} />
-                    <StatBox label="CPL"    value={fmt$(clientCpl(c))} />
-                    <StatBox label="Clicks" value={fmtN(c.unique_clicks)} />
-                    <StatBox label="CPM"    value={fmt$(c.cpm)} />
-                    <StatBox label="Freq"   value={fmtN(c.frequency)} />
-                    <StatBox label="CTR"    value={fmtPct(c.unique_ctr)} />
-                  </div>
-
-                  {/* AI section */}
-                  <div style={{ borderTop: '1px solid var(--border)', paddingTop: 12 }}>
-                    {!analysis && (
-                      <button className="btn btn--sm" onClick={() => analyze(c)} style={{ fontSize: 12 }}>
-                        ✦ Analyze with AI
-                      </button>
-                    )}
-                    {analysis?.loading && <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Analyzing…</div>}
-                    {analysis?.error && (
-                      <div style={{ fontSize: 12, color: '#dc2626' }}>
-                        AI error: {analysis.error}
-                        <button className="btn btn--sm" style={{ marginLeft: 8 }} onClick={() => analyze(c)}>Retry</button>
-                      </div>
-                    )}
-                    {analysis && !analysis.loading && !analysis.error && (
-                      <div>
-                        <div style={{ fontSize: 13, color: 'var(--text)', lineHeight: 1.5, marginBottom: 8 }}>
-                          {analysis.summary}
-                        </div>
-                        {analysis.insights?.length > 0 && (
-                          <ul style={{ margin: '0 0 8px 0', padding: '0 0 0 16px', fontSize: 12,
-                            color: 'var(--text-muted)', lineHeight: 1.6 }}>
-                            {analysis.insights.map((ins, i) => <li key={i}>{ins}</li>)}
-                          </ul>
-                        )}
-                        {analysis.recommendations?.length > 0 && (
-                          <div style={{ fontSize: 12, color: 'var(--green-dark)', marginBottom: 8 }}>
-                            <strong>Recommendations:</strong>
-                            <ul style={{ margin: '4px 0 0 0', padding: '0 0 0 16px', lineHeight: 1.6 }}>
-                              {analysis.recommendations.map((r, i) => <li key={i}>{r}</li>)}
-                            </ul>
-                          </div>
-                        )}
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
-                          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Was this accurate?</span>
-                          <button className="btn btn--sm"
-                            onClick={() => addTraining(c.id, c.name, 'positive', `Analysis ${new Date().toLocaleDateString()} was accurate`)}>👍</button>
-                          <button className="btn btn--sm"
-                            onClick={() => addTraining(c.id, c.name, 'negative', `Analysis ${new Date().toLocaleDateString()} was inaccurate`)}>👎</button>
-                          <button className="btn btn--sm" onClick={() => analyze(c)}>Re-analyze</button>
-                        </div>
-                        <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
-                          <input type="text" placeholder="Add a training note…"
-                            value={noteInputs[c.id] || ''}
-                            onChange={e => setNoteInputs(p => ({ ...p, [c.id]: e.target.value }))}
-                            onKeyDown={e => {
-                              if (e.key === 'Enter' && noteInputs[c.id]?.trim()) {
-                                addTraining(c.id, c.name, 'note', noteInputs[c.id].trim());
-                                setNoteInputs(p => ({ ...p, [c.id]: '' }));
-                              }
-                            }}
-                            style={{ flex: 1, padding: '5px 10px', borderRadius: 8, fontSize: 12,
-                              border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)' }}
-                          />
-                          <button className="btn btn--sm" onClick={() => {
-                            if (noteInputs[c.id]?.trim()) {
-                              addTraining(c.id, c.name, 'note', noteInputs[c.id].trim());
-                              setNoteInputs(p => ({ ...p, [c.id]: '' }));
-                            }
-                          }}>Save</button>
-                        </div>
-                        {notes.length > 0 && (
-                          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6 }}>
-                            {notes.length} training note{notes.length !== 1 ? 's' : ''} saved
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-
-                  <button className="btn btn--sm" onClick={() => openCampaign(c)}
-                    style={{ alignSelf: 'flex-start', fontSize: 12 }}>
-                    View Adsets →
-                  </button>
-                </div>
-              );
-            })}
-          </div>
-        )
-      )}
-
-      {/* ── Adset view ────────────────────────────────────────────────────── */}
-      {view === 'adsets' && selCampaign && (
-        <div>
-          <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap', marginBottom: 20,
-            padding: '14px 18px', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 10 }}>
-            <StatBox label="Spent"  value={fmt$(selCampaign.spend)} />
-            <StatBox label="Leads"  value={selCampaign.results ?? '—'} />
-            <StatBox label="CPL"    value={fmt$(clientCpl(selCampaign))} />
-            <StatBox label="Clicks" value={fmtN(selCampaign.unique_clicks)} />
-            <StatBox label="CPM"    value={fmt$(selCampaign.cpm)} />
-            <StatBox label="CTR"    value={fmtPct(selCampaign.unique_ctr)} />
-            <StatBox label="Budget" value={fmtBudget(selCampaign)} />
-          </div>
-
-          {adsets.length > 0 && !adsetLoading && (
-            <div style={{ marginBottom: 16, display: 'flex', gap: 8, alignItems: 'center' }}>
-              {(() => {
-                const active = adsets.filter(a => a.effectiveStatus === 'ACTIVE');
-                const batchLoading = active.some(a => rowAnalyses[a.id]?.loading);
-                const done = active.filter(a => rowAnalyses[a.id] && !rowAnalyses[a.id].loading && !rowAnalyses[a.id].error).length;
-                return (
-                  <>
-                    {done > 0 && (
-                      <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                        {done}/{active.length} active analyzed
-                      </span>
-                    )}
-                    <button className="btn btn--sm" disabled={batchLoading || !active.length}
-                      onClick={() => analyzeAllRows(active, 'adset')}>
-                      {batchLoading ? 'Analyzing…' : `✦ Analyze Active (${active.length})`}
-                    </button>
-                  </>
-                );
-              })()}
-            </div>
-          )}
-
-          {trendData.length > 1 && (
-            <div style={{ marginBottom: 20, padding: 16, background: 'var(--surface)',
-              border: '1px solid var(--border)', borderRadius: 10 }}>
-              <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 12 }}>Spend & Leads — {tfLabel}</div>
-              <ResponsiveContainer width="100%" height={180}>
-                <LineChart data={trendData} margin={{ top: 4, right: 20, left: 0, bottom: 0 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
-                  <XAxis dataKey="date" tick={{ fontSize: 11 }} />
-                  <YAxis yAxisId="spend" orientation="left" tick={{ fontSize: 11 }} tickFormatter={v => `$${v}`} width={55} />
-                  <YAxis yAxisId="leads" orientation="right" tick={{ fontSize: 11 }} width={30} />
-                  <Tooltip formatter={(val, name) => name === 'spend' ? [`$${val.toFixed(2)}`, 'Spend'] : [val, 'Leads']} />
-                  <Legend />
-                  <Line yAxisId="spend" type="linear" dataKey="spend" stroke="#16a34a" strokeWidth={2} dot={{ r: 3 }} />
-                  <Line yAxisId="leads" type="linear" dataKey="leads" stroke="#3b82f6" strokeWidth={2} dot={{ r: 3 }} />
-                </LineChart>
-              </ResponsiveContainer>
-            </div>
-          )}
-
-          {adsetLoading
-            ? <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>Loading adsets…</div>
-            : <DrillTable rows={adsets} onRowClick={openAdset} label="Ad Set" level="adset"
-                rowAnalyses={rowAnalyses} onAnalyzeRow={r => analyzeRow(r, 'adset')} toggleable />}
-        </div>
-      )}
-
-      {/* ── Ad view ───────────────────────────────────────────────────────── */}
-      {view === 'ads' && selAdset && (
-        <div>
-          <div style={{ marginBottom: 16, fontSize: 13, color: 'var(--text-muted)' }}>
-            Ad set: <strong style={{ color: 'var(--text)' }}>{selAdset.name}</strong>
-            &nbsp;·&nbsp;Budget {fmtBudget(selAdset)}
-            &nbsp;·&nbsp;<DeliveryBadge status={selAdset.effectiveStatus || selAdset.status} />
-          </div>
-          {adLoading ? (
-            <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>Loading ads…</div>
-          ) : (
-            <>
-              {ads.length > 0 && (
-                <div style={{ marginBottom: 16, display: 'flex', gap: 8, alignItems: 'center' }}>
-                  {(() => {
-                    const active = ads.filter(a => a.effectiveStatus === 'ACTIVE');
-                    const batchLoading = active.some(a => rowAnalyses[a.id]?.loading);
-                    const done = active.filter(a => rowAnalyses[a.id] && !rowAnalyses[a.id].loading && !rowAnalyses[a.id].error).length;
-                    return (
-                      <>
-                        {done > 0 && (
-                          <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                            {done}/{active.length} active analyzed
-                          </span>
-                        )}
-                        <button className="btn btn--sm" disabled={batchLoading || !active.length}
-                          onClick={() => analyzeAllRows(active, 'ad')}>
-                          {batchLoading ? 'Analyzing…' : `✦ Analyze Active (${active.length})`}
-                        </button>
-                      </>
-                    );
-                  })()}
-                </div>
+              {/* Paused campaigns footer */}
+              {campaigns.filter(c => !isActive(c)).length > 0 && (
+                <>
+                  <tr style={{ cursor: 'pointer' }} onClick={() => setShowPausedCampaigns(v => !v)}>
+                    <td colSpan={COLS.length + 1} style={pausedFooterStyle}>
+                      {showPausedCampaigns ? '▾' : '▸'} {campaigns.filter(c => !isActive(c)).length} paused campaign{campaigns.filter(c => !isActive(c)).length !== 1 ? 's' : ''}
+                    </td>
+                  </tr>
+                  {showPausedCampaigns && sortRows(campaigns.filter(c => !isActive(c)), sortKey, sortDir).map(c => renderCampaignGroup(c))}
+                </>
               )}
-              <DrillTable rows={ads} label="Ad" level="ad" dailyRows={adDailyInsights}
-                rowAnalyses={rowAnalyses} onAnalyzeRow={r => analyzeRow(r, 'ad')} toggleable />
-            </>
-          )}
+            </tbody>
+          </table>
         </div>
       )}
     </div>
