@@ -246,31 +246,91 @@ function AdTrendSection({ rows, loading, error }) {
   );
 }
 
-// Format computeAdStats result into a comprehensive text block for AI prompts.
-// This is the same data the trend chart visualises — all-time, last-7d, last-3d
-// with every metric: spend, leads, CPL, CPM, CTR, CPC, clicks, impressions.
+// Format daily rows into a comprehensive text block for AI prompts.
+// Includes: period aggregates (all-time, last-7d, last-3d), week-over-week
+// comparison using last 7 vs prior 7 active days, and a compact daily table
+// so the AI can see the actual trend trajectory — same data as the chart.
 function computeAdTrend(entityId, dailyRows, idField = 'ad_id') {
-  const filtered = dailyRows.filter(r => r[idField] === entityId);
-  const stats = computeAdStats(null, filtered);
+  const LEAD_TYPES = ['lead','onsite_conversion.lead_grouped','offsite_conversion.fb_pixel_lead','contact','schedule','submit_application'];
+  function getLeads(r) {
+    for (const t of LEAD_TYPES) {
+      const a = (r.actions || []).find(x => x.action_type === t);
+      if (a) return parseInt(a.value, 10) || 0;
+    }
+    return 0;
+  }
+  const rows = dailyRows
+    .filter(r => r[idField] === entityId && (parseFloat(r.spend) || 0) > 0)
+    .sort((a, b) => a.date_start < b.date_start ? -1 : 1);
+  if (!rows.length) return null;
+
+  const stats = computeAdStats(null, rows);
   if (!stats) return null;
   const { all, last7, last3 } = stats;
-  function fmtPeriod(p) {
+
+  function fmtPeriod(p, label) {
+    if (p.days === 0) return `${label}: no active days in this window`;
     return [
-      `  Spend: $${p.spend.toFixed(2)} total | $${p.spendPerDay.toFixed(2)}/day over ${p.days} active day(s)`,
-      `  Leads: ${p.leads} total | ${p.leadsPerDay.toFixed(2)}/day`,
-      `  CPL: ${p.cpl != null ? '$' + p.cpl.toFixed(2) : 'N/A'}`,
-      `  CPM: ${p.cpm != null ? '$' + p.cpm.toFixed(2) : 'N/A'}`,
-      `  CTR: ${p.ctr != null ? p.ctr.toFixed(2) + '%' : 'N/A'}`,
-      `  CPC: ${p.cpc != null ? '$' + p.cpc.toFixed(2) : 'N/A'}`,
-      `  Link Clicks: ${p.clicks} | ${p.clicksPerDay.toFixed(2)}/day`,
-      `  Impressions: ${Math.round(p.impressions)} | ${Math.round(p.impressionsPerDay)}/day`,
+      `${label} (${p.days} active days):`,
+      `  Spend: $${p.spend.toFixed(2)} total | $${p.spendPerDay.toFixed(2)}/day`,
+      `  Leads: ${p.leads} | ${p.leadsPerDay.toFixed(2)}/day | CPL: ${p.cpl != null ? '$' + p.cpl.toFixed(2) : 'N/A'}`,
+      `  CPM: ${p.cpm != null ? '$' + p.cpm.toFixed(2) : 'N/A'} | CTR: ${p.ctr != null ? p.ctr.toFixed(2) + '%' : 'N/A'} | CPC: ${p.cpc != null ? '$' + p.cpc.toFixed(2) : 'N/A'}`,
+      `  Impressions: ${Math.round(p.impressions)} | Clicks: ${p.clicks}`,
     ].join('\n');
   }
+
+  // Week-over-week: last 7 active days vs prior 7 active days
+  const last7Active  = rows.slice(-7);
+  const prior7Active = rows.slice(-14, -7);
+  function sumActive(subset) {
+    const spend = subset.reduce((s, r) => s + (parseFloat(r.spend) || 0), 0);
+    const leads = subset.reduce((s, r) => s + getLeads(r), 0);
+    const impr  = subset.reduce((s, r) => s + (parseFloat(r.impressions) || 0), 0);
+    const clicks= subset.reduce((s, r) => s + (parseFloat(r.unique_inline_link_clicks ?? r.unique_clicks) || 0), 0);
+    return {
+      spend, leads, impr, clicks,
+      cpl: leads > 0 ? spend / leads : null,
+      cpm: impr > 0 ? (spend / impr) * 1000 : null,
+      ctr: impr > 0 ? (clicks / impr) * 100 : null,
+    };
+  }
+  const wow = prior7Active.length > 0 ? (() => {
+    const r = sumActive(last7Active), p = sumActive(prior7Active);
+    const pct = (a, b) => b > 0 ? ((a - b) / b * 100).toFixed(0) + '%' : 'N/A';
+    return [
+      `Week-over-week (last 7 vs prior 7 active days):`,
+      `  Spend: $${r.spend.toFixed(2)} vs $${p.spend.toFixed(2)} (${pct(r.spend, p.spend)})`,
+      `  Leads: ${r.leads} vs ${p.leads} (${pct(r.leads, p.leads)})`,
+      `  CPL: ${r.cpl != null ? '$' + r.cpl.toFixed(2) : 'N/A'} vs ${p.cpl != null ? '$' + p.cpl.toFixed(2) : 'N/A'}`,
+      `  CPM: ${r.cpm != null ? '$' + r.cpm.toFixed(2) : 'N/A'} vs ${p.cpm != null ? '$' + p.cpm.toFixed(2) : 'N/A'}`,
+      `  CTR: ${r.ctr != null ? r.ctr.toFixed(2) + '%' : 'N/A'} vs ${p.ctr != null ? p.ctr.toFixed(2) + '%' : 'N/A'}`,
+    ].join('\n');
+  })() : null;
+
+  // Compact daily table — last 28 active days
+  const recent = rows.slice(-28);
+  const dailyTable = [
+    `Daily data (last ${recent.length} active days, oldest→newest):`,
+    `Date       | Spend   | Leads | CPL      | CPM     | CTR`,
+    ...recent.map(r => {
+      const spend = parseFloat(r.spend) || 0;
+      const leads = getLeads(r);
+      const impr  = parseFloat(r.impressions) || 0;
+      const clicks= parseFloat(r.unique_inline_link_clicks ?? r.unique_clicks) || 0;
+      const cpl   = leads > 0 ? '$' + (spend / leads).toFixed(2) : 'N/A';
+      const cpm   = impr > 0 ? '$' + ((spend / impr) * 1000).toFixed(2) : 'N/A';
+      const ctr   = impr > 0 ? ((clicks / impr) * 100).toFixed(2) + '%' : 'N/A';
+      return `${r.date_start} | $${spend.toFixed(2).padStart(6)} | ${String(leads).padStart(5)} | ${cpl.padStart(8)} | ${cpm.padStart(7)} | ${ctr}`;
+    }),
+  ].join('\n');
+
   return [
-    `All-time (${all.days} days with spend):\n${fmtPeriod(all)}`,
-    `Last 7d (${last7.days} active days):\n${fmtPeriod(last7)}`,
-    `Last 3d (${last3.days} active days):\n${fmtPeriod(last3)}`,
-  ].join('\n\n');
+    fmtPeriod(all,   'All-time'),
+    fmtPeriod(last7, 'Last 7 calendar days'),
+    fmtPeriod(last3, 'Last 3 calendar days'),
+    wow,
+    dailyTable,
+  ].filter(Boolean).join('\n\n');
 }
 
 function fmtDate(iso) {
