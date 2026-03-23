@@ -18,6 +18,32 @@ function cacheGet(key) {
 }
 function cacheSet(key, data) { _cache.set(key, { data, ts: Date.now() }); }
 
+// ── Serialized FB request queue ─────────────────────────────────────────────
+// All FB API page fetches run through this queue one at a time with a gap
+// between calls. This prevents simultaneous multi-account bursts from tripping
+// the per-user rate limit.
+const FB_CALL_GAP_MS = 250; // ms between consecutive FB API calls
+const _fbQueue = [];
+let   _fbRunning = false;
+
+function fbFetch(url) {
+  return new Promise((resolve, reject) => {
+    _fbQueue.push({ url, resolve, reject });
+    _drainFbQueue();
+  });
+}
+
+async function _drainFbQueue() {
+  if (_fbRunning) return;
+  _fbRunning = true;
+  while (_fbQueue.length > 0) {
+    const { url, resolve, reject } = _fbQueue.shift();
+    try { resolve(await fetch(url)); } catch (e) { reject(e); }
+    if (_fbQueue.length > 0) await new Promise(r => setTimeout(r, FB_CALL_GAP_MS));
+  }
+  _fbRunning = false;
+}
+
 // ── API usage stats tracker ──────────────────────────────────────────────────
 const _stats = {
   callCount: 0,     // total real FB API calls (not cache hits)
@@ -176,7 +202,7 @@ async function fetchInsightsForAccount(account, level, datePreset, filters = {},
   let url = `${FB_API}/${account}/insights?${params}`;
   let pages = 0;
   while (url) {
-    const res = await fetch(url);
+    const res = await fbFetch(url);
     pages++;
     captureRateLimit(account, res.headers);
     const json = await res.json();
@@ -206,7 +232,7 @@ async function fetchFromAllAccounts(path, queryParams) {
     let url = `${FB_API}/${account}/${path}?${new URLSearchParams({ ...queryParams, access_token: token(), limit: 500 })}`;
     let pages = 0;
     while (url) {
-      const res = await fetch(url);
+      const res = await fbFetch(url);
       pages++;
       captureRateLimit(account, res.headers);
       const json = await res.json();
@@ -571,6 +597,9 @@ router.get('/stats', (req, res) => {
     cacheHits: _stats.cacheHits,
     errors: _stats.errors,
     rateLimits: _stats.rateLimits,
+    queueDepth: _fbQueue.length,
+    queueRunning: _fbRunning,
+    callGapMs: FB_CALL_GAP_MS,
     cacheSize,
     cacheKeys,
     recentCalls: _stats.recentCalls,

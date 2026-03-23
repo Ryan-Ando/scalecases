@@ -1547,6 +1547,8 @@ export default function CampaignReports() {
                       { label: 'Cache Hits', value: apiStats.cacheHits, color: 'var(--green)' },
                       { label: 'Errors', value: apiStats.errors, warn: apiStats.errors > 0 },
                       { label: 'Cached Keys', value: apiStats.cacheSize },
+                      { label: 'Queue', value: apiStats.queueDepth, warn: apiStats.queueDepth > 10 },
+                      { label: 'Gap', value: `${apiStats.callGapMs}ms` },
                       { label: 'Uptime', value: uptimeMin < 60 ? `${uptimeMin}m` : `${Math.floor(uptimeMin/60)}h ${uptimeMin%60}m` },
                     ].map(({ label, value, warn, color }) => (
                       <div key={label} style={{ background: 'var(--bg)', border: `1px solid ${warn ? '#dc2626' : 'var(--border)'}`, borderRadius: 8, padding: '8px 14px', textAlign: 'center', minWidth: 90 }}>
