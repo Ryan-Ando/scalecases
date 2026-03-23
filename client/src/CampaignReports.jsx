@@ -955,15 +955,16 @@ export default function CampaignReports() {
   }, []);
 
   // ── Load campaigns only (lazy: adsets/ads fetched on expand) ─────────────
-  async function loadAll() {
+  async function loadAll({ force = false } = {}) {
     setLoading(true); setError('');
-    // Clear stale adset/ad data when date changes — they'll reload on expand
+    // Clear stale adset/ad data — they'll reload on expand
     setAllAdsets({});
     setAllAds({});
     _loadingAdsetIds.current.clear();
     _loadingAdIds.current.clear();
+    const forceParam = force ? '&force=1' : '';
     try {
-      const res  = await fetch(`${BASE}/api/facebook/campaigns?start=${start}&end=${end}`);
+      const res  = await fetch(`${BASE}/api/facebook/campaigns?start=${start}&end=${end}${forceParam}`);
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || res.statusText);
       setCampaigns(Array.isArray(data) ? data : []);
@@ -975,12 +976,13 @@ export default function CampaignReports() {
   }
 
   // ── Lazy-load adsets for one campaign on expand ───────────────────────────
-  async function loadAdsets(campaignId) {
-    if (allAdsets[campaignId] !== undefined) return; // already loaded
+  async function loadAdsets(campaignId, { force = false } = {}) {
+    if (!force && allAdsets[campaignId] !== undefined) return; // already loaded
     if (_loadingAdsetIds.current.has(campaignId)) return; // in flight
     _loadingAdsetIds.current.add(campaignId);
+    const forceParam = force ? '&force=1' : '';
     try {
-      const res    = await fetch(`${BASE}/api/facebook/adsets?campaign_id=${campaignId}&start=${start}&end=${end}`);
+      const res    = await fetch(`${BASE}/api/facebook/adsets?campaign_id=${campaignId}&start=${start}&end=${end}${forceParam}`);
       const adsets = await res.json();
       setAllAdsets(prev => ({ ...prev, [campaignId]: Array.isArray(adsets) ? adsets : [] }));
     } catch (e) {
@@ -992,12 +994,13 @@ export default function CampaignReports() {
   }
 
   // ── Lazy-load ads for one adset on expand ────────────────────────────────
-  async function loadAds(adsetId) {
-    if (allAds[adsetId] !== undefined) return; // already loaded
+  async function loadAds(adsetId, { force = false } = {}) {
+    if (!force && allAds[adsetId] !== undefined) return; // already loaded
     if (_loadingAdIds.current.has(adsetId)) return; // in flight
     _loadingAdIds.current.add(adsetId);
+    const forceParam = force ? '&force=1' : '';
     try {
-      const res = await fetch(`${BASE}/api/facebook/ads?adset_id=${adsetId}&start=${start}&end=${end}`);
+      const res = await fetch(`${BASE}/api/facebook/ads?adset_id=${adsetId}&start=${start}&end=${end}${forceParam}`);
       const ads = await res.json();
       setAllAds(prev => ({ ...prev, [adsetId]: Array.isArray(ads) ? ads : [] }));
     } catch (e) {
@@ -1006,6 +1009,19 @@ export default function CampaignReports() {
     } finally {
       _loadingAdIds.current.delete(adsetId);
     }
+  }
+
+  async function forceRefreshAll() {
+    await loadAll({ force: true });
+    // Re-fetch already-expanded adsets and their ads
+    const expandedCids = [...expandedCampaigns];
+    await Promise.all(expandedCids.map(async cid => {
+      await loadAdsets(cid, { force: true });
+      const expandedAids = [...expandedAdsets].filter(aid =>
+        (allAdsets[cid] || []).some(a => a.id === aid)
+      );
+      await Promise.all(expandedAids.map(aid => loadAds(aid, { force: true })));
+    }));
   }
 
   useEffect(() => { loadAll(); }, [start, end]);
@@ -1818,8 +1834,11 @@ export default function CampaignReports() {
             );
           })}
           <DateRangePicker start={start} end={end} onChange={setDateRange} />
-          <button className="btn btn--sm" onClick={loadAll} disabled={loading} style={{ marginLeft: 4 }}>
+          <button className="btn btn--sm" onClick={() => loadAll()} disabled={loading} style={{ marginLeft: 4 }}>
             {loading ? 'Loading…' : 'Refresh'}
+          </button>
+          <button className="btn btn--sm" onClick={forceRefreshAll} disabled={loading} title="Bypass cache and fetch live data from Facebook" style={{ marginLeft: 4 }}>
+            {loading ? 'Loading…' : '↺ Force Refresh'}
           </button>
           <button className="btn btn--sm" title="View FB API usage stats"
             onClick={() => { setShowApiStats(true); fetchApiStats(); }}

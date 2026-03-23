@@ -254,7 +254,7 @@ router.get('/campaigns', async (req, res) => {
   try {
     const { date_preset, start, end } = req.query;
     const cacheKey = `campaigns:${date_preset||''}:${start||''}:${end||''}`;
-    const cached = cacheGet(cacheKey);
+    const cached = req.query.force ? null : cacheGet(cacheKey);
     if (cached) return res.json(cached);
 
     const timeRange = start && end ? { since: start, until: end } : null;
@@ -320,7 +320,7 @@ router.get('/adsets', async (req, res) => {
   try {
     const { date_preset, campaign_id, start, end } = req.query;
     const cacheKey = `adsets:${campaign_id||''}:${date_preset||''}:${start||''}:${end||''}`;
-    const cached = cacheGet(cacheKey);
+    const cached = req.query.force ? null : cacheGet(cacheKey);
     if (cached) return res.json(cached);
     const timeRange = start && end ? { since: start, until: end } : null;
 
