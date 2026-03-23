@@ -1745,31 +1745,44 @@ export default function CampaignReports() {
             )}
 
             {/* AI results */}
-            {popupAnalysis && !popupAnalysis.loading && !popupAnalysis.error && (
-              <>
-                <p style={{ fontSize: 13, lineHeight: 1.6, color: 'var(--text)', margin: '0 0 14px' }}>
-                  {popupAnalysis.summary}
-                </p>
-                {popupAnalysis.insights?.length > 0 && (
-                  <div style={{ marginBottom: 14 }}>
-                    <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase',
-                      letterSpacing: '0.05em', color: 'var(--text-muted)', marginBottom: 6 }}>Insights</div>
-                    <ul style={{ margin: 0, padding: '0 0 0 16px', fontSize: 12, lineHeight: 1.7 }}>
-                      {popupAnalysis.insights.map((ins, i) => <li key={i}>{ins}</li>)}
-                    </ul>
+            {popupAnalysis && !popupAnalysis.loading && !popupAnalysis.error && (() => {
+              const rating = popupAnalysis.rating;
+              const actionColor = rating === 'turn_off' ? '#dc2626'
+                : rating === 'good' ? '#15803d'
+                : rating === 'leave_on' ? '#15803d'
+                : rating === 'needs_attention' ? '#d97706'
+                : 'var(--text)';
+              return (
+                <>
+                  {/* Action — bold, just under charts */}
+                  <div style={{ marginBottom: 14, padding: '10px 14px', borderRadius: 8,
+                    background: rating === 'turn_off' ? '#fef2f2'
+                      : rating === 'good' ? '#f0fdf4'
+                      : rating === 'leave_on' ? '#f0fdf4'
+                      : rating === 'needs_attention' ? '#fffbeb'
+                      : 'var(--bg)',
+                    border: `1px solid ${actionColor}33` }}>
+                    <span style={{ fontWeight: 700, fontSize: 13, color: actionColor }}>
+                      {popupAnalysis.action || popupAnalysis.summary}
+                    </span>
                   </div>
-                )}
-                {popupAnalysis.recommendations?.length > 0 && (
-                  <div>
-                    <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase',
-                      letterSpacing: '0.05em', color: 'var(--text-muted)', marginBottom: 6 }}>Recommendations</div>
-                    <ul style={{ margin: 0, padding: '0 0 0 16px', fontSize: 12, lineHeight: 1.7, color: '#15803d' }}>
-                      {popupAnalysis.recommendations.map((rec, i) => <li key={i}>{rec}</li>)}
+
+                  {/* Reasons */}
+                  {(popupAnalysis.reasons || popupAnalysis.insights)?.length > 0 && (
+                    <ul style={{ margin: 0, padding: '0 0 0 16px', fontSize: 12, lineHeight: 1.8, color: 'var(--text)' }}>
+                      {(popupAnalysis.reasons || popupAnalysis.insights).map((r, i) => <li key={i}>{r}</li>)}
                     </ul>
-                  </div>
-                )}
-              </>
-            )}
+                  )}
+
+                  {/* Legacy recommendations (old analyses) */}
+                  {!popupAnalysis.reasons && popupAnalysis.recommendations?.length > 0 && (
+                    <ul style={{ margin: '8px 0 0', padding: '0 0 0 16px', fontSize: 12, lineHeight: 1.8, color: '#15803d' }}>
+                      {popupAnalysis.recommendations.map((r, i) => <li key={i}>{r}</li>)}
+                    </ul>
+                  )}
+                </>
+              );
+            })()}
 
             {/* Footer */}
             <div style={{ marginTop: 18, display: 'flex', gap: 8, justifyContent: 'flex-end' }}>

@@ -116,20 +116,12 @@ ${campaignRules.trim() ? `\nCAMPAIGN-SPECIFIC RULES (for this campaign only):\n$
 Return ONLY valid JSON with this exact structure (no markdown, no explanation):
 {
   "rating": "good" | "leave_on" | "needs_attention" | "underperforming" | "turn_off" | "wait",
-  "summary": "2–3 sentence plain-English summary referencing actual numbers",
-  "insights": ["specific data-driven insight", "another insight", "another insight"],
-  "recommendations": ["one actionable recommendation", "another recommendation"]
+  "action": "One direct sentence starting with: Leave on, Turn off, Scale/duplicate, or Monitor. State verdict + key reason. No fluff.",
+  "reasons": ["short bullet citing a specific number or trend", "short bullet citing a specific number or trend"]
 }
 
-Rating guide (pick exactly one):
-- "good"            — Hitting or beating KPI targets. Performing well, keep running.
-- "leave_on"        — CPL is acceptable but secondary stats (CTR, frequency, CPM, clicks) are weak or declining. Leave running for now but monitor.
-- "needs_attention" — Stats were good but showing signs of decline; on the edge. Watching to see if it recovers.
-- "underperforming" — Below targets but the call to turn it off is unclear — context-dependent, not objectively bad yet.
-- "turn_off"        — Objectively poor performance. High CPL, weak engagement, no signs of recovery. Should be turned off.
-- "wait"            — Spent under $50 with no leads yet. Too early to judge — use this rating only when spend is below $50 AND leads = 0. Once a lead exists, use one of the other ratings regardless of spend.
-If trend data is present, weight recent performance (last 3d and 7d) more heavily than all-time.
-Never suggest pausing or directly editing ads — only provide observations and advice.`;
+Rules: "action" is one sentence max. "reasons" is 2–5 bullets, each must reference a specific number or observed trend. No generic statements.
+Rating guide: "good"=beating targets | "leave_on"=CPL ok, secondary stats weak | "needs_attention"=declining but thresholds not met | "underperforming"=below targets, turn-off not warranted | "turn_off"=CPL exceeded threshold AND supporting metrics 1.25× above KPI | "wait"=under $50 spend.`;
 
   try {
     const message = await client.messages.create({
@@ -142,7 +134,7 @@ Never suggest pausing or directly editing ads — only provide observations and 
     const jsonStr = extractJsonObject(text);
     if (!jsonStr) throw new Error('No JSON in AI response');
     const result = JSON.parse(jsonStr);
-    if (!result.rating || !result.summary) throw new Error('Invalid AI response structure');
+    if (!result.rating || !result.action) throw new Error('Invalid AI response structure');
     res.json(result);
   } catch (err) {
     console.error('Campaign analysis error:', err.message);
@@ -191,17 +183,10 @@ ${levelLabel.toUpperCase()}S TO ANALYZE:
 ${rowsBlock}
 
 Return ONLY a valid JSON array with exactly ${rows.length} entries — one per ${levelLabel.toLowerCase()} — using their exact IDs (no markdown, no explanation):
-[{"id":"<exact id>","rating":"good"|"leave_on"|"needs_attention"|"underperforming"|"turn_off"|"wait","summary":"1–2 sentences with actual numbers","insights":["insight"],"recommendations":["recommendation"]}]
+[{"id":"<exact id>","rating":"good"|"leave_on"|"needs_attention"|"underperforming"|"turn_off"|"wait","action":"one sentence starting with Leave on/Turn off/Scale/Monitor + key reason","reasons":["bullet with specific number or trend","bullet with specific number or trend"]}]
 
-Rating guide (pick exactly one per row):
-- "good"            — Hitting or beating KPI targets. Performing well, keep running.
-- "leave_on"        — CPL is acceptable but secondary stats (CTR, frequency, CPM, clicks) are weak or declining. Leave running for now but monitor.
-- "needs_attention" — Stats were good but showing signs of decline; on the edge. Watching to see if it recovers.
-- "underperforming" — Below targets but the call to turn it off is unclear — context-dependent, not objectively bad yet.
-- "turn_off"        — Objectively poor performance. High CPL, weak engagement, no signs of recovery. Should be turned off.
-- "wait"            — Spent under $50 with no leads yet. Too early to judge — use this rating only when spend is below $50 AND leads = 0. Once a lead exists, use one of the other ratings regardless of spend.
-If trend data is present, weight recent performance (last 3d and 7d) more heavily than all-time.
-Never suggest pausing or directly editing ads.`;
+Rating guide: "good"=beating targets | "leave_on"=CPL ok, secondary stats weak | "needs_attention"=declining, thresholds not met | "underperforming"=below targets, turn-off not warranted | "turn_off"=CPL exceeded threshold AND supporting metrics 1.25× above KPI | "wait"=under $50.
+"action": one sentence max. "reasons": 2–5 bullets each citing a specific number or trend. No generic statements. Weight last 3d and 7d more heavily than all-time.`;
 
   try {
     const message = await client.messages.create({
@@ -263,20 +248,22 @@ ${campaignRules.trim() ? `\nCAMPAIGN-SPECIFIC RULES (for this campaign only):\n$
 Return ONLY valid JSON with this exact structure (no markdown, no explanation):
 {
   "rating": "good" | "leave_on" | "needs_attention" | "underperforming" | "turn_off" | "wait",
-  "summary": "2–3 sentence plain-English summary referencing actual numbers",
-  "insights": ["specific data-driven insight", "another insight"],
-  "recommendations": ["one actionable recommendation", "another recommendation"]
+  "action": "One direct sentence. Must start with one of: Leave on, Turn off, Scale/duplicate, or Monitor. No fluff. E.g. 'Turn off — CPL has exceeded the 2× threshold with declining CTR and rising CPM.'",
+  "reasons": ["short bullet — specific number or trend", "short bullet — specific number or trend"]
 }
 
+Rules for each field:
+- "action": single sentence, lead with the verdict, follow with the key reason. No hedging.
+- "reasons": 2–5 bullets max. Each bullet must cite a specific number or observed trend. No generic statements. No full paragraphs.
+
 Rating guide (pick exactly one):
-- "good"            — Hitting or beating KPI targets. Performing well, keep running.
-- "leave_on"        — CPL is acceptable but secondary stats (CTR, frequency, CPM, clicks) are weak or declining. Leave running for now but monitor.
-- "needs_attention" — Stats were good but showing signs of decline; on the edge. Watching to see if it recovers.
-- "underperforming" — Below targets but the call to turn it off is unclear — context-dependent, not objectively bad yet.
-- "turn_off"        — Objectively poor performance. High CPL, weak engagement, no signs of recovery. Should be turned off.
-- "wait"            — Spent under $50 with no leads yet. Too early to judge — use this rating only when spend is below $50 AND leads = 0. Once a lead exists, use one of the other ratings regardless of spend.
-If trend data is present, weight recent performance (last 3d and 7d) more heavily than all-time.
-Never suggest pausing or directly editing ads — only provide observations and advice.`;
+- "good"            — Hitting or beating KPI targets. Keep running.
+- "leave_on"        — CPL acceptable, secondary stats weak or declining. Leave on, monitor.
+- "needs_attention" — Showing signs of decline but thresholds not met yet.
+- "underperforming" — Below targets but turn-off criteria not met.
+- "turn_off"        — CPL has exceeded threshold for lead tier AND supporting metrics are 1.25× above KPI.
+- "wait"            — Spend under $50. Too early. No recommendations.
+If trend data is present, weight last 3d and 7d more heavily than all-time.`;
 
   try {
     const message = await client.messages.create({
@@ -289,7 +276,7 @@ Never suggest pausing or directly editing ads — only provide observations and 
     const jsonStr = extractJsonObject(text);
     if (!jsonStr) throw new Error(`No JSON in AI response: ${text.slice(0, 200)}`);
     const result = JSON.parse(jsonStr);
-    if (!result.rating || !result.summary) throw new Error('Invalid AI response structure');
+    if (!result.rating || !result.action) throw new Error('Invalid AI response structure');
     res.json(result);
   } catch (err) {
     console.error('Row analysis error:', err.message);
