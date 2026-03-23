@@ -1834,11 +1834,8 @@ export default function CampaignReports() {
             );
           })}
           <DateRangePicker start={start} end={end} onChange={setDateRange} />
-          <button className="btn btn--sm" onClick={() => loadAll()} disabled={loading} style={{ marginLeft: 4 }}>
+          <button className="btn btn--sm" onClick={forceRefreshAll} disabled={loading} style={{ marginLeft: 4 }}>
             {loading ? 'Loading…' : 'Refresh'}
-          </button>
-          <button className="btn btn--sm" onClick={forceRefreshAll} disabled={loading} title="Bypass cache and fetch live data from Facebook" style={{ marginLeft: 4 }}>
-            {loading ? 'Loading…' : '↺ Force Refresh'}
           </button>
           <button className="btn btn--sm" title="View FB API usage stats"
             onClick={() => { setShowApiStats(true); fetchApiStats(); }}
