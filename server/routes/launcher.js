@@ -64,7 +64,7 @@ router.post('/adset', async (req, res) => {
       budgetType, budgetAmount, startTime, endTime,
       ageMin, ageMax, genders,
       advantagePlusAudience, countries, customAudienceIds, targetingSpec,
-      placementsType, manualPlacements,
+      placementsType, manualPlacements, languages,
     } = req.body;
 
     // Optimization goal by conversion location
@@ -145,6 +145,12 @@ router.post('/adset', async (req, res) => {
       '1D_CLICK':         [{ event_type: 'CLICK_THROUGH', window_days: 1 }],
       '1D_VIEW':          [{ event_type: 'VIEW_THROUGH',  window_days: 1 }],
     };
+
+    // Languages (numeric Meta locale IDs)
+    if (languages) {
+      const locales = languages.split(',').map(s => parseInt(s.trim())).filter(Boolean);
+      if (locales.length) targeting.locales = locales;
+    }
 
     const body = {
       name,
@@ -252,10 +258,23 @@ router.post('/creative', async (req, res) => {
       objectStorySpec = { page_id: pageId, link_data: linkData };
     }
 
+    const creativeBody = { name, object_story_spec: objectStorySpec, access_token: token() };
+
+    // Creative advancements
+    const { advantagePlusCreative, standardEnhancements } = req.body;
+    if (advantagePlusCreative || standardEnhancements) {
+      creativeBody.degrees_of_freedom_spec = {
+        creative_features_spec: {
+          ...(standardEnhancements && { standard_enhancements: { enroll_status: 'OPT_IN' } }),
+          ...(advantagePlusCreative && { advantage_plus_creative: { enroll_status: 'OPT_IN' } }),
+        },
+      };
+    }
+
     const r = await fetch(`${FB_API}/${account}/adcreatives`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, object_story_spec: objectStorySpec, access_token: token() }),
+      body: JSON.stringify(creativeBody),
     });
     const json = await r.json();
     if (json.error) throw new Error(json.error.message);
@@ -267,17 +286,24 @@ router.post('/creative', async (req, res) => {
 router.post('/ad', async (req, res) => {
   try {
     const account = firstAdAccount();
-    const { name, adsetId, creativeId } = req.body;
+    const { name, adsetId, creativeId, trackingPixelId } = req.body;
+
+    const adBody = {
+      name,
+      adset_id: adsetId,
+      creative: { creative_id: creativeId },
+      status: 'PAUSED',
+      access_token: token(),
+    };
+
+    if (trackingPixelId) {
+      adBody.tracking_specs = [{ 'action.type': ['offsite_conversion'], fb_pixel: [trackingPixelId] }];
+    }
+
     const r = await fetch(`${FB_API}/${account}/ads`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        name,
-        adset_id: adsetId,
-        creative: { creative_id: creativeId },
-        status: 'PAUSED',
-        access_token: token(),
-      }),
+      body: JSON.stringify(adBody),
     });
     const json = await r.json();
     if (json.error) throw new Error(json.error.message);

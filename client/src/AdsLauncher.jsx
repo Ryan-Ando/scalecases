@@ -1,10 +1,11 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { extractStateFromFilename, extractStateFromCampaign, STATE_NAMES } from './launcherStates.js';
 
-const BASE = import.meta.env.VITE_API_URL || 'http://localhost:3001';
-const CONFIG_KEY   = 'launcher_config_v2';
-const PRESETS_KEY  = 'launcher_presets_v1';
-const TEMPLATE_KEY = 'launcher_templates_v1';
+const BASE               = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+const GLOBAL_KEY         = 'launcher_global_v1';
+const CAMPAIGN_CFGS_KEY  = 'launcher_campaign_configs_v1';
+const TEMPLATE_KEY       = 'launcher_templates_v1';
+const PRESETS_KEY        = 'launcher_presets_v1';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 const CTA_TYPES = [
@@ -47,8 +48,20 @@ const PLACEMENT_OPTIONS = [
 
 const DEFAULT_MANUAL_PLACEMENTS = Object.fromEntries(PLACEMENT_OPTIONS.map(p => [p.id, false]));
 
-const DEFAULT_CONFIG = {
-  // Ad Content
+// Global settings — shared across all campaigns
+const DEFAULT_GLOBAL = {
+  advantagePlusAudience: true,
+  placementsType: 'ADVANTAGE_PLUS',
+  manualPlacements: { ...DEFAULT_MANUAL_PLACEMENTS },
+  languages: '',            // comma-separated numeric Meta locale IDs (e.g. "6,23")
+  urlParameters: '',
+  trackingPixelId: '',
+  advantagePlusCreative: false,
+  standardEnhancements: false,
+};
+
+// Per-campaign settings — override per campaign, inherit global as base where applicable
+const DEFAULT_CAMPAIGN_CONFIG = {
   pageId: '',
   adSetup: 'SINGLE',
   primaryText: '',
@@ -56,29 +69,21 @@ const DEFAULT_CONFIG = {
   description: '',
   ctaType: 'LEARN_MORE',
   destinationUrl: '',
-  urlParameters: '',
-  // Adset Setup
   conversionLocation: 'WEBSITE',
   pixelId: '',
   conversionEvent: 'LEAD',
   costPerResultGoal: '',
   attributionSetting: '7D_CLICK_1D_VIEW',
-  // Budget & Schedule
   budgetType: 'DAILY',
   budgetAmount: '',
   startTime: '',
   endTime: '',
-  // Audience
   ageMin: 18,
   ageMax: 65,
   genders: '0',
   countries: 'US',
-  advantagePlusAudience: true,
   customAudienceIds: '',
   targetingSpec: '',
-  // Placements
-  placementsType: 'ADVANTAGE_PLUS',
-  manualPlacements: { ...DEFAULT_MANUAL_PLACEMENTS },
 };
 
 function loadStored(key, fallback) {
@@ -91,7 +96,7 @@ const S = {
   bg: '#0f172a', card: '#1e293b', border: '#334155',
   text: '#f1f5f9', muted: '#94a3b8',
   blue: '#3b82f6', green: '#22c55e', yellow: '#eab308',
-  orange: '#f97316', red: '#ef4444',
+  orange: '#f97316', red: '#ef4444', purple: '#a855f7',
 };
 const cardStyle  = { background: S.card, border: `1px solid ${S.border}`, borderRadius: 10, padding: '14px 18px', marginBottom: 12 };
 const inputStyle = { background: '#0f172a', border: `1px solid ${S.border}`, borderRadius: 6, color: S.text, padding: '6px 10px', fontSize: 13, outline: 'none', width: '100%', boxSizing: 'border-box' };
@@ -102,28 +107,24 @@ function Spinner() {
   return <span style={{ display: 'inline-block', width: 13, height: 13, border: `2px solid ${S.border}`, borderTopColor: S.blue, borderRadius: '50%', animation: 'spin 0.7s linear infinite', verticalAlign: 'middle', marginRight: 5 }} />;
 }
 
-function Field({ label, children, col }) {
+function Field({ label, children, col, hint }) {
   return (
     <div style={col ? { gridColumn: col } : {}}>
-      <label style={labelStyle}>{label}</label>
+      <label style={labelStyle}>{label}{hint && <span style={{ color: S.muted, fontWeight: 400, textTransform: 'none', marginLeft: 4 }}>{hint}</span>}</label>
       {children}
     </div>
   );
 }
 
-function Section({ title, id, open, onToggle, children }) {
+function SectionHeader({ title, open, onToggle, accent }) {
   return (
-    <div style={cardStyle}>
-      <button onClick={onToggle} style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'none', border: 'none', color: S.text, cursor: 'pointer', width: '100%', textAlign: 'left', padding: 0 }}>
-        <span style={{ color: S.muted, fontSize: 10, width: 10 }}>{open ? '▼' : '▶'}</span>
-        <span style={{ fontWeight: 700, fontSize: 13, color: S.muted, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{title}</span>
-      </button>
-      {open && <div style={{ marginTop: 14 }}>{children}</div>}
-    </div>
+    <button onClick={onToggle} style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'none', border: 'none', color: S.text, cursor: 'pointer', width: '100%', textAlign: 'left', padding: 0, marginBottom: open ? 14 : 0 }}>
+      <span style={{ color: S.muted, fontSize: 10, width: 10 }}>{open ? '▼' : '▶'}</span>
+      <span style={{ fontWeight: 700, fontSize: 12, color: accent || S.muted, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{title}</span>
+    </button>
   );
 }
 
-// Extract concept name = everything before state code in filename
 function extractConcept(filename) {
   const base = filename.replace(/\.[^.]+$/, '');
   const parts = base.split('-');
@@ -139,17 +140,34 @@ function resolveTemplate(tpl, vars) {
   return tpl.replace(/\{(\w+)\}/g, (_, k) => vars[k] ?? `{${k}}`);
 }
 
+const grid2 = { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 };
+const grid3 = { display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 };
+const grid4 = { display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 12 };
+
 // ── Main component ────────────────────────────────────────────────────────────
 export default function AdsLauncher() {
 
-  // Config (all preset-able settings)
-  const [config, setConfig] = useState(() => ({ ...DEFAULT_CONFIG, ...loadStored(CONFIG_KEY, {}) }));
+  // Global config
+  const [globalConfig, setGlobalConfig] = useState(() => ({ ...DEFAULT_GLOBAL, ...loadStored(GLOBAL_KEY, {}) }));
+  // Per-campaign saved configs { [campaignId]: overrides }
+  const [campaignConfigs, setCampaignConfigs] = useState(() => loadStored(CAMPAIGN_CFGS_KEY, {}));
+  // Campaign being configured
+  const [focusedCampaignId, setFocusedCampaignId] = useState(null);
+  // Unsaved edits for focused campaign
+  const [pendingConfig, setPendingConfig] = useState(null);
+  const [pendingDirty, setPendingDirty] = useState(false);
+
+  // Global presets (save globalConfig)
   const [presets, setPresets]           = useState(() => loadStored(PRESETS_KEY, {}));
   const [presetName, setPresetName]     = useState('');
   const [activePreset, setActivePreset] = useState('');
-  const [openSections, setOpenSections] = useState(new Set(['adContent']));
 
-  // Name templates (not saved in preset)
+  // Which global sections are open
+  const [openGlobal, setOpenGlobal] = useState(new Set(['placements']));
+  // Which campaign config sections are open
+  const [openCampaign, setOpenCampaign] = useState(new Set(['identity', 'conversion', 'budget', 'audience', 'adcreative']));
+
+  // Name templates
   const [adsetNameTpl, setAdsetNameTpl] = useState(() => loadStored(TEMPLATE_KEY, {}).adset || '{concept} - {state} - {date}');
   const [adNameTpl,    setAdNameTpl]    = useState(() => loadStored(TEMPLATE_KEY, {}).ad    || '{filename}');
 
@@ -158,20 +176,20 @@ export default function AdsLauncher() {
 
   // Campaigns
   const [campaigns, setCampaigns]               = useState([]);
-  const [selectedCampaigns, setSelectedCampaigns] = useState(new Set()); // IDs toggled on
+  const [selectedCampaigns, setSelectedCampaigns] = useState(new Set());
   const [campaignsLoading, setCampaignsLoading] = useState(false);
   const [campaignsError, setCampaignsError]     = useState('');
 
   // Files
-  const [files, setFiles]     = useState([]);
-  const fileInputRef           = useRef(null);
+  const [files, setFiles]       = useState([]);
+  const fileInputRef             = useRef(null);
   const [dragOver, setDragOver] = useState(false);
 
-  // Adsets (existing, for "use existing" mode)
-  const [adsets, setAdsets]             = useState({});
+  // Existing adsets
+  const [adsets, setAdsets]               = useState({});
   const [loadingAdsets, setLoadingAdsets] = useState(new Set());
   const [chosenCampaigns, setChosenCampaigns] = useState({});
-  const [chosenAdsets, setChosenAdsets]   = useState({});
+  const [chosenAdsets, setChosenAdsets]       = useState({});
 
   // Launch
   const [confirmLaunch, setConfirmLaunch] = useState(false);
@@ -179,25 +197,25 @@ export default function AdsLauncher() {
   const [rowStatuses, setRowStatuses]     = useState({});
   const [launchSummary, setLaunchSummary] = useState(null);
 
-  // ── Persistence ──────────────────────────────────────────────────────────
-  useEffect(() => { localStorage.setItem(CONFIG_KEY, JSON.stringify(config)); }, [config]);
+  // ── Persistence ───────────────────────────────────────────────────────────
+  useEffect(() => { localStorage.setItem(GLOBAL_KEY, JSON.stringify(globalConfig)); }, [globalConfig]);
+  useEffect(() => { localStorage.setItem(CAMPAIGN_CFGS_KEY, JSON.stringify(campaignConfigs)); }, [campaignConfigs]);
   useEffect(() => { localStorage.setItem(TEMPLATE_KEY, JSON.stringify({ adset: adsetNameTpl, ad: adNameTpl })); }, [adsetNameTpl, adNameTpl]);
 
-  function updateConfig(key, value) { setConfig(p => ({ ...p, [key]: value })); }
-  function toggleSection(id) {
-    setOpenSections(p => { const n = new Set(p); n.has(id) ? n.delete(id) : n.add(id); return n; });
-  }
+  function updateGlobal(key, value) { setGlobalConfig(p => ({ ...p, [key]: value })); }
+  function toggleGlobal(id) { setOpenGlobal(p => { const n = new Set(p); n.has(id) ? n.delete(id) : n.add(id); return n; }); }
+  function toggleCampaignSection(id) { setOpenCampaign(p => { const n = new Set(p); n.has(id) ? n.delete(id) : n.add(id); return n; }); }
 
-  // ── Presets ───────────────────────────────────────────────────────────────
+  // ── Global presets ────────────────────────────────────────────────────────
   function savePreset(name) {
-    const updated = { ...presets, [name]: { ...config } };
+    const updated = { ...presets, [name]: { ...globalConfig } };
     setPresets(updated);
     localStorage.setItem(PRESETS_KEY, JSON.stringify(updated));
     setActivePreset(name);
   }
   function loadPresetByName(name) {
     if (!presets[name]) return;
-    setConfig({ ...DEFAULT_CONFIG, ...presets[name] });
+    setGlobalConfig({ ...DEFAULT_GLOBAL, ...presets[name] });
     setActivePreset(name);
   }
   function deletePreset(name) {
@@ -206,6 +224,39 @@ export default function AdsLauncher() {
     setPresets(updated);
     localStorage.setItem(PRESETS_KEY, JSON.stringify(updated));
     if (activePreset === name) setActivePreset('');
+  }
+
+  // ── Per-campaign config ───────────────────────────────────────────────────
+  function focusCampaign(id) {
+    setFocusedCampaignId(id);
+    setPendingConfig({ ...DEFAULT_CAMPAIGN_CONFIG, ...campaignConfigs[id] });
+    setPendingDirty(false);
+  }
+  function updatePending(key, value) {
+    setPendingConfig(p => ({ ...p, [key]: value }));
+    setPendingDirty(true);
+  }
+  function savePendingConfig() {
+    if (!focusedCampaignId || !pendingConfig) return;
+    setCampaignConfigs(p => ({ ...p, [focusedCampaignId]: { ...pendingConfig } }));
+    setPendingDirty(false);
+  }
+
+  // Build the full launch config for a campaign (global + campaign overrides)
+  function buildLaunchConfig(campaignId) {
+    const cc = { ...DEFAULT_CAMPAIGN_CONFIG, ...campaignConfigs[campaignId] };
+    return {
+      ...cc,
+      // Global fields always override campaign
+      advantagePlusAudience: globalConfig.advantagePlusAudience,
+      placementsType: globalConfig.placementsType,
+      manualPlacements: globalConfig.manualPlacements,
+      urlParameters: globalConfig.urlParameters,
+      trackingPixelId: globalConfig.trackingPixelId,
+      advantagePlusCreative: globalConfig.advantagePlusCreative,
+      standardEnhancements: globalConfig.standardEnhancements,
+      languages: globalConfig.languages,
+    };
   }
 
   // ── Campaigns ─────────────────────────────────────────────────────────────
@@ -217,7 +268,7 @@ export default function AdsLauncher() {
       if (!r.ok) throw new Error(json.error || 'Failed');
       const mapped = json.map(c => ({ ...c, stateCode: extractStateFromCampaign(c.name) }));
       setCampaigns(mapped);
-      setSelectedCampaigns(new Set(mapped.map(c => c.id))); // all selected by default
+      setSelectedCampaigns(new Set(mapped.map(c => c.id)));
     } catch (e) { setCampaignsError(e.message); }
     finally { setCampaignsLoading(false); }
   }, []);
@@ -235,7 +286,7 @@ export default function AdsLauncher() {
     setRowStatuses(p => { const n = { ...p }; delete n[idx]; return n; });
   }
 
-  // ── Adsets (existing) ─────────────────────────────────────────────────────
+  // ── Adsets ────────────────────────────────────────────────────────────────
   const fetchAdsets = useCallback(async (campaignId) => {
     if (adsets[campaignId] || loadingAdsets.has(campaignId)) return;
     setLoadingAdsets(p => new Set([...p, campaignId]));
@@ -259,7 +310,6 @@ export default function AdsLauncher() {
     return { ...f, idx, status: 'ready', matchedCampaigns: matched, campaign: matched[0] };
   }), [files, campaigns, chosenCampaigns, selectedCampaigns]);
 
-  // Auto-fetch existing adsets for ready matches (when using existing mode)
   useEffect(() => {
     if (!createNewAdset) {
       for (const m of matches) {
@@ -269,7 +319,6 @@ export default function AdsLauncher() {
     }
   }, [matches, adsets, loadingAdsets, fetchAdsets, createNewAdset]);
 
-  // Auto-select first adset when adsets load
   useEffect(() => {
     setChosenAdsets(prev => {
       const next = { ...prev };
@@ -315,6 +364,7 @@ export default function AdsLauncher() {
     for (const m of matches) {
       if (m.status !== 'ready') continue;
       const idx = m.idx;
+      const cfg = buildLaunchConfig(m.campaign.id);
       try {
         let adsetId;
 
@@ -323,11 +373,7 @@ export default function AdsLauncher() {
           const asRes = await fetch(`${BASE}/api/launcher/adset`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              name: resolveAdsetName(m),
-              campaignId: m.campaign.id,
-              ...config,
-            }),
+            body: JSON.stringify({ name: resolveAdsetName(m), campaignId: m.campaign.id, ...cfg }),
           });
           const asJson = await asRes.json();
           if (!asRes.ok) throw new Error(asJson.error);
@@ -350,13 +396,15 @@ export default function AdsLauncher() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             name: resolveAdName(m),
-            pageId: config.pageId,
-            primaryText: config.primaryText,
-            headline: config.headline,
-            description: config.description,
-            ctaType: config.ctaType,
-            destinationUrl: config.destinationUrl,
-            urlParameters: config.urlParameters,
+            pageId: cfg.pageId,
+            primaryText: cfg.primaryText,
+            headline: cfg.headline,
+            description: cfg.description,
+            ctaType: cfg.ctaType,
+            destinationUrl: cfg.destinationUrl,
+            urlParameters: cfg.urlParameters,
+            advantagePlusCreative: cfg.advantagePlusCreative,
+            standardEnhancements: cfg.standardEnhancements,
             mediaType: upJson.type,
             videoId: upJson.video_id,
             imageHash: upJson.image_hash,
@@ -369,7 +417,12 @@ export default function AdsLauncher() {
         const adRes = await fetch(`${BASE}/api/launcher/ad`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: resolveAdName(m), adsetId, creativeId: crJson.creative_id }),
+          body: JSON.stringify({
+            name: resolveAdName(m),
+            adsetId,
+            creativeId: crJson.creative_id,
+            trackingPixelId: cfg.trackingPixelId,
+          }),
         });
         const adJson = await adRes.json();
         if (!adRes.ok) throw new Error(adJson.error);
@@ -396,10 +449,10 @@ export default function AdsLauncher() {
       if (rs.phase === 'done')     return <span style={{ color: S.green }}>✓ Done</span>;
       if (rs.phase === 'error')    return <span style={{ color: S.red, fontSize: 11 }}>✗ {rs.error}</span>;
     }
-    if (m.status === 'no_state') return <span style={{ color: S.red }}>No state in filename</span>;
-    if (m.status === 'no_match') return <span style={{ color: S.orange }}>No campaign match</span>;
+    if (m.status === 'no_state')  return <span style={{ color: S.red }}>No state in filename</span>;
+    if (m.status === 'no_match')  return <span style={{ color: S.orange }}>No campaign match</span>;
     if (m.status === 'ambiguous') return <span style={{ color: S.yellow }}>Ambiguous ({m.matchedCampaigns.length} matches)</span>;
-    if (m.status === 'ready') return <span style={{ color: S.green }}>Ready</span>;
+    if (m.status === 'ready')     return <span style={{ color: S.green }}>Ready</span>;
     return null;
   }
 
@@ -419,9 +472,7 @@ export default function AdsLauncher() {
 
   function renderAdsetCell(m) {
     if (!m.campaign) return <span style={{ color: S.muted }}>—</span>;
-    if (createNewAdset) {
-      return <span style={{ color: S.muted, fontSize: 11, fontStyle: 'italic' }}>{resolveAdsetName(m)}</span>;
-    }
+    if (createNewAdset) return <span style={{ color: S.muted, fontSize: 11, fontStyle: 'italic' }}>{resolveAdsetName(m)}</span>;
     const list = adsets[m.campaign.id];
     if (loadingAdsets.has(m.campaign.id)) return <span style={{ color: S.muted, fontSize: 12 }}><Spinner />Loading…</span>;
     if (!list?.length) return <span style={{ color: S.muted }}>No adsets</span>;
@@ -432,26 +483,204 @@ export default function AdsLauncher() {
     );
   }
 
-  // ── JSX ───────────────────────────────────────────────────────────────────
-  const grid2 = { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 };
-  const grid3 = { display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 };
-  const grid4 = { display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 12 };
+  // ── Per-campaign config panel ─────────────────────────────────────────────
+  function CampaignConfigPanel() {
+    if (!focusedCampaignId || !pendingConfig) return null;
+    const campaign = campaigns.find(c => c.id === focusedCampaignId);
+    const p = pendingConfig;
+    const u = updatePending;
+    const hasSaved = !!campaignConfigs[focusedCampaignId];
 
+    return (
+      <div style={{ ...cardStyle, borderColor: S.blue, marginTop: -2 }}>
+        {/* Header */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16, flexWrap: 'wrap' }}>
+          <span style={{ fontWeight: 700, fontSize: 13 }}>
+            {campaign?.name || focusedCampaignId}
+          </span>
+          {campaign?.stateCode && (
+            <span style={{ background: S.blue, borderRadius: 4, padding: '1px 7px', fontSize: 11, fontWeight: 700 }}>{campaign.stateCode}</span>
+          )}
+          {!hasSaved && <span style={{ fontSize: 11, color: S.muted }}>(using defaults)</span>}
+          <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
+            {pendingDirty && <span style={{ fontSize: 11, color: S.yellow }}>● Unsaved changes</span>}
+            <button style={btn(S.green, !pendingDirty)} disabled={!pendingDirty} onClick={savePendingConfig}>
+              Save Settings
+            </button>
+            <button style={btn('#475569')} onClick={() => { setFocusedCampaignId(null); setPendingConfig(null); setPendingDirty(false); }}>
+              ✕ Close
+            </button>
+          </div>
+        </div>
+
+        {/* Identity & Destination */}
+        <div style={{ borderTop: `1px solid ${S.border}`, paddingTop: 12, marginBottom: 4 }}>
+          <SectionHeader title="Identity & Destination" open={openCampaign.has('identity')} onToggle={() => toggleCampaignSection('identity')} />
+          {openCampaign.has('identity') && (
+            <div style={grid3}>
+              <Field label="Facebook Page ID">
+                <input style={inputStyle} placeholder="e.g. 123456789" value={p.pageId} onChange={e => u('pageId', e.target.value)} />
+              </Field>
+              <Field label="Destination URL">
+                <input style={inputStyle} placeholder="https://" value={p.destinationUrl} onChange={e => u('destinationUrl', e.target.value)} />
+              </Field>
+              <Field label="CTA Type">
+                <select style={inputStyle} value={p.ctaType} onChange={e => u('ctaType', e.target.value)}>
+                  {CTA_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+                </select>
+              </Field>
+            </div>
+          )}
+        </div>
+
+        {/* Conversion */}
+        <div style={{ borderTop: `1px solid ${S.border}`, paddingTop: 12, marginBottom: 4 }}>
+          <SectionHeader title="Conversion" open={openCampaign.has('conversion')} onToggle={() => toggleCampaignSection('conversion')} />
+          {openCampaign.has('conversion') && (
+            <div style={grid3}>
+              <Field label="Conversion Location">
+                <select style={inputStyle} value={p.conversionLocation} onChange={e => u('conversionLocation', e.target.value)}>
+                  <option value="WEBSITE">Website</option>
+                  <option value="LEAD_GENERATION">Instant Forms (Lead Gen)</option>
+                  <option value="MESSAGING">Messaging Apps</option>
+                  <option value="CALLS">Calls</option>
+                  <option value="APP">App</option>
+                </select>
+              </Field>
+              <Field label="Dataset / Pixel ID">
+                <input style={inputStyle} placeholder="Pixel or dataset ID" value={p.pixelId} onChange={e => u('pixelId', e.target.value)} />
+              </Field>
+              <Field label="Conversion Event">
+                <select style={inputStyle} value={p.conversionEvent} onChange={e => u('conversionEvent', e.target.value)}>
+                  {CONVERSION_EVENTS.map(ev => <option key={ev.value} value={ev.value}>{ev.label}</option>)}
+                </select>
+              </Field>
+              <Field label="Cost Per Result Goal ($)">
+                <input style={inputStyle} type="number" min="0" step="0.01" placeholder="Leave blank = lowest cost" value={p.costPerResultGoal} onChange={e => u('costPerResultGoal', e.target.value)} />
+              </Field>
+              <Field label="Attribution Setting">
+                <select style={inputStyle} value={p.attributionSetting} onChange={e => u('attributionSetting', e.target.value)}>
+                  <option value="7D_CLICK_1D_VIEW">7-day click, 1-day view</option>
+                  <option value="7D_CLICK">7-day click only</option>
+                  <option value="1D_CLICK">1-day click only</option>
+                  <option value="1D_VIEW">1-day view only</option>
+                </select>
+              </Field>
+            </div>
+          )}
+        </div>
+
+        {/* Budget & Schedule */}
+        <div style={{ borderTop: `1px solid ${S.border}`, paddingTop: 12, marginBottom: 4 }}>
+          <SectionHeader title="Budget & Schedule" open={openCampaign.has('budget')} onToggle={() => toggleCampaignSection('budget')} />
+          {openCampaign.has('budget') && (
+            <div style={grid4}>
+              <Field label="Budget Type">
+                <select style={inputStyle} value={p.budgetType} onChange={e => u('budgetType', e.target.value)}>
+                  <option value="DAILY">Daily Budget</option>
+                  <option value="LIFETIME">Lifetime Budget</option>
+                </select>
+              </Field>
+              <Field label="Amount ($)">
+                <input style={inputStyle} type="number" min="1" step="0.01" placeholder="e.g. 50" value={p.budgetAmount} onChange={e => u('budgetAmount', e.target.value)} />
+              </Field>
+              <Field label="Start Date / Time">
+                <input style={inputStyle} type="datetime-local" value={p.startTime} onChange={e => u('startTime', e.target.value)} />
+              </Field>
+              <Field label="End Date / Time">
+                <input style={inputStyle} type="datetime-local" value={p.endTime} onChange={e => u('endTime', e.target.value)} />
+              </Field>
+            </div>
+          )}
+        </div>
+
+        {/* Audience */}
+        <div style={{ borderTop: `1px solid ${S.border}`, paddingTop: 12, marginBottom: 4 }}>
+          <SectionHeader title="Audience" open={openCampaign.has('audience')} onToggle={() => toggleCampaignSection('audience')} />
+          {openCampaign.has('audience') && (
+            <>
+              <div style={{ ...grid4, marginBottom: 10 }}>
+                <Field label="Age Min">
+                  <input style={inputStyle} type="number" min={13} max={65} value={p.ageMin} onChange={e => u('ageMin', e.target.value)} />
+                </Field>
+                <Field label="Age Max">
+                  <input style={inputStyle} type="number" min={13} max={65} value={p.ageMax} onChange={e => u('ageMax', e.target.value)} />
+                </Field>
+                <Field label="Gender">
+                  <select style={inputStyle} value={p.genders} onChange={e => u('genders', e.target.value)}>
+                    <option value="0">All Genders</option>
+                    <option value="1">Male Only</option>
+                    <option value="2">Female Only</option>
+                  </select>
+                </Field>
+                <Field label="Countries">
+                  <input style={inputStyle} placeholder="US,CA" value={p.countries} onChange={e => u('countries', e.target.value)} />
+                </Field>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <div>
+                  <label style={labelStyle}>Custom Audience IDs (comma-separated)</label>
+                  <input style={inputStyle} placeholder="123456,789012" value={p.customAudienceIds} onChange={e => u('customAudienceIds', e.target.value)} />
+                </div>
+                <div>
+                  <label style={{ ...labelStyle, marginBottom: 3 }}>Advanced Targeting JSON <span style={{ color: S.muted, fontWeight: 400, textTransform: 'none' }}>(overrides fields above)</span></label>
+                  <textarea rows={3} style={{ ...inputStyle, resize: 'vertical', fontFamily: 'monospace', fontSize: 11 }} placeholder={'{"geo_locations": {"countries": ["US"]}, "age_min": 25}'} value={p.targetingSpec} onChange={e => u('targetingSpec', e.target.value)} />
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+
+        {/* Ad Creative */}
+        <div style={{ borderTop: `1px solid ${S.border}`, paddingTop: 12 }}>
+          <SectionHeader title="Ad Creative" open={openCampaign.has('adcreative')} onToggle={() => toggleCampaignSection('adcreative')} />
+          {openCampaign.has('adcreative') && (
+            <div style={grid2}>
+              <Field label="Ad Setup">
+                <select style={inputStyle} value={p.adSetup} onChange={e => u('adSetup', e.target.value)}>
+                  <option value="SINGLE">Single Image / Video</option>
+                  <option value="CAROUSEL">Carousel</option>
+                </select>
+              </Field>
+              <div /> {/* spacer */}
+              <Field label="Primary Text" col="1 / -1">
+                <textarea rows={3} style={{ ...inputStyle, resize: 'vertical' }} placeholder="Ad body copy…" value={p.primaryText} onChange={e => u('primaryText', e.target.value)} />
+              </Field>
+              <Field label="Headline">
+                <input style={inputStyle} placeholder="Short headline" value={p.headline} onChange={e => u('headline', e.target.value)} />
+              </Field>
+              <Field label="Description">
+                <input style={inputStyle} placeholder="Optional description" value={p.description} onChange={e => u('description', e.target.value)} />
+              </Field>
+            </div>
+          )}
+        </div>
+
+        {/* Save footer */}
+        <div style={{ borderTop: `1px solid ${S.border}`, paddingTop: 12, marginTop: 12, display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+          {pendingDirty && <span style={{ fontSize: 12, color: S.yellow, alignSelf: 'center' }}>● Unsaved changes</span>}
+          <button style={btn(S.green, !pendingDirty)} disabled={!pendingDirty} onClick={savePendingConfig}>
+            Save Settings
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // ── JSX ───────────────────────────────────────────────────────────────────
   return (
     <div style={{ background: S.bg, minHeight: '100vh', padding: '22px 26px', color: S.text, fontFamily: 'system-ui, sans-serif', fontSize: 14 }}>
       <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
 
       <h2 style={{ margin: '0 0 16px', fontWeight: 700, fontSize: 20 }}>Ads Launcher</h2>
 
-      {/* ── Preset bar ─────────────────────────────────────────────────── */}
+      {/* ── Global Presets ──────────────────────────────────────────────── */}
       <div style={cardStyle}>
-        <div style={{ fontWeight: 700, fontSize: 12, color: S.muted, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 10 }}>Presets</div>
+        <div style={{ fontWeight: 700, fontSize: 12, color: S.muted, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 10 }}>
+          Global Presets <span style={{ fontWeight: 400, textTransform: 'none', fontSize: 11 }}>(saves global settings below)</span>
+        </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-          <select
-            value={activePreset}
-            onChange={e => { setActivePreset(e.target.value); if (e.target.value) loadPresetByName(e.target.value); }}
-            style={{ ...inputStyle, width: 210 }}
-          >
+          <select value={activePreset} onChange={e => { setActivePreset(e.target.value); if (e.target.value) loadPresetByName(e.target.value); }} style={{ ...inputStyle, width: 210 }}>
             <option value="">— No preset loaded —</option>
             {Object.keys(presets).map(n => <option key={n} value={n}>{n}</option>)}
           </select>
@@ -464,186 +693,102 @@ export default function AdsLauncher() {
             onChange={e => setPresetName(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter' && presetName.trim()) { savePreset(presetName.trim()); setPresetName(''); } }}
           />
-          <button
-            style={btn(S.blue, !presetName.trim())}
-            disabled={!presetName.trim()}
-            onClick={() => { savePreset(presetName.trim()); setPresetName(''); }}
-          >
+          <button style={btn(S.blue, !presetName.trim())} disabled={!presetName.trim()} onClick={() => { savePreset(presetName.trim()); setPresetName(''); }}>
             Save Preset
           </button>
-          <span style={{ fontSize: 11, color: S.muted }}>Saves all settings below (not names)</span>
         </div>
       </div>
 
-      {/* ── Ad Content ─────────────────────────────────────────────────── */}
-      <Section title="Ad Content" id="adContent" open={openSections.has('adContent')} onToggle={() => toggleSection('adContent')}>
-        <div style={grid2}>
-          <Field label="Facebook Page ID">
-            <input style={inputStyle} placeholder="e.g. 123456789" value={config.pageId} onChange={e => updateConfig('pageId', e.target.value)} />
-          </Field>
-          <Field label="Ad Setup">
-            <select style={inputStyle} value={config.adSetup} onChange={e => updateConfig('adSetup', e.target.value)}>
-              <option value="SINGLE">Single Image / Video</option>
-              <option value="CAROUSEL">Carousel</option>
-            </select>
-          </Field>
-          <Field label="Primary Text" col="1 / -1">
-            <textarea rows={3} style={{ ...inputStyle, resize: 'vertical' }} placeholder="Ad body copy…" value={config.primaryText} onChange={e => updateConfig('primaryText', e.target.value)} />
-          </Field>
-          <Field label="Headline">
-            <input style={inputStyle} placeholder="Short headline" value={config.headline} onChange={e => updateConfig('headline', e.target.value)} />
-          </Field>
-          <Field label="Description">
-            <input style={inputStyle} placeholder="Optional description" value={config.description} onChange={e => updateConfig('description', e.target.value)} />
-          </Field>
-          <Field label="CTA Type">
-            <select style={inputStyle} value={config.ctaType} onChange={e => updateConfig('ctaType', e.target.value)}>
-              {CTA_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
-            </select>
-          </Field>
-          <Field label="Destination URL">
-            <input style={inputStyle} placeholder="https://" value={config.destinationUrl} onChange={e => updateConfig('destinationUrl', e.target.value)} />
-          </Field>
-          <Field label="URL Parameters" col="1 / -1">
-            <input style={inputStyle} placeholder="utm_source=facebook&utm_medium=paid&utm_campaign=prospecting" value={config.urlParameters} onChange={e => updateConfig('urlParameters', e.target.value)} />
-          </Field>
+      {/* ── Global Settings ─────────────────────────────────────────────── */}
+      <div style={cardStyle}>
+        <div style={{ fontWeight: 700, fontSize: 12, color: S.purple, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 14 }}>
+          Global Settings <span style={{ fontWeight: 400, textTransform: 'none', fontSize: 11, color: S.muted }}>— apply to all campaigns</span>
         </div>
-      </Section>
 
-      {/* ── Adset Setup ────────────────────────────────────────────────── */}
-      <Section title="Adset Setup" id="adsetSetup" open={openSections.has('adsetSetup')} onToggle={() => toggleSection('adsetSetup')}>
-        <div style={grid3}>
-          <Field label="Conversion Location">
-            <select style={inputStyle} value={config.conversionLocation} onChange={e => updateConfig('conversionLocation', e.target.value)}>
-              <option value="WEBSITE">Website</option>
-              <option value="LEAD_GENERATION">Instant Forms (Lead Gen)</option>
-              <option value="MESSAGING">Messaging Apps</option>
-              <option value="CALLS">Calls</option>
-              <option value="APP">App</option>
-            </select>
-          </Field>
-          <Field label="Dataset / Pixel ID">
-            <input style={inputStyle} placeholder="Pixel or dataset ID" value={config.pixelId} onChange={e => updateConfig('pixelId', e.target.value)} />
-          </Field>
-          <Field label="Conversion Event">
-            <select style={inputStyle} value={config.conversionEvent} onChange={e => updateConfig('conversionEvent', e.target.value)}>
-              {CONVERSION_EVENTS.map(ev => <option key={ev.value} value={ev.value}>{ev.label}</option>)}
-            </select>
-          </Field>
-          <Field label="Cost Per Result Goal ($)">
-            <input style={inputStyle} type="number" min="0" step="0.01" placeholder="Leave blank = lowest cost" value={config.costPerResultGoal} onChange={e => updateConfig('costPerResultGoal', e.target.value)} />
-          </Field>
-          <Field label="Attribution Setting">
-            <select style={inputStyle} value={config.attributionSetting} onChange={e => updateConfig('attributionSetting', e.target.value)}>
-              <option value="7D_CLICK_1D_VIEW">7-day click, 1-day view</option>
-              <option value="7D_CLICK">7-day click only</option>
-              <option value="1D_CLICK">1-day click only</option>
-              <option value="1D_VIEW">1-day view only</option>
-            </select>
-          </Field>
+        {/* Audience expansion */}
+        <div style={{ marginBottom: 14 }}>
+          <SectionHeader title="Audience Expansion" open={openGlobal.has('audience')} onToggle={() => toggleGlobal('audience')} />
+          {openGlobal.has('audience') && (
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 13 }}>
+              <input type="checkbox" checked={globalConfig.advantagePlusAudience} onChange={e => updateGlobal('advantagePlusAudience', e.target.checked)} />
+              Enable Advantage+ Audience
+            </label>
+          )}
         </div>
-      </Section>
 
-      {/* ── Budget & Schedule ───────────────────────────────────────────── */}
-      <Section title="Budget & Schedule" id="budget" open={openSections.has('budget')} onToggle={() => toggleSection('budget')}>
-        <div style={grid4}>
-          <Field label="Budget Type">
-            <select style={inputStyle} value={config.budgetType} onChange={e => updateConfig('budgetType', e.target.value)}>
-              <option value="DAILY">Daily Budget</option>
-              <option value="LIFETIME">Lifetime Budget</option>
-            </select>
-          </Field>
-          <Field label="Amount ($)">
-            <input style={inputStyle} type="number" min="1" step="0.01" placeholder="e.g. 50" value={config.budgetAmount} onChange={e => updateConfig('budgetAmount', e.target.value)} />
-          </Field>
-          <Field label="Start Date / Time">
-            <input style={inputStyle} type="datetime-local" value={config.startTime} onChange={e => updateConfig('startTime', e.target.value)} />
-          </Field>
-          <Field label="End Date / Time (optional)">
-            <input style={inputStyle} type="datetime-local" value={config.endTime} onChange={e => updateConfig('endTime', e.target.value)} />
-          </Field>
+        {/* Placements */}
+        <div style={{ borderTop: `1px solid ${S.border}`, paddingTop: 12, marginBottom: 14 }}>
+          <SectionHeader title="Placements" open={openGlobal.has('placements')} onToggle={() => toggleGlobal('placements')} />
+          {openGlobal.has('placements') && (
+            <>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 10 }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 13 }}>
+                  <input type="radio" checked={globalConfig.placementsType === 'ADVANTAGE_PLUS'} onChange={() => updateGlobal('placementsType', 'ADVANTAGE_PLUS')} />
+                  Advantage+ Placements <span style={{ color: S.muted, fontSize: 12 }}>(Meta optimises automatically)</span>
+                </label>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 13 }}>
+                  <input type="radio" checked={globalConfig.placementsType === 'MANUAL'} onChange={() => updateGlobal('placementsType', 'MANUAL')} />
+                  Manual Placements
+                </label>
+              </div>
+              {globalConfig.placementsType === 'MANUAL' && (
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8 }}>
+                  {PLACEMENT_OPTIONS.map(p => (
+                    <label key={p.id} style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', fontSize: 12 }}>
+                      <input type="checkbox" checked={globalConfig.manualPlacements[p.id] || false} onChange={e => updateGlobal('manualPlacements', { ...globalConfig.manualPlacements, [p.id]: e.target.checked })} />
+                      {p.label}
+                    </label>
+                  ))}
+                </div>
+              )}
+            </>
+          )}
         </div>
-      </Section>
 
-      {/* ── Audience ───────────────────────────────────────────────────── */}
-      <Section title="Audience" id="audience" open={openSections.has('audience')} onToggle={() => toggleSection('audience')}>
-        <div style={grid4}>
-          <Field label="Age Min">
-            <input style={inputStyle} type="number" min={13} max={65} value={config.ageMin} onChange={e => updateConfig('ageMin', e.target.value)} />
-          </Field>
-          <Field label="Age Max">
-            <input style={inputStyle} type="number" min={13} max={65} value={config.ageMax} onChange={e => updateConfig('ageMax', e.target.value)} />
-          </Field>
-          <Field label="Gender">
-            <select style={inputStyle} value={config.genders} onChange={e => updateConfig('genders', e.target.value)}>
-              <option value="0">All Genders</option>
-              <option value="1">Male Only</option>
-              <option value="2">Female Only</option>
-            </select>
-          </Field>
-          <Field label="Countries (comma-separated)">
-            <input style={inputStyle} placeholder="US,CA" value={config.countries} onChange={e => updateConfig('countries', e.target.value)} />
-          </Field>
-        </div>
-        <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
-          <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 13 }}>
-            <input type="checkbox" checked={config.advantagePlusAudience} onChange={e => updateConfig('advantagePlusAudience', e.target.checked)} />
-            Enable Advantage+ Audience
-          </label>
-          <div>
-            <label style={labelStyle}>Custom Audience IDs (comma-separated)</label>
-            <input style={inputStyle} placeholder="123456,789012" value={config.customAudienceIds} onChange={e => updateConfig('customAudienceIds', e.target.value)} />
-          </div>
-          <div>
-            <label style={{ ...labelStyle, marginBottom: 3 }}>Advanced Targeting JSON <span style={{ color: S.muted, fontWeight: 400, textTransform: 'none' }}>(overrides all fields above)</span></label>
-            <textarea
-              rows={3}
-              style={{ ...inputStyle, resize: 'vertical', fontFamily: 'monospace', fontSize: 11 }}
-              placeholder={'{"geo_locations": {"countries": ["US"]}, "age_min": 25, "interests": [...]}'}
-              value={config.targetingSpec}
-              onChange={e => updateConfig('targetingSpec', e.target.value)}
-            />
-          </div>
-        </div>
-      </Section>
-
-      {/* ── Placements ─────────────────────────────────────────────────── */}
-      <Section title="Placements" id="placements" open={openSections.has('placements')} onToggle={() => toggleSection('placements')}>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 12 }}>
-          <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 13 }}>
-            <input type="radio" checked={config.placementsType === 'ADVANTAGE_PLUS'} onChange={() => updateConfig('placementsType', 'ADVANTAGE_PLUS')} />
-            Advantage+ Placements <span style={{ color: S.muted, fontSize: 12 }}>(recommended — Meta optimises automatically)</span>
-          </label>
-          <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 13 }}>
-            <input type="radio" checked={config.placementsType === 'MANUAL'} onChange={() => updateConfig('placementsType', 'MANUAL')} />
-            Manual Placements
-          </label>
-        </div>
-        {config.placementsType === 'MANUAL' && (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8 }}>
-            {PLACEMENT_OPTIONS.map(p => (
-              <label key={p.id} style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', fontSize: 12 }}>
-                <input
-                  type="checkbox"
-                  checked={config.manualPlacements[p.id] || false}
-                  onChange={e => updateConfig('manualPlacements', { ...config.manualPlacements, [p.id]: e.target.checked })}
-                />
-                {p.label}
+        {/* Creative Advancements */}
+        <div style={{ borderTop: `1px solid ${S.border}`, paddingTop: 12, marginBottom: 14 }}>
+          <SectionHeader title="Creative Advancements" open={openGlobal.has('creative')} onToggle={() => toggleGlobal('creative')} />
+          {openGlobal.has('creative') && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 13 }}>
+                <input type="checkbox" checked={globalConfig.advantagePlusCreative} onChange={e => updateGlobal('advantagePlusCreative', e.target.checked)} />
+                Advantage+ Creative (automatic creative enhancements)
               </label>
-            ))}
-          </div>
-        )}
-      </Section>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 13 }}>
+                <input type="checkbox" checked={globalConfig.standardEnhancements} onChange={e => updateGlobal('standardEnhancements', e.target.checked)} />
+                Standard Enhancements
+              </label>
+            </div>
+          )}
+        </div>
 
-      {/* ── Name Templates ─────────────────────────────────────────────── */}
+        {/* URL & Tracking */}
+        <div style={{ borderTop: `1px solid ${S.border}`, paddingTop: 12 }}>
+          <SectionHeader title="URL & Tracking" open={openGlobal.has('tracking')} onToggle={() => toggleGlobal('tracking')} />
+          {openGlobal.has('tracking') && (
+            <div style={grid2}>
+              <Field label="URL Parameters" col="1 / -1">
+                <input style={inputStyle} placeholder="utm_source=facebook&utm_medium=paid" value={globalConfig.urlParameters} onChange={e => updateGlobal('urlParameters', e.target.value)} />
+              </Field>
+              <Field label="Tracking Pixel ID" hint="(tracking_specs on ad)">
+                <input style={inputStyle} placeholder="Pixel ID for tracking_specs" value={globalConfig.trackingPixelId} onChange={e => updateGlobal('trackingPixelId', e.target.value)} />
+              </Field>
+              <Field label="Languages" hint="(Meta numeric locale IDs, comma-sep)">
+                <input style={inputStyle} placeholder="6,23  (6=English, 23=Spanish)" value={globalConfig.languages} onChange={e => updateGlobal('languages', e.target.value)} />
+              </Field>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* ── Name Templates ──────────────────────────────────────────────── */}
       <div style={cardStyle}>
         <div style={{ fontWeight: 700, fontSize: 12, color: S.muted, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>Name Templates</div>
         <div style={{ fontSize: 11, color: S.muted, marginBottom: 10 }}>
-          Variables: <code style={{ background: '#0f172a', padding: '1px 4px', borderRadius: 3 }}>{'{concept}'}</code>{' '}
-          <code style={{ background: '#0f172a', padding: '1px 4px', borderRadius: 3 }}>{'{state}'}</code>{' '}
-          <code style={{ background: '#0f172a', padding: '1px 4px', borderRadius: 3 }}>{'{stateName}'}</code>{' '}
-          <code style={{ background: '#0f172a', padding: '1px 4px', borderRadius: 3 }}>{'{date}'}</code>{' '}
-          <code style={{ background: '#0f172a', padding: '1px 4px', borderRadius: 3 }}>{'{filename}'}</code>
+          Variables:{' '}
+          {['{concept}','{state}','{stateName}','{date}','{filename}'].map(v => (
+            <code key={v} style={{ background: '#0f172a', padding: '1px 4px', borderRadius: 3, marginRight: 5 }}>{v}</code>
+          ))}
         </div>
         <div style={grid2}>
           <Field label="Adset Name Template">
@@ -662,7 +807,7 @@ export default function AdsLauncher() {
           {campaignsLoading
             ? <span style={{ color: S.muted, fontSize: 13 }}><Spinner />Loading…</span>
             : <span style={{ background: '#0f172a', border: `1px solid ${S.border}`, borderRadius: 20, padding: '2px 10px', fontSize: 12 }}>
-                {selectedCampaigns.size} / {campaigns.length} selected
+                {selectedCampaigns.size} / {campaigns.length} selected for launch
               </span>
           }
           <button style={btn(S.blue, campaignsLoading)} onClick={fetchCampaigns} disabled={campaignsLoading}>Refresh</button>
@@ -673,46 +818,64 @@ export default function AdsLauncher() {
           {campaignsError && <span style={{ color: S.red, fontSize: 12 }}>{campaignsError}</span>}
         </div>
         {campaigns.length > 0 && (
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-            {campaigns.map(c => {
-              const on = selectedCampaigns.has(c.id);
-              return (
-                <button
-                  key={c.id}
-                  onClick={() => setSelectedCampaigns(p => {
-                    const n = new Set(p);
-                    on ? n.delete(c.id) : n.add(c.id);
-                    return n;
-                  })}
-                  style={{
-                    background: on ? '#1d4ed8' : '#0f172a',
-                    border: `1px solid ${on ? S.blue : S.border}`,
-                    borderRadius: 6,
-                    color: on ? '#fff' : S.muted,
-                    padding: '5px 10px',
-                    fontSize: 12,
-                    cursor: 'pointer',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 6,
-                    maxWidth: 280,
-                  }}
-                  title={c.name}
-                >
-                  {c.stateCode && (
-                    <span style={{ background: on ? '#3b82f6' : S.border, borderRadius: 4, padding: '1px 5px', fontSize: 11, fontWeight: 700, flexShrink: 0 }}>
-                      {c.stateCode}
-                    </span>
-                  )}
-                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.name}</span>
-                </button>
-              );
-            })}
-          </div>
+          <>
+            <div style={{ fontSize: 11, color: S.muted, marginBottom: 8 }}>
+              Click the checkbox to select for launch · Click the campaign name to configure its settings
+            </div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+              {campaigns.map(c => {
+                const on = selectedCampaigns.has(c.id);
+                const focused = focusedCampaignId === c.id;
+                const hasSaved = !!campaignConfigs[c.id];
+                return (
+                  <div
+                    key={c.id}
+                    style={{
+                      background: focused ? '#1e3a5f' : on ? '#1d4ed8' : '#0f172a',
+                      border: `1px solid ${focused ? S.blue : on ? S.blue : S.border}`,
+                      borderRadius: 6,
+                      color: on ? '#fff' : S.muted,
+                      fontSize: 12,
+                      display: 'flex',
+                      alignItems: 'center',
+                      maxWidth: 300,
+                      overflow: 'hidden',
+                    }}
+                  >
+                    {/* Selection toggle */}
+                    <button
+                      onClick={() => setSelectedCampaigns(p => {
+                        const n = new Set(p); on ? n.delete(c.id) : n.add(c.id); return n;
+                      })}
+                      title={on ? 'Deselect for launch' : 'Select for launch'}
+                      style={{ background: 'none', border: 'none', borderRight: `1px solid ${on ? 'rgba(255,255,255,0.2)' : S.border}`, padding: '6px 8px', cursor: 'pointer', color: on ? '#fff' : S.muted, fontSize: 13, flexShrink: 0 }}
+                    >
+                      {on ? '✓' : '○'}
+                    </button>
+                    {/* Configure */}
+                    <button
+                      onClick={() => focused ? (setFocusedCampaignId(null), setPendingConfig(null), setPendingDirty(false)) : focusCampaign(c.id)}
+                      title="Configure settings for this campaign"
+                      style={{ background: 'none', border: 'none', color: 'inherit', padding: '6px 10px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, flex: 1, textAlign: 'left', minWidth: 0 }}
+                    >
+                      {c.stateCode && (
+                        <span style={{ background: on ? '#3b82f6' : S.border, borderRadius: 4, padding: '1px 5px', fontSize: 11, fontWeight: 700, flexShrink: 0 }}>{c.stateCode}</span>
+                      )}
+                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.name}</span>
+                      {hasSaved && <span style={{ color: S.green, fontSize: 10, flexShrink: 0 }}>●</span>}
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          </>
         )}
       </div>
 
-      {/* ── File drop zone ─────────────────────────────────────────────── */}
+      {/* ── Per-campaign Config Panel ────────────────────────────────────── */}
+      <CampaignConfigPanel />
+
+      {/* ── Creative Files ──────────────────────────────────────────────── */}
       <div style={cardStyle}>
         <div style={{ fontWeight: 700, fontSize: 12, color: S.muted, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 10 }}>Creative Files</div>
         <div
@@ -741,13 +904,13 @@ export default function AdsLauncher() {
         )}
       </div>
 
-      {/* ── Adset mode toggle ──────────────────────────────────────────── */}
+      {/* ── Adset mode toggle ────────────────────────────────────────────── */}
       {files.length > 0 && (
         <div style={{ ...cardStyle, display: 'flex', gap: 20, alignItems: 'center' }}>
           <span style={{ fontWeight: 700, fontSize: 12, color: S.muted, textTransform: 'uppercase', letterSpacing: '0.05em', whiteSpace: 'nowrap' }}>Adset Mode</span>
           <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', fontSize: 13 }}>
             <input type="radio" checked={createNewAdset} onChange={() => setCreateNewAdset(true)} />
-            Create new adset per creative (uses config above)
+            Create new adset per creative (uses campaign configs above)
           </label>
           <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', fontSize: 13 }}>
             <input type="radio" checked={!createNewAdset} onChange={() => setCreateNewAdset(false)} />
@@ -756,7 +919,7 @@ export default function AdsLauncher() {
         </div>
       )}
 
-      {/* ── Match table ────────────────────────────────────────────────── */}
+      {/* ── Match table ──────────────────────────────────────────────────── */}
       {files.length > 0 && campaigns.length > 0 && (
         <div style={{ ...cardStyle, overflowX: 'auto' }}>
           <div style={{ fontWeight: 700, fontSize: 12, color: S.muted, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 10 }}>Match Table</div>
@@ -785,7 +948,7 @@ export default function AdsLauncher() {
         </div>
       )}
 
-      {/* ── Launch bar ─────────────────────────────────────────────────── */}
+      {/* ── Launch bar ───────────────────────────────────────────────────── */}
       {files.length > 0 && (
         <div style={{ ...cardStyle, display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
           <span style={{ fontWeight: 700 }}>{readyCount} ready to launch</span>
@@ -806,7 +969,7 @@ export default function AdsLauncher() {
         </div>
       )}
 
-      {/* ── Results ────────────────────────────────────────────────────── */}
+      {/* ── Results ──────────────────────────────────────────────────────── */}
       {launchSummary && (
         <div style={{ ...cardStyle, borderColor: launchSummary.failed > 0 ? S.orange : S.green }}>
           <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 8 }}>
