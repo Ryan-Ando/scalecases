@@ -24,7 +24,7 @@ router.get('/campaigns', async (req, res) => {
   try {
     const account = firstAdAccount();
     const all = [];
-    let url = `${FB_API}/${account}/campaigns?fields=id,name,status,objective&limit=200&filtering=${encodeURIComponent(JSON.stringify([{ field: 'effective_status', operator: 'IN', value: ['ACTIVE', 'PAUSED'] }]))}&access_token=${token()}`;
+    let url = `${FB_API}/${account}/campaigns?fields=id,name,status,objective&limit=200&filtering=${encodeURIComponent(JSON.stringify([{ field: 'effective_status', operator: 'EQUAL', value: 'ACTIVE' }]))}&access_token=${token()}`;
     while (url) {
       const r = await fetch(url);
       const json = await r.json();

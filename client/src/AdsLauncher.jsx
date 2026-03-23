@@ -157,9 +157,10 @@ export default function AdsLauncher() {
   const [createNewAdset, setCreateNewAdset] = useState(true);
 
   // Campaigns
-  const [campaigns, setCampaigns]           = useState([]);
+  const [campaigns, setCampaigns]               = useState([]);
+  const [selectedCampaigns, setSelectedCampaigns] = useState(new Set()); // IDs toggled on
   const [campaignsLoading, setCampaignsLoading] = useState(false);
-  const [campaignsError, setCampaignsError] = useState('');
+  const [campaignsError, setCampaignsError]     = useState('');
 
   // Files
   const [files, setFiles]     = useState([]);
@@ -214,7 +215,9 @@ export default function AdsLauncher() {
       const r = await fetch(`${BASE}/api/launcher/campaigns`);
       const json = await r.json();
       if (!r.ok) throw new Error(json.error || 'Failed');
-      setCampaigns(json.map(c => ({ ...c, stateCode: extractStateFromCampaign(c.name) })));
+      const mapped = json.map(c => ({ ...c, stateCode: extractStateFromCampaign(c.name) }));
+      setCampaigns(mapped);
+      setSelectedCampaigns(new Set(mapped.map(c => c.id))); // all selected by default
     } catch (e) { setCampaignsError(e.message); }
     finally { setCampaignsLoading(false); }
   }, []);
@@ -247,14 +250,14 @@ export default function AdsLauncher() {
   // ── Matches ───────────────────────────────────────────────────────────────
   const matches = useMemo(() => files.map((f, idx) => {
     if (!f.stateCode) return { ...f, idx, status: 'no_state', matchedCampaigns: [] };
-    const matched = campaigns.filter(c => c.stateCode === f.stateCode);
+    const matched = campaigns.filter(c => c.stateCode === f.stateCode && selectedCampaigns.has(c.id));
     if (matched.length === 0) return { ...f, idx, status: 'no_match', matchedCampaigns: [] };
     if (matched.length > 1) {
       const campaign = matched.find(c => c.id === chosenCampaigns[idx]) || null;
       return { ...f, idx, status: campaign ? 'ready' : 'ambiguous', matchedCampaigns: matched, campaign };
     }
     return { ...f, idx, status: 'ready', matchedCampaigns: matched, campaign: matched[0] };
-  }), [files, campaigns, chosenCampaigns]);
+  }), [files, campaigns, chosenCampaigns, selectedCampaigns]);
 
   // Auto-fetch existing adsets for ready matches (when using existing mode)
   useEffect(() => {
@@ -654,15 +657,59 @@ export default function AdsLauncher() {
 
       {/* ── Campaigns ──────────────────────────────────────────────────── */}
       <div style={cardStyle}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-          <span style={{ fontWeight: 700, fontSize: 12, color: S.muted, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Campaigns</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: campaigns.length ? 12 : 0 }}>
+          <span style={{ fontWeight: 700, fontSize: 12, color: S.muted, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Live Campaigns</span>
           {campaignsLoading
             ? <span style={{ color: S.muted, fontSize: 13 }}><Spinner />Loading…</span>
-            : <span style={{ background: '#0f172a', border: `1px solid ${S.border}`, borderRadius: 20, padding: '2px 10px', fontSize: 12 }}>{campaigns.length} loaded</span>
+            : <span style={{ background: '#0f172a', border: `1px solid ${S.border}`, borderRadius: 20, padding: '2px 10px', fontSize: 12 }}>
+                {selectedCampaigns.size} / {campaigns.length} selected
+              </span>
           }
           <button style={btn(S.blue, campaignsLoading)} onClick={fetchCampaigns} disabled={campaignsLoading}>Refresh</button>
+          {campaigns.length > 0 && <>
+            <button style={btn('#475569')} onClick={() => setSelectedCampaigns(new Set(campaigns.map(c => c.id)))}>Select All</button>
+            <button style={btn('#475569')} onClick={() => setSelectedCampaigns(new Set())}>Deselect All</button>
+          </>}
           {campaignsError && <span style={{ color: S.red, fontSize: 12 }}>{campaignsError}</span>}
         </div>
+        {campaigns.length > 0 && (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+            {campaigns.map(c => {
+              const on = selectedCampaigns.has(c.id);
+              return (
+                <button
+                  key={c.id}
+                  onClick={() => setSelectedCampaigns(p => {
+                    const n = new Set(p);
+                    on ? n.delete(c.id) : n.add(c.id);
+                    return n;
+                  })}
+                  style={{
+                    background: on ? '#1d4ed8' : '#0f172a',
+                    border: `1px solid ${on ? S.blue : S.border}`,
+                    borderRadius: 6,
+                    color: on ? '#fff' : S.muted,
+                    padding: '5px 10px',
+                    fontSize: 12,
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 6,
+                    maxWidth: 280,
+                  }}
+                  title={c.name}
+                >
+                  {c.stateCode && (
+                    <span style={{ background: on ? '#3b82f6' : S.border, borderRadius: 4, padding: '1px 5px', fontSize: 11, fontWeight: 700, flexShrink: 0 }}>
+                      {c.stateCode}
+                    </span>
+                  )}
+                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.name}</span>
+                </button>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       {/* ── File drop zone ─────────────────────────────────────────────── */}
