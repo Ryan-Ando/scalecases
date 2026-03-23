@@ -268,7 +268,7 @@ const AD_DETAIL_TABLE_COLS = [
   { key: 'fbLeads',        label: 'Results'                   },
   { key: 'cpl',            label: 'Cost per Result'           },
   { key: 'uniqueClicks',   label: 'Unique Link Clicks'        },
-  { key: 'costPerClick',   label: 'CPULC'                     },
+  { key: 'costPerClick',   label: 'Cost per Unique Link Click' },
   { key: 'cpm',            label: 'CPM'                       },
   { key: 'uniqueCtr',      label: 'Unique CTR'                },
   { key: 'frequency',      label: 'Frequency'                 },
@@ -492,7 +492,7 @@ function AdDetailModal({ adName, state, allAds, sheetByName, accountLabel, merge
       const spend   = rows.reduce((s, r) => s + (parseFloat(r.spend)         || 0), 0);
       const results = rows.reduce((s, r) => s + extractLeadsFromActions(r.actions), 0);
       const impr    = rows.reduce((s, r) => s + (parseFloat(r.impressions)   || 0), 0);
-      const uclicks = rows.reduce((s, r) => s + (parseFloat(r.unique_clicks) || 0), 0);
+      const uclicks = rows.reduce((s, r) => s + (parseFloat(r.unique_inline_link_clicks ?? r.unique_clicks) || 0), 0);
       return {
         id:           a.id,
         adName:       (a.name || '').trim(),
@@ -1061,19 +1061,30 @@ export default function AdsTracking() {
 
       setSyncNote(`Got ${ads.length} ads, ${dailyRaw.length} daily rows — saving…`);
 
+      // Guard: if insights came back rate-limited (all results=0 but spend exists),
+      // skip overwriting fbAds so existing lead counts are preserved.
+      const adsHaveSpend   = ads.some(a => parseFloat(a.spend) > 0);
+      const adsHaveResults = ads.some(a => (a.results || 0) > 0);
+      const existingAds    = await dbGetAll('fbAds');
+      const existingHaveResults = existingAds.some(a => (a.results || 0) > 0);
+      const rateLIMITED    = adsHaveSpend && !adsHaveResults && existingHaveResults;
+
       const dailyRecords = dailyRaw.map(r => ({
         ...r,
         id: `${r.date_start}|${r.campaign_id || r.adset_id || r.ad_id || 'agg'}`,
       }));
 
-      await Promise.all([
-        dbUpsert('fbAds', ads),
-        dbUpsert('fbDailyInsights', dailyRecords),
-      ]);
+      const saves = [dbUpsert('fbDailyInsights', dailyRecords)];
+      if (!rateLIMITED) saves.push(dbUpsert('fbAds', ads));
+      await Promise.all(saves);
 
       await dbSetMeta('lastSync', now);
       await loadFromDB();
-      setSyncNote(`Done — ${ads.length} ads loaded`);
+      if (rateLIMITED) {
+        setSyncNote(`⚠ FB rate-limited: leads not returned by API. Existing lead counts preserved — try re-syncing in a few minutes.`);
+      } else {
+        setSyncNote(`Done — ${ads.length} ads loaded`);
+      }
     } catch (err) {
       console.error('Sync error:', err);
       setSyncError(err.message);
@@ -1227,19 +1238,28 @@ export default function AdsTracking() {
   const sheetByName = {};
 
   // Grid: FB leads per ad per state — from aggregated insights in activeAds
+  // If an ad has per-day rows in allAdDailyInsights (from onSyncMax), use those
+  // to sum leads (more reliable than a.results which can be 0 if rate-limited).
   const leadsMap = useMemo(() => {
     const map = {};
     for (const adName of adNames) { map[adName] = {}; for (const st of states) map[adName][st] = 0; }
+    // Build ad_id → total leads from daily rows (populated by per-ad max sync)
+    const adDailyLeads = {};
+    for (const r of allAdDailyInsights) {
+      if (!r.ad_id) continue;
+      adDailyLeads[r.ad_id] = (adDailyLeads[r.ad_id] || 0) + extractLeadsFromActions(r.actions);
+    }
     for (const a of activeAds) {
       const rawName = (a.name || '').trim();
       const state   = extractState(a.campaignName);
       if (!rawName || !state || deletedAds.has(rawName)) continue;
       const adName  = memberToCanonical[rawName] || rawName;
+      const leads   = a.id in adDailyLeads ? adDailyLeads[a.id] : (a.results || 0);
       if (map[adName]?.[state] !== undefined)
-        map[adName][state] += a.results || 0;
+        map[adName][state] += leads;
     }
     return map;
-  }, [adNames, states, activeAds, deletedAds, memberToCanonical]);
+  }, [adNames, states, activeAds, deletedAds, memberToCanonical, allAdDailyInsights]);
 
   // Alias for backward-compat with existing grid render references
   const grid = leadsMap;
@@ -1749,7 +1769,7 @@ export default function AdsTracking() {
                   <div className="col-resize-handle" onMouseDown={e => startColResize('cpl', 70, e)} />
                 </th>
                 <th className="tracking-th-state tracking-th-sortable" onClick={() => handleSort('cpc')} style={{ color: '#3b82f6' }}>
-                  CPULC {sortKey === 'cpc' && <SortArrow dir={sortDir} />}
+                  CPC {sortKey === 'cpc' && <SortArrow dir={sortDir} />}
                   <div className="col-resize-handle" onMouseDown={e => startColResize('cpc', 70, e)} />
                 </th>
                 <th className="tracking-th-state tracking-th-sortable" onClick={() => handleSort('total')}>
@@ -1808,7 +1828,7 @@ export default function AdsTracking() {
                         {colCases > 0 && <span style={{ color: '#3b82f6', fontWeight: 700 }}>{colCases} cases</span>}
                         {colSpend > 0 && <span style={{ color: '#64748b' }}>${colSpend.toLocaleString('en-US', { maximumFractionDigits: 0 })}</span>}
                         {colSpend > 0 && colLeads > 0 && <span style={{ color: '#16a34a' }}>CPL ${(colSpend / colLeads).toFixed(0)}</span>}
-                        {colSpend > 0 && colCases > 0 && <span style={{ color: '#3b82f6' }}>CPULC ${(colSpend / colCases).toFixed(0)}</span>}
+                        {colSpend > 0 && colCases > 0 && <span style={{ color: '#3b82f6' }}>CPC ${(colSpend / colCases).toFixed(0)}</span>}
                       </div>
                     </div>
                     <div className="col-resize-handle" onMouseDown={e => startColResize(state, 75, e)} />
