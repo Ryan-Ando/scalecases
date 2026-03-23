@@ -373,7 +373,7 @@ router.get('/ads', async (req, res) => {
   try {
     const { date_preset, adset_id, start, end } = req.query;
     const cacheKey = `ads:${date_preset}:${adset_id||''}:${start||''}:${end||''}`;
-    const cached = cacheGet(cacheKey);
+    const cached = req.query.force ? null : cacheGet(cacheKey);
     if (cached) return res.json(cached);
 
     // Fast path: metadata only (no insights)
@@ -433,7 +433,11 @@ router.get('/ads', async (req, res) => {
       };
     });
 
-    cacheSet(cacheKey, merged);
+    // Don't cache if insights appear rate-limited (ads have spend but no results)
+    const hasSpend   = merged.some(a => parseFloat(a.spend)   > 0);
+    const hasResults = merged.some(a => (a.results || 0)       > 0);
+    if (!hasSpend || hasResults) cacheSet(cacheKey, merged);
+
     res.json(merged);
   } catch (err) {
     console.error('FB ads error:', err.message);

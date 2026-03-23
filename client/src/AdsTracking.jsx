@@ -1055,33 +1055,39 @@ export default function AdsTracking() {
       const dailyPreset = isFirstSync ? 'maximum' : 'last_14d';
 
       const [ads, dailyRaw] = await Promise.all([
-        apiFetch(`/api/facebook/ads?date_preset=maximum&_t=${Date.now()}`),
+        apiFetch(`/api/facebook/ads?date_preset=maximum&force=1&_t=${Date.now()}`),
         apiFetch(`/api/facebook/daily?date_preset=${dailyPreset}&_t=${Date.now()}`),
       ]);
 
       setSyncNote(`Got ${ads.length} ads, ${dailyRaw.length} daily rows — saving…`);
-
-      // Guard: if insights came back rate-limited (all results=0 but spend exists),
-      // skip overwriting fbAds so existing lead counts are preserved.
-      const adsHaveSpend   = ads.some(a => parseFloat(a.spend) > 0);
-      const adsHaveResults = ads.some(a => (a.results || 0) > 0);
-      const existingAds    = await dbGetAll('fbAds');
-      const existingHaveResults = existingAds.some(a => (a.results || 0) > 0);
-      const rateLIMITED    = adsHaveSpend && !adsHaveResults && existingHaveResults;
 
       const dailyRecords = dailyRaw.map(r => ({
         ...r,
         id: `${r.date_start}|${r.campaign_id || r.adset_id || r.ad_id || 'agg'}`,
       }));
 
-      const saves = [dbUpsert('fbDailyInsights', dailyRecords)];
-      if (!rateLIMITED) saves.push(dbUpsert('fbAds', ads));
-      await Promise.all(saves);
+      // Merge: if an ad's new results=0 but DB already has results>0 for it,
+      // preserve the old count (guards against rate-limited insights wiping data).
+      const existingAds = await dbGetAll('fbAds');
+      const existingResultsById = Object.fromEntries(
+        existingAds.filter(a => (a.results || 0) > 0).map(a => [a.id, a.results])
+      );
+      const mergedAds = ads.map(a =>
+        (a.results || 0) === 0 && existingResultsById[a.id]
+          ? { ...a, results: existingResultsById[a.id] }
+          : a
+      );
+      const rateLimited = !mergedAds.some(a => (a.results || 0) > 0) && existingAds.some(a => (a.results || 0) > 0);
+
+      await Promise.all([
+        dbUpsert('fbAds', mergedAds),
+        dbUpsert('fbDailyInsights', dailyRecords),
+      ]);
 
       await dbSetMeta('lastSync', now);
       await loadFromDB();
-      if (rateLIMITED) {
-        setSyncNote(`⚠ FB rate-limited: leads not returned by API. Existing lead counts preserved — try re-syncing in a few minutes.`);
+      if (rateLimited) {
+        setSyncNote(`⚠ FB rate-limited: leads not returned by API. Try re-syncing in a few minutes.`);
       } else {
         setSyncNote(`Done — ${ads.length} ads loaded`);
       }
