@@ -1706,7 +1706,7 @@ export default function CampaignReports() {
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 500,
           display: 'flex', alignItems: 'center', justifyContent: 'center' }}
           onDoubleClick={() => setPopup(null)}>
-          <div style={{ background: 'var(--surface)', borderRadius: 14, padding: 24, width: 680,
+          <div style={{ background: 'var(--surface)', borderRadius: 14, padding: 24, width: 960,
             maxWidth: '95vw', minWidth: 360, minHeight: 200, maxHeight: '92vh', overflowY: 'auto',
             resize: 'both', boxShadow: '0 8px 32px rgba(0,0,0,0.2)' }}
             onClick={e => e.stopPropagation()}>
