@@ -260,15 +260,22 @@ router.post('/creative', async (req, res) => {
 
     const creativeBody = { name, object_story_spec: objectStorySpec, access_token: token() };
 
-    // Creative advancements
-    const { advantagePlusCreative, standardEnhancements } = req.body;
-    if (advantagePlusCreative || standardEnhancements) {
-      creativeBody.degrees_of_freedom_spec = {
-        creative_features_spec: {
-          ...(standardEnhancements && { standard_enhancements: { enroll_status: 'OPT_IN' } }),
-          ...(advantagePlusCreative && { advantage_plus_creative: { enroll_status: 'OPT_IN' } }),
-        },
-      };
+    // Creative advancements — creativeEnhancements is { [featureId]: boolean }
+    const { creativeEnhancements } = req.body;
+    if (creativeEnhancements && typeof creativeEnhancements === 'object') {
+      const enabled = Object.entries(creativeEnhancements).filter(([, v]) => v).map(([k]) => k);
+      if (enabled.length) {
+        const features = {};
+        for (const id of enabled) {
+          if (id !== 'advantage_plus_creative') features[id] = { enroll_status: 'OPT_IN' };
+        }
+        if (Object.keys(features).length) {
+          creativeBody.degrees_of_freedom_spec = { creative_features_spec: features };
+        }
+        if (enabled.includes('advantage_plus_creative')) {
+          creativeBody.advantage_plus_creative = { enroll_status: 'OPT_IN' };
+        }
+      }
     }
 
     const r = await fetch(`${FB_API}/${account}/adcreatives`, {
@@ -286,24 +293,17 @@ router.post('/creative', async (req, res) => {
 router.post('/ad', async (req, res) => {
   try {
     const account = firstAdAccount();
-    const { name, adsetId, creativeId, trackingPixelId } = req.body;
-
-    const adBody = {
-      name,
-      adset_id: adsetId,
-      creative: { creative_id: creativeId },
-      status: 'PAUSED',
-      access_token: token(),
-    };
-
-    if (trackingPixelId) {
-      adBody.tracking_specs = [{ 'action.type': ['offsite_conversion'], fb_pixel: [trackingPixelId] }];
-    }
-
+    const { name, adsetId, creativeId } = req.body;
     const r = await fetch(`${FB_API}/${account}/ads`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(adBody),
+      body: JSON.stringify({
+        name,
+        adset_id: adsetId,
+        creative: { creative_id: creativeId },
+        status: 'PAUSED',
+        access_token: token(),
+      }),
     });
     const json = await r.json();
     if (json.error) throw new Error(json.error.message);
