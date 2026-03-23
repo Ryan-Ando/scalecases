@@ -268,7 +268,7 @@ const AD_DETAIL_TABLE_COLS = [
   { key: 'fbLeads',        label: 'Results'                   },
   { key: 'cpl',            label: 'Cost per Result'           },
   { key: 'uniqueClicks',   label: 'Unique Link Clicks'        },
-  { key: 'costPerClick',   label: 'Cost per Unique Click'     },
+  { key: 'costPerClick',   label: 'CPULC'                     },
   { key: 'cpm',            label: 'CPM'                       },
   { key: 'uniqueCtr',      label: 'Unique CTR'                },
   { key: 'frequency',      label: 'Frequency'                 },
@@ -1749,7 +1749,7 @@ export default function AdsTracking() {
                   <div className="col-resize-handle" onMouseDown={e => startColResize('cpl', 70, e)} />
                 </th>
                 <th className="tracking-th-state tracking-th-sortable" onClick={() => handleSort('cpc')} style={{ color: '#3b82f6' }}>
-                  CPC {sortKey === 'cpc' && <SortArrow dir={sortDir} />}
+                  CPULC {sortKey === 'cpc' && <SortArrow dir={sortDir} />}
                   <div className="col-resize-handle" onMouseDown={e => startColResize('cpc', 70, e)} />
                 </th>
                 <th className="tracking-th-state tracking-th-sortable" onClick={() => handleSort('total')}>
@@ -1808,7 +1808,7 @@ export default function AdsTracking() {
                         {colCases > 0 && <span style={{ color: '#3b82f6', fontWeight: 700 }}>{colCases} cases</span>}
                         {colSpend > 0 && <span style={{ color: '#64748b' }}>${colSpend.toLocaleString('en-US', { maximumFractionDigits: 0 })}</span>}
                         {colSpend > 0 && colLeads > 0 && <span style={{ color: '#16a34a' }}>CPL ${(colSpend / colLeads).toFixed(0)}</span>}
-                        {colSpend > 0 && colCases > 0 && <span style={{ color: '#3b82f6' }}>CPC ${(colSpend / colCases).toFixed(0)}</span>}
+                        {colSpend > 0 && colCases > 0 && <span style={{ color: '#3b82f6' }}>CPULC ${(colSpend / colCases).toFixed(0)}</span>}
                       </div>
                     </div>
                     <div className="col-resize-handle" onMouseDown={e => startColResize(state, 75, e)} />

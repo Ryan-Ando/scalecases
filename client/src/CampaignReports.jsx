@@ -184,7 +184,7 @@ function AdTrendSection({ rows, loading, error }) {
     { key: 'spendPerDay',       label: 'Spend/day',   fmt: v => fmt$(v),                invert: false },
     { key: 'leadsPerDay',       label: 'Leads/day',   fmt: v => v.toFixed(2),           invert: true  },
     { key: 'cpl',               label: 'CPL',         fmt: v => v ? fmt$(v) : '—',      invert: false },
-    { key: 'cpc',               label: 'CPC',         fmt: v => v ? fmt$(v) : '—',      invert: false },
+    { key: 'cpc',               label: 'CPULC',       fmt: v => v ? fmt$(v) : '—',      invert: false },
     { key: 'cpm',               label: 'CPM',         fmt: v => v ? fmt$(v) : '—',      invert: false },
     { key: 'ctr',               label: 'CTR',         fmt: v => v ? `${v.toFixed(2)}%` : '—', invert: true },
     { key: 'impressionsPerDay', label: 'Impressions/day', fmt: v => fmtN(v),            invert: true  },
@@ -274,7 +274,7 @@ function computeAdTrend(entityId, dailyRows, idField = 'ad_id') {
       `${label} (${p.days} active days):`,
       `  Spend: $${p.spend.toFixed(2)} total | $${p.spendPerDay.toFixed(2)}/day`,
       `  Leads: ${p.leads} | ${p.leadsPerDay.toFixed(2)}/day | CPL: ${p.cpl != null ? '$' + p.cpl.toFixed(2) : 'N/A'}`,
-      `  CPM: ${p.cpm != null ? '$' + p.cpm.toFixed(2) : 'N/A'} | CTR: ${p.ctr != null ? p.ctr.toFixed(2) + '%' : 'N/A'} | CPC: ${p.cpc != null ? '$' + p.cpc.toFixed(2) : 'N/A'}`,
+      `  CPM: ${p.cpm != null ? '$' + p.cpm.toFixed(2) : 'N/A'} | CTR: ${p.ctr != null ? p.ctr.toFixed(2) + '%' : 'N/A'} | CPULC: ${p.cpc != null ? '$' + p.cpc.toFixed(2) : 'N/A'}`,
       `  Impressions: ${Math.round(p.impressions)} | Clicks: ${p.clicks}`,
     ].join('\n');
   }
@@ -427,7 +427,7 @@ function sortRows(rows, sortKey, sortDir) {
 // ── KPI Modal (per-campaign) ──────────────────────────────────────────────────
 const KPI_FIELDS = [
   { key: 'targetCpl',      label: 'Target CPL — Cost per Lead ($)',               ph: 'e.g. 80',   dataKey: 'cost_per_result' },
-  { key: 'targetCpc',      label: 'Target CPC — Cost per Unique Click ($)',        ph: 'e.g. 5',    dataKey: 'cost_per_unique_click' },
+  { key: 'targetCpc',      label: 'Target CPULC — Cost per Unique Link Click ($)', ph: 'e.g. 5',    dataKey: 'cost_per_unique_click' },
   { key: 'targetCpm',      label: 'Target CPM — Cost per 1,000 Impressions ($)',  ph: 'e.g. 15',   dataKey: 'cpm' },
   { key: 'targetCtr',      label: 'Target Unique CTR (%)',                         ph: 'e.g. 2.5',  dataKey: 'unique_ctr' },
   { key: 'maxFrequency',   label: 'Max Frequency (times seen)',                    ph: 'e.g. 3',    dataKey: 'frequency' },
@@ -543,7 +543,7 @@ const COLS = [
   { key: 'results',               label: 'Results',     align: 'right'  },
   { key: 'cost_per_result',       label: 'CPL',         align: 'right'  },
   { key: 'unique_clicks',         label: 'Uniq Clicks', align: 'right'  },
-  { key: 'cost_per_unique_click', label: 'CPC',         align: 'right'  },
+  { key: 'cost_per_unique_click', label: 'CPULC',       align: 'right'  },
   { key: 'frequency',             label: 'Frequency',   align: 'right'  },
   { key: 'cpm',                   label: 'CPM',         align: 'right'  },
   { key: 'unique_ctr',            label: 'Uniq CTR',    align: 'right'  },

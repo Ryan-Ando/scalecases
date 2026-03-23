@@ -63,7 +63,7 @@ router.post('/analyze', async (req, res) => {
 
   const kpiBlock = [
     kpis.targetCpl     ? `Target CPL: $${kpis.targetCpl}` : null,
-    kpis.targetCpc     ? `Target CPC: $${kpis.targetCpc}` : null,
+    kpis.targetCpc     ? `Target CPULC: $${kpis.targetCpc}` : null,
     kpis.targetCpm     ? `Target CPM: $${kpis.targetCpm}` : null,
     kpis.targetCtr     ? `Target Unique CTR: ${kpis.targetCtr}%` : null,
     kpis.maxFrequency  ? `Max acceptable frequency: ${kpis.maxFrequency}` : null,
@@ -154,7 +154,7 @@ router.post('/analyze-batch', async (req, res) => {
 
   const kpiBlock = [
     kpis.targetCpl     ? `Target CPL: $${kpis.targetCpl}` : null,
-    kpis.targetCpc     ? `Target CPC: $${kpis.targetCpc}` : null,
+    kpis.targetCpc     ? `Target CPULC: $${kpis.targetCpc}` : null,
     kpis.targetCpm     ? `Target CPM: $${kpis.targetCpm}` : null,
     kpis.targetCtr     ? `Target Unique CTR: ${kpis.targetCtr}%` : null,
     kpis.maxFrequency  ? `Max acceptable frequency: ${kpis.maxFrequency}` : null,
@@ -219,7 +219,7 @@ router.post('/analyze-row', async (req, res) => {
 
   const kpiBlock = [
     kpis.targetCpl     ? `Target CPL: $${kpis.targetCpl}` : null,
-    kpis.targetCpc     ? `Target CPC: $${kpis.targetCpc}` : null,
+    kpis.targetCpc     ? `Target CPULC: $${kpis.targetCpc}` : null,
     kpis.targetCpm     ? `Target CPM: $${kpis.targetCpm}` : null,
     kpis.targetCtr     ? `Target Unique CTR: ${kpis.targetCtr}%` : null,
     kpis.maxFrequency  ? `Max acceptable frequency: ${kpis.maxFrequency}` : null,
