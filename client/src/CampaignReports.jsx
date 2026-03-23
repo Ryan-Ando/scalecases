@@ -246,30 +246,31 @@ function AdTrendSection({ rows, loading, error }) {
   );
 }
 
-// Compute all-time / last-7d / last-3d trend summary for a single ad from daily rows
-function computeAdTrend(adId, dailyRows) {
-  const rows = dailyRows.filter(r => r.ad_id === adId);
-  if (!rows.length) return null;
-  const cutoff7 = daysAgo(7);
-  const cutoff3 = daysAgo(3);
-  const LEAD_TYPES = ['lead','onsite_conversion.lead_grouped','offsite_conversion.fb_pixel_lead','contact','schedule','submit_application'];
-  function sumPeriod(subset) {
-    let spend = 0, leads = 0;
-    for (const r of subset) {
-      spend += parseFloat(r.spend) || 0;
-      for (const t of LEAD_TYPES) {
-        const a = (r.actions || []).find(x => x.action_type === t);
-        if (a) { leads += parseInt(a.value, 10) || 0; break; }
-      }
-    }
-    const cpl = leads > 0 ? (spend / leads).toFixed(2) : null;
-    return { spend: spend.toFixed(2), leads, cpl };
+// Format computeAdStats result into a comprehensive text block for AI prompts.
+// This is the same data the trend chart visualises — all-time, last-7d, last-3d
+// with every metric: spend, leads, CPL, CPM, CTR, CPC, clicks, impressions.
+function computeAdTrend(entityId, dailyRows, idField = 'ad_id') {
+  const filtered = dailyRows.filter(r => r[idField] === entityId);
+  const stats = computeAdStats(null, filtered);
+  if (!stats) return null;
+  const { all, last7, last3 } = stats;
+  function fmtPeriod(p) {
+    return [
+      `  Spend: $${p.spend.toFixed(2)} total | $${p.spendPerDay.toFixed(2)}/day over ${p.days} active day(s)`,
+      `  Leads: ${p.leads} total | ${p.leadsPerDay.toFixed(2)}/day`,
+      `  CPL: ${p.cpl != null ? '$' + p.cpl.toFixed(2) : 'N/A'}`,
+      `  CPM: ${p.cpm != null ? '$' + p.cpm.toFixed(2) : 'N/A'}`,
+      `  CTR: ${p.ctr != null ? p.ctr.toFixed(2) + '%' : 'N/A'}`,
+      `  CPC: ${p.cpc != null ? '$' + p.cpc.toFixed(2) : 'N/A'}`,
+      `  Link Clicks: ${p.clicks} | ${p.clicksPerDay.toFixed(2)}/day`,
+      `  Impressions: ${Math.round(p.impressions)} | ${Math.round(p.impressionsPerDay)}/day`,
+    ].join('\n');
   }
-  const fmtP = p => `spend $${p.spend} | leads ${p.leads} | CPL ${p.cpl ? '$' + p.cpl : 'N/A'}`;
-  const all   = sumPeriod(rows);
-  const last7 = sumPeriod(rows.filter(r => r.date_start >= cutoff7));
-  const last3 = sumPeriod(rows.filter(r => r.date_start >= cutoff3));
-  return `All-time: ${fmtP(all)}\nLast 7d:  ${fmtP(last7)}\nLast 3d:  ${fmtP(last3)}`;
+  return [
+    `All-time (${all.days} days with spend):\n${fmtPeriod(all)}`,
+    `Last 7d (${last7.days} active days):\n${fmtPeriod(last7)}`,
+    `Last 3d (${last3.days} active days):\n${fmtPeriod(last3)}`,
+  ].join('\n\n');
 }
 
 function fmtDate(iso) {
@@ -1032,15 +1033,16 @@ export default function CampaignReports() {
       level === 'ad' ? dbGetAll('adDailyInsights').catch(() => []) : Promise.resolve([]),
     ]);
     let dailyRows = storedDaily;
-    if (level === 'ad' && !dailyRows.some(r => r.ad_id === row.id)) {
+    const idField = level === 'ad' ? 'ad_id' : 'adset_id';
+    const hasDailyData = dailyRows.some(r => r[idField] === row.id);
+    if (!hasDailyData) {
       try {
-        const d = await fetch(`${BASE}/api/facebook/daily?date_preset=maximum&ad_ids=${encodeURIComponent(row.id)}`).then(r => r.json());
+        const param = level === 'ad' ? 'ad_ids' : 'adset_ids';
+        const d = await fetch(`${BASE}/api/facebook/daily?date_preset=maximum&${param}=${encodeURIComponent(row.id)}`).then(r => r.json());
         if (Array.isArray(d)) dailyRows = [...dailyRows, ...d];
       } catch {}
     }
-    const enrichedRow = level === 'ad'
-      ? { ...row, trendSummary: computeAdTrend(row.id, dailyRows) }
-      : row;
+    const enrichedRow = { ...row, trendSummary: computeAdTrend(row.id, dailyRows, idField) };
     try {
       const res = await fetch(`${BASE}/api/reports/analyze-row`, {
         method: 'POST',
@@ -1077,19 +1079,17 @@ export default function CampaignReports() {
       level === 'ad' ? dbGetAll('adDailyInsights').catch(() => []) : Promise.resolve([]),
     ]);
     let dailyRows = storedDaily;
-    if (level === 'ad') {
-      const adIdsWithData = new Set(dailyRows.map(r => r.ad_id));
-      const missing = rows.filter(r => !adIdsWithData.has(r.id)).map(r => r.id);
-      if (missing.length) {
-        try {
-          const d = await fetch(`${BASE}/api/facebook/daily?date_preset=maximum&ad_ids=${encodeURIComponent(missing.join(','))}`).then(r => r.json());
-          if (Array.isArray(d)) dailyRows = [...dailyRows, ...d];
-        } catch {}
-      }
+    const idField = level === 'ad' ? 'ad_id' : 'adset_id';
+    const param   = level === 'ad' ? 'ad_ids' : 'adset_ids';
+    const idsWithData = new Set(dailyRows.map(r => r[idField]));
+    const missing = rows.filter(r => !idsWithData.has(r.id)).map(r => r.id);
+    if (missing.length) {
+      try {
+        const d = await fetch(`${BASE}/api/facebook/daily?date_preset=maximum&${param}=${encodeURIComponent(missing.join(','))}`).then(r => r.json());
+        if (Array.isArray(d)) dailyRows = [...dailyRows, ...d];
+      } catch {}
     }
-    const enrichedRows = level === 'ad'
-      ? rows.map(r => ({ ...r, trendSummary: computeAdTrend(r.id, dailyRows) }))
-      : rows;
+    const enrichedRows = rows.map(r => ({ ...r, trendSummary: computeAdTrend(r.id, dailyRows, idField) }));
     try {
       const res = await fetch(`${BASE}/api/reports/analyze-batch`, {
         method: 'POST',

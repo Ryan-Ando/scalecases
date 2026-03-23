@@ -174,16 +174,13 @@ router.post('/analyze-batch', async (req, res) => {
 
   const rowsBlock = rows.map((r, i) =>
     `${i + 1}. ID: ${r.id}\n` +
-    `   Name: ${r.name}\n` +
-    `   Status: ${r.effectiveStatus || r.status}\n` +
-    `   Budget: ${fmtBudget(r)} | Spend: $${parseFloat(r.spend || 0).toFixed(2)}\n` +
-    `   Leads: ${r.results || 0} | CPL: ${r.cost_per_result ? '$' + parseFloat(r.cost_per_result).toFixed(2) : 'N/A'}\n` +
-    `   CTR: ${r.unique_ctr ? parseFloat(r.unique_ctr).toFixed(2) + '%' : 'N/A'} | Freq: ${r.frequency ? parseFloat(r.frequency).toFixed(2) : 'N/A'} | CPM: ${r.cpm ? '$' + parseFloat(r.cpm).toFixed(2) : 'N/A'}\n` +
-    `   Video avg: ${fmtVideoTime(r.video_avg_time_watched_actions)}` +
-    (r.trendSummary ? `\n   Trend:\n${r.trendSummary.split('\n').map(l => '     ' + l).join('\n')}` : '')
+    `   Name: ${r.name} | Status: ${r.effectiveStatus || r.status} | Budget: ${fmtBudget(r)}\n` +
+    (r.trendSummary
+      ? `   Performance data (lifetime):\n${r.trendSummary.split('\n').map(l => '     ' + l).join('\n')}`
+      : `   Spend: $${parseFloat(r.spend || 0).toFixed(2)} | Leads: ${r.results || 0} | CPL: ${r.cost_per_result ? '$' + parseFloat(r.cost_per_result).toFixed(2) : 'N/A'} | CPM: ${r.cpm ? '$' + parseFloat(r.cpm).toFixed(2) : 'N/A'} | CTR: ${r.unique_ctr ? parseFloat(r.unique_ctr).toFixed(2) + '%' : 'N/A'}`)
   ).join('\n\n');
 
-  const prompt = `You are an expert Facebook advertising analyst for a law firm. Rate each of the following ${rows.length} ${levelLabel.toLowerCase()}s for the period ${timeframeLabel}.
+  const prompt = `You are an expert Facebook advertising analyst for a law firm. Rate each of the following ${rows.length} ${levelLabel.toLowerCase()}s. Use the lifetime performance data (all-time/last-7d/last-3d) as the primary basis for your analysis.
 
 KPI TARGETS:
 ${kpiBlock}
@@ -250,21 +247,13 @@ router.post('/analyze-row', async (req, res) => {
   const prompt = `You are an expert Facebook advertising analyst for a law firm. Analyze this ${levelLabel.toLowerCase()} and return a JSON performance report.
 
 ${levelLabel}: ${row.name}
-TIMEFRAME: ${timeframeLabel}
 STATUS: ${row.effectiveStatus || row.status}
 BUDGET: ${fmtBudget(row)}
-SPEND: $${parseFloat(row.spend || 0).toFixed(2)}
-RESULTS/LEADS: ${row.results || 0}
-COST PER RESULT: ${row.cost_per_result ? '$' + parseFloat(row.cost_per_result).toFixed(2) : 'N/A'}
-IMPRESSIONS: ${row.impressions || 0}
-UNIQUE LINK CLICKS: ${row.unique_clicks || 0}
-COST PER UNIQUE CLICK: ${row.cost_per_unique_click ? '$' + parseFloat(row.cost_per_unique_click).toFixed(2) : 'N/A'}
-CPM: ${row.cpm ? '$' + parseFloat(row.cpm).toFixed(2) : 'N/A'}
-FREQUENCY: ${row.frequency ? parseFloat(row.frequency).toFixed(2) : 'N/A'}
-UNIQUE CTR: ${row.unique_ctr ? parseFloat(row.unique_ctr).toFixed(2) + '%' : 'N/A'}
-VIDEO AVG PLAY TIME: ${fmtVideoTime(row.video_avg_time_watched_actions)}
 ${row.campaignName ? `CAMPAIGN: ${row.campaignName}` : ''}
-${row.trendSummary ? `\nPERFORMANCE TREND (all-time daily data — use this to detect degradation):\n${row.trendSummary}` : ''}
+${row.trendSummary
+  ? `\nPERFORMANCE DATA (lifetime all-time/last-7d/last-3d — BASE YOUR ENTIRE ANALYSIS ON THIS):\n${row.trendSummary}`
+  : `\nSELECTED PERIOD DATA (${timeframeLabel} — use as fallback only):\nSPEND: $${parseFloat(row.spend || 0).toFixed(2)} | LEADS: ${row.results || 0} | CPL: ${row.cost_per_result ? '$' + parseFloat(row.cost_per_result).toFixed(2) : 'N/A'} | CPM: ${row.cpm ? '$' + parseFloat(row.cpm).toFixed(2) : 'N/A'} | CTR: ${row.unique_ctr ? parseFloat(row.unique_ctr).toFixed(2) + '%' : 'N/A'} | FREQ: ${row.frequency ? parseFloat(row.frequency).toFixed(2) : 'N/A'}`
+}
 
 KPI TARGETS:
 ${kpiBlock}
