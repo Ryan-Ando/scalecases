@@ -13,9 +13,48 @@ function cacheGet(key) {
   const entry = _cache.get(key);
   if (!entry) return null;
   if (Date.now() - entry.ts > CACHE_TTL) { _cache.delete(key); return null; }
+  _stats.cacheHits++;
   return entry.data;
 }
 function cacheSet(key, data) { _cache.set(key, { data, ts: Date.now() }); }
+
+// ── API usage stats tracker ──────────────────────────────────────────────────
+const _stats = {
+  callCount: 0,     // total real FB API calls (not cache hits)
+  cacheHits: 0,     // served from cache
+  errors: 0,        // failed calls
+  rateLimits: {},   // account → { call_count, total_time, total_cputime } (percentages 0–100)
+  recentCalls: [],  // last 100 calls
+  sessionStart: Date.now(),
+};
+
+function recordCall(account, path, pages) {
+  _stats.callCount++;
+  const entry = { ts: Date.now(), account, path, pages };
+  _stats.recentCalls.unshift(entry);
+  if (_stats.recentCalls.length > 100) _stats.recentCalls.length = 100;
+}
+
+function captureRateLimit(account, headers) {
+  try {
+    const appUsage = headers.get('x-app-usage');
+    if (appUsage) {
+      const parsed = JSON.parse(appUsage);
+      _stats.rateLimits[account] = { ...(_stats.rateLimits[account] || {}), ...parsed };
+    }
+    const acctUsage = headers.get('x-ad-account-usage');
+    if (acctUsage) {
+      const parsed = JSON.parse(acctUsage);
+      _stats.rateLimits[account] = { ...(_stats.rateLimits[account] || {}), acc_id_util_pct: parsed.acc_id_util_pct };
+    }
+    const bizUsage = headers.get('x-business-use-case-usage');
+    if (bizUsage) {
+      const parsed = JSON.parse(bizUsage);
+      const first = Object.values(parsed)[0]?.[0];
+      if (first) _stats.rateLimits[account] = { ...(_stats.rateLimits[account] || {}), biz_call_count: first.call_count, biz_total_cputime: first.total_cputime, biz_total_time: first.total_time };
+    }
+  } catch { /* ignore malformed headers */ }
+}
 
 const INSIGHTS_FIELDS = [
   'spend',
@@ -135,13 +174,17 @@ async function fetchInsightsForAccount(account, level, datePreset, filters = {},
 
   const all = [];
   let url = `${FB_API}/${account}/insights?${params}`;
+  let pages = 0;
   while (url) {
     const res = await fetch(url);
+    pages++;
+    captureRateLimit(account, res.headers);
     const json = await res.json();
-    if (json.error) throw new Error(`[${account}] ${json.error.message}`);
+    if (json.error) { _stats.errors++; throw new Error(`[${account}] ${json.error.message}`); }
     all.push(...(json.data || []));
     url = json.paging?.next || null;
   }
+  recordCall(account, 'insights', pages);
   return all;
 }
 
@@ -161,13 +204,17 @@ async function fetchFromAllAccounts(path, queryParams) {
   const settled = await Promise.allSettled(accounts.map(async account => {
     const all = [];
     let url = `${FB_API}/${account}/${path}?${new URLSearchParams({ ...queryParams, access_token: token(), limit: 500 })}`;
+    let pages = 0;
     while (url) {
       const res = await fetch(url);
+      pages++;
+      captureRateLimit(account, res.headers);
       const json = await res.json();
-      if (json.error) throw new Error(`[${account}] ${json.error.message}`);
+      if (json.error) { _stats.errors++; throw new Error(`[${account}] ${json.error.message}`); }
       all.push(...(json.data || []));
       url = json.paging?.next || null;
     }
+    recordCall(account, path, pages);
     return all;
   }));
   return settled.flatMap(r => {
@@ -180,6 +227,10 @@ async function fetchFromAllAccounts(path, queryParams) {
 router.get('/campaigns', async (req, res) => {
   try {
     const { date_preset, start, end } = req.query;
+    const cacheKey = `campaigns:${date_preset||''}:${start||''}:${end||''}`;
+    const cached = cacheGet(cacheKey);
+    if (cached) return res.json(cached);
+
     const timeRange = start && end ? { since: start, until: end } : null;
 
     const [campaigns, insights] = await Promise.all([
@@ -215,6 +266,7 @@ router.get('/campaigns', async (req, res) => {
       };
     });
 
+    cacheSet(cacheKey, merged);
     res.json(merged);
   } catch (err) {
     console.error('FB campaigns error:', err.message);
@@ -241,6 +293,9 @@ router.get('/campaign-insights', async (req, res) => {
 router.get('/adsets', async (req, res) => {
   try {
     const { date_preset, campaign_id, start, end } = req.query;
+    const cacheKey = `adsets:${campaign_id||''}:${date_preset||''}:${start||''}:${end||''}`;
+    const cached = cacheGet(cacheKey);
+    if (cached) return res.json(cached);
     const timeRange = start && end ? { since: start, until: end } : null;
 
     const listParams = { fields: 'id,name,status,effective_status,campaign_id,campaign{name},created_time,daily_budget,lifetime_budget,optimization_goal' };
@@ -279,6 +334,7 @@ router.get('/adsets', async (req, res) => {
       };
     });
 
+    cacheSet(cacheKey, merged);
     res.json(merged);
   } catch (err) {
     console.error('FB adsets error:', err.message);
@@ -498,6 +554,27 @@ router.post('/campaign/:id/status', async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+// GET /api/facebook/stats — API usage metrics for this server session
+router.get('/stats', (req, res) => {
+  const cacheSize = _cache.size;
+  const cacheKeys = [..._cache.entries()].map(([key, v]) => ({
+    key,
+    age: Math.round((Date.now() - v.ts) / 1000),
+    expiresIn: Math.round((CACHE_TTL - (Date.now() - v.ts)) / 1000),
+  }));
+  res.json({
+    sessionStart: _stats.sessionStart,
+    uptimeSeconds: Math.round((Date.now() - _stats.sessionStart) / 1000),
+    callCount: _stats.callCount,
+    cacheHits: _stats.cacheHits,
+    errors: _stats.errors,
+    rateLimits: _stats.rateLimits,
+    cacheSize,
+    cacheKeys,
+    recentCalls: _stats.recentCalls,
+  });
 });
 
 export default router;

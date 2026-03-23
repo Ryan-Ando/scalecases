@@ -810,6 +810,10 @@ export default function CampaignReports() {
   const [allAdsets, setAllAdsets] = useState({});     // campaignId → adsets[]
   const [allAds, setAllAds]       = useState({});     // adsetId → ads[]
 
+  // Refs to prevent duplicate in-flight fetches
+  const _loadingAdsetIds = useRef(new Set());
+  const _loadingAdIds    = useRef(new Set());
+
   // Persist expanded/paused state across refreshes and date changes
   const [expandedCampaigns, setExpandedCampaigns] = useState(() => {
     try { return new Set(JSON.parse(localStorage.getItem('sc_expandedCampaigns') || '[]')); } catch { return new Set(); }
@@ -838,6 +842,11 @@ export default function CampaignReports() {
   // Popup state
   const [popup, setPopup]               = useState(null);
   const [adDailyCache, setAdDailyCache] = useState({});
+
+  // API stats panel
+  const [showApiStats, setShowApiStats]   = useState(false);
+  const [apiStats, setApiStats]           = useState(null);
+  const [apiStatsLoading, setApiStatsLoading] = useState(false);
 
   // Status toggles for adsets/ads
   const [statusOverrides, setStatusOverrides] = useState({});
@@ -884,48 +893,19 @@ export default function CampaignReports() {
     }).catch(() => {});
   }, []);
 
-  // ── Load all data ─────────────────────────────────────────────────────────
+  // ── Load campaigns only (lazy: adsets/ads fetched on expand) ─────────────
   async function loadAll() {
     setLoading(true); setError('');
+    // Clear stale adset/ad data when date changes — they'll reload on expand
+    setAllAdsets({});
+    setAllAds({});
+    _loadingAdsetIds.current.clear();
+    _loadingAdIds.current.clear();
     try {
       const res  = await fetch(`${BASE}/api/facebook/campaigns?start=${start}&end=${end}`);
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || res.statusText);
-      setCampaigns(data); // keep ALL campaigns (filter active/paused in UI)
-
-      // Load adsets for all campaigns in parallel
-      const adsetResults = await Promise.allSettled(
-        data.map(c =>
-          fetch(`${BASE}/api/facebook/adsets?campaign_id=${c.id}&start=${start}&end=${end}`)
-            .then(r => r.json())
-            .then(adsets => ({ campaignId: c.id, adsets: Array.isArray(adsets) ? adsets : [] }))
-            .catch(() => ({ campaignId: c.id, adsets: [] }))
-        )
-      );
-      const adsetMap = {};
-      const flatAdsets = [];
-      for (const r of adsetResults) {
-        if (r.status === 'fulfilled') {
-          adsetMap[r.value.campaignId] = r.value.adsets;
-          flatAdsets.push(...r.value.adsets);
-        }
-      }
-      setAllAdsets(adsetMap);
-
-      // Load ads for all adsets in parallel
-      const adResults = await Promise.allSettled(
-        flatAdsets.map(a =>
-          fetch(`${BASE}/api/facebook/ads?adset_id=${a.id}&start=${start}&end=${end}`)
-            .then(r => r.json())
-            .then(ads => ({ adsetId: a.id, ads: Array.isArray(ads) ? ads : [] }))
-            .catch(() => ({ adsetId: a.id, ads: [] }))
-        )
-      );
-      const adMap = {};
-      for (const r of adResults) {
-        if (r.status === 'fulfilled') adMap[r.value.adsetId] = r.value.ads;
-      }
-      setAllAds(adMap);
+      setCampaigns(Array.isArray(data) ? data : []);
     } catch (e) {
       setError(e.message);
     } finally {
@@ -933,7 +913,65 @@ export default function CampaignReports() {
     }
   }
 
+  // ── Lazy-load adsets for one campaign on expand ───────────────────────────
+  async function loadAdsets(campaignId) {
+    if (allAdsets[campaignId] !== undefined) return; // already loaded
+    if (_loadingAdsetIds.current.has(campaignId)) return; // in flight
+    _loadingAdsetIds.current.add(campaignId);
+    try {
+      const res    = await fetch(`${BASE}/api/facebook/adsets?campaign_id=${campaignId}&start=${start}&end=${end}`);
+      const adsets = await res.json();
+      setAllAdsets(prev => ({ ...prev, [campaignId]: Array.isArray(adsets) ? adsets : [] }));
+    } catch (e) {
+      console.error('loadAdsets failed:', e);
+      setAllAdsets(prev => ({ ...prev, [campaignId]: [] }));
+    } finally {
+      _loadingAdsetIds.current.delete(campaignId);
+    }
+  }
+
+  // ── Lazy-load ads for one adset on expand ────────────────────────────────
+  async function loadAds(adsetId) {
+    if (allAds[adsetId] !== undefined) return; // already loaded
+    if (_loadingAdIds.current.has(adsetId)) return; // in flight
+    _loadingAdIds.current.add(adsetId);
+    try {
+      const res = await fetch(`${BASE}/api/facebook/ads?adset_id=${adsetId}&start=${start}&end=${end}`);
+      const ads = await res.json();
+      setAllAds(prev => ({ ...prev, [adsetId]: Array.isArray(ads) ? ads : [] }));
+    } catch (e) {
+      console.error('loadAds failed:', e);
+      setAllAds(prev => ({ ...prev, [adsetId]: [] }));
+    } finally {
+      _loadingAdIds.current.delete(adsetId);
+    }
+  }
+
   useEffect(() => { loadAll(); }, [start, end]);
+
+  async function fetchApiStats() {
+    setApiStatsLoading(true);
+    try {
+      const res  = await fetch(`${BASE}/api/facebook/stats`);
+      const data = await res.json();
+      setApiStats(data);
+    } catch { /* ignore */ } finally {
+      setApiStatsLoading(false);
+    }
+  }
+
+  // After campaigns load (or date changes), re-fetch adsets/ads for persisted open dropdowns
+  useEffect(() => {
+    if (campaigns.length === 0) return;
+    for (const cid of expandedCampaigns) loadAdsets(cid);
+  }, [campaigns]);
+
+  useEffect(() => {
+    const loadedAdsetIds = Object.values(allAdsets).flat().map(a => a.id);
+    for (const aid of expandedAdsets) {
+      if (loadedAdsetIds.includes(aid)) loadAds(aid);
+    }
+  }, [allAdsets]);
 
   // ── Fetch daily data when popup opens ─────────────────────────────────────
   useEffect(() => {
@@ -1311,11 +1349,13 @@ export default function CampaignReports() {
     return (
       <Fragment key={c.id}>
         {/* Campaign row */}
-        <tr style={{ cursor: 'pointer' }} onClick={() => setExpandedCampaigns(prev => {
-          const next = new Set(prev);
-          if (next.has(c.id)) next.delete(c.id); else next.add(c.id);
-          return next;
-        })}>
+        <tr style={{ cursor: 'pointer' }} onClick={() => {
+          setExpandedCampaigns(prev => {
+            const next = new Set(prev);
+            if (next.has(c.id)) { next.delete(c.id); } else { next.add(c.id); loadAdsets(c.id); }
+            return next;
+          });
+        }}>
           {/* Chevron cell */}
           <td style={{
             ...campRowBase,
@@ -1348,6 +1388,9 @@ export default function CampaignReports() {
         {/* Adset rows when expanded */}
         {isExpanded && (
           <>
+            {allAdsets[c.id] === undefined && (
+              <tr><td colSpan={COLS.length + 1} style={{ ...tdBase, paddingLeft: 52, color: 'var(--text-muted)', fontStyle: 'italic' }}>Loading adsets…</td></tr>
+            )}
             {sortRows(activeAdsets, sortKey, sortDir).map(a => renderAdsetRow(a, c.id))}
 
             {/* Paused adsets footer */}
@@ -1380,11 +1423,13 @@ export default function CampaignReports() {
           onMouseLeave={e => { e.currentTarget.style.background = ''; }}>
           {/* Chevron cell */}
           <td style={{ ...tdBase, paddingLeft: 20, textAlign: 'center', width: 36, cursor: 'pointer', position: 'sticky', left: 0, zIndex: 2 }}
-            onClick={() => setExpandedAdsets(prev => {
-              const next = new Set(prev);
-              if (next.has(a.id)) next.delete(a.id); else next.add(a.id);
-              return next;
-            })}>
+            onClick={() => {
+              setExpandedAdsets(prev => {
+                const next = new Set(prev);
+                if (next.has(a.id)) { next.delete(a.id); } else { next.add(a.id); loadAds(a.id); }
+                return next;
+              });
+            }}>
             {isExpanded ? '▾' : '▸'}
           </td>
           {COLS.map(col => (
@@ -1403,6 +1448,9 @@ export default function CampaignReports() {
         {/* Ad rows when adset expanded */}
         {isExpanded && (
           <>
+            {allAds[a.id] === undefined && (
+              <tr><td colSpan={COLS.length + 1} style={{ ...tdBase, paddingLeft: 68, color: 'var(--text-muted)', fontStyle: 'italic' }}>Loading ads…</td></tr>
+            )}
             {sortRows(activeAds, sortKey, sortDir).map(ad => renderAdRow(ad, campaignId))}
 
             {/* Paused ads footer */}
@@ -1469,6 +1517,118 @@ export default function CampaignReports() {
 
       {/* Modals */}
       {showRules && <AiRulesModal campaigns={campaigns} onClose={() => setShowRules(false)} />}
+
+      {/* API Stats Modal */}
+      {showApiStats && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', zIndex: 200, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+          onClick={() => setShowApiStats(false)}>
+          <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: 28, maxWidth: 680, width: '95%', maxHeight: '80vh', overflowY: 'auto' }}
+            onClick={e => e.stopPropagation()}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }}>
+              <h3 style={{ margin: 0, fontSize: 16 }}>📊 FB API Usage</h3>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button className="btn btn--sm" onClick={fetchApiStats} disabled={apiStatsLoading}>
+                  {apiStatsLoading ? 'Refreshing…' : 'Refresh'}
+                </button>
+                <button className="btn btn--sm" onClick={() => setShowApiStats(false)}>✕</button>
+              </div>
+            </div>
+
+            {apiStatsLoading && !apiStats && <p style={{ color: 'var(--text-muted)', fontSize: 13 }}>Loading…</p>}
+
+            {apiStats && (() => {
+              const uptimeMin = Math.round(apiStats.uptimeSeconds / 60);
+              return (
+                <>
+                  {/* Summary pills */}
+                  <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 20 }}>
+                    {[
+                      { label: 'API Calls', value: apiStats.callCount, warn: apiStats.callCount > 50 },
+                      { label: 'Cache Hits', value: apiStats.cacheHits, color: 'var(--green)' },
+                      { label: 'Errors', value: apiStats.errors, warn: apiStats.errors > 0 },
+                      { label: 'Cached Keys', value: apiStats.cacheSize },
+                      { label: 'Uptime', value: uptimeMin < 60 ? `${uptimeMin}m` : `${Math.floor(uptimeMin/60)}h ${uptimeMin%60}m` },
+                    ].map(({ label, value, warn, color }) => (
+                      <div key={label} style={{ background: 'var(--bg)', border: `1px solid ${warn ? '#dc2626' : 'var(--border)'}`, borderRadius: 8, padding: '8px 14px', textAlign: 'center', minWidth: 90 }}>
+                        <div style={{ fontSize: 20, fontWeight: 700, color: color || (warn ? '#dc2626' : 'var(--text)') }}>{value}</div>
+                        <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>{label}</div>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Rate limits per account */}
+                  {Object.keys(apiStats.rateLimits).length > 0 && (
+                    <div style={{ marginBottom: 20 }}>
+                      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>Rate Limit Usage (0–100%)</div>
+                      {Object.entries(apiStats.rateLimits).map(([acct, limits]) => (
+                        <div key={acct} style={{ marginBottom: 12 }}>
+                          <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>{acct}</div>
+                          {[
+                            { label: 'Call Count', key: 'call_count' },
+                            { label: 'Total Time', key: 'total_time' },
+                            { label: 'CPU Time', key: 'total_cputime' },
+                            { label: 'Acct Util', key: 'acc_id_util_pct' },
+                            { label: 'Biz Calls', key: 'biz_call_count' },
+                          ].filter(f => limits[f.key] != null).map(({ label, key }) => {
+                            const pct = limits[key];
+                            const color = pct > 75 ? '#dc2626' : pct > 40 ? '#f59e0b' : 'var(--green)';
+                            return (
+                              <div key={key} style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 5 }}>
+                                <div style={{ width: 80, fontSize: 12, color: 'var(--text-muted)', flexShrink: 0 }}>{label}</div>
+                                <div style={{ flex: 1, background: 'var(--bg)', borderRadius: 4, height: 10, overflow: 'hidden' }}>
+                                  <div style={{ width: `${Math.min(pct, 100)}%`, height: '100%', background: color, borderRadius: 4, transition: 'width 0.3s' }} />
+                                </div>
+                                <div style={{ width: 36, fontSize: 12, textAlign: 'right', color, fontWeight: 600 }}>{pct}%</div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Cache keys */}
+                  {apiStats.cacheKeys.length > 0 && (
+                    <div style={{ marginBottom: 20 }}>
+                      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>Cached Entries</div>
+                      <div style={{ background: 'var(--bg)', borderRadius: 8, overflow: 'hidden', border: '1px solid var(--border)' }}>
+                        {apiStats.cacheKeys.map(({ key, age, expiresIn }) => (
+                          <div key={key} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 12px', borderBottom: '1px solid var(--border)', fontSize: 12 }}>
+                            <span style={{ fontFamily: 'monospace', color: 'var(--text)' }}>{key}</span>
+                            <span style={{ color: 'var(--text-muted)', flexShrink: 0, marginLeft: 12 }}>
+                              {age < 60 ? `${age}s` : `${Math.floor(age/60)}m`} old · expires in {expiresIn < 60 ? `${expiresIn}s` : `${Math.floor(expiresIn/60)}m`}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Recent calls */}
+                  {apiStats.recentCalls.length > 0 && (
+                    <div>
+                      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>Recent API Calls</div>
+                      <div style={{ background: 'var(--bg)', borderRadius: 8, overflow: 'hidden', border: '1px solid var(--border)', maxHeight: 220, overflowY: 'auto' }}>
+                        {apiStats.recentCalls.map((c, i) => {
+                          const ago = Math.round((Date.now() - c.ts) / 1000);
+                          return (
+                            <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '5px 12px', borderBottom: '1px solid var(--border)', fontSize: 12 }}>
+                              <span style={{ color: 'var(--text-muted)', flexShrink: 0, marginRight: 12 }}>{ago < 60 ? `${ago}s ago` : `${Math.floor(ago/60)}m ago`}</span>
+                              <span style={{ fontFamily: 'monospace', flex: 1 }}>{c.path}</span>
+                              <span style={{ color: 'var(--text-muted)', flexShrink: 0, marginLeft: 12 }}>{c.account}</span>
+                              {c.pages > 1 && <span style={{ color: 'var(--text-muted)', flexShrink: 0, marginLeft: 8 }}>{c.pages}p</span>}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+                </>
+              );
+            })()}
+          </div>
+        </div>
+      )}
       {kpiModal && (
         <KpiModal
           campaignId={kpiModal.campaignId}
@@ -1586,6 +1746,9 @@ export default function CampaignReports() {
           <button className="btn btn--sm" onClick={loadAll} disabled={loading} style={{ marginLeft: 4 }}>
             {loading ? 'Loading…' : 'Refresh'}
           </button>
+          <button className="btn btn--sm" title="View FB API usage stats"
+            onClick={() => { setShowApiStats(true); fetchApiStats(); }}
+            style={{ marginLeft: 4, fontSize: 13 }}>📊 API</button>
         </div>
       </div>
 
