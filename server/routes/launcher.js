@@ -24,7 +24,7 @@ router.get('/campaigns', async (req, res) => {
   try {
     const account = firstAdAccount();
     const all = [];
-    let url = `${FB_API}/${account}/campaigns?fields=id,name,status,objective&limit=200&filtering=${encodeURIComponent(JSON.stringify([{ field: 'effective_status', operator: 'EQUAL', value: 'ACTIVE' }]))}&access_token=${token()}`;
+    let url = `${FB_API}/${account}/campaigns?fields=id,name,status,objective&limit=200&filtering=${encodeURIComponent(JSON.stringify([{ field: 'effective_status', operator: 'IN', value: ['ACTIVE'] }]))}&access_token=${token()}`;
     while (url) {
       const r = await fetch(url);
       const json = await r.json();
@@ -32,7 +32,7 @@ router.get('/campaigns', async (req, res) => {
       all.push(...(json.data || []));
       url = json.paging?.next || null;
     }
-    res.json(all.map(c => ({ id: c.id, name: c.name, status: c.status, objective: c.objective })));
+    res.json(all.filter(c => c.status === 'ACTIVE').map(c => ({ id: c.id, name: c.name, status: c.status, objective: c.objective })));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
