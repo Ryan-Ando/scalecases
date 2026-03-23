@@ -47,16 +47,13 @@ const PLACEMENT_OPTIONS = [
 
 const DEFAULT_MANUAL_PLACEMENTS = Object.fromEntries(PLACEMENT_OPTIONS.map(p => [p.id, false]));
 
-// Creative enhancement toggles — keyed by Meta API field name used in degrees_of_freedom_spec
 const CREATIVE_ENHANCEMENTS = [
-  // Standard Enhancements
   { id: 'standard_enhancements',     label: 'Standard Enhancements (all)',  group: 'Standard' },
   { id: 'image_brightness_contrast', label: 'Brightness & Contrast',        group: 'Standard' },
   { id: 'image_templates',           label: 'Image Templates',              group: 'Standard' },
   { id: 'relevant_comments',         label: 'Relevant Comments',            group: 'Standard' },
   { id: 'add_text',                  label: 'Add Text Overlay',             group: 'Standard' },
   { id: 'translate',                 label: 'Auto-Translate',               group: 'Standard' },
-  // Advantage+ Creative
   { id: 'advantage_plus_creative',   label: 'Advantage+ Creative (all)',    group: 'Advantage+' },
   { id: 'music',                     label: 'Music',                        group: 'Advantage+' },
   { id: 'image_uncrop',              label: 'Image Expansion (Uncrop)',     group: 'Advantage+' },
@@ -66,41 +63,24 @@ const CREATIVE_ENHANCEMENTS = [
 
 // ── Defaults ──────────────────────────────────────────────────────────────────
 const DEFAULT_GLOBAL = {
-  // Audience expansion
   advantagePlusAudience: true,
-  ageMin: 18,
-  ageMax: 65,
-  genders: '0',
-  countries: 'US',
-  customAudienceIds: '',
-  targetingSpec: '',
-  // Placements
+  ageMin: 18, ageMax: 65, genders: '0', countries: 'US',
+  customAudienceIds: '', targetingSpec: '',
   placementsType: 'ADVANTAGE_PLUS',
   manualPlacements: { ...DEFAULT_MANUAL_PLACEMENTS },
-  // Creative advancements (individual toggles)
   creativeEnhancements: {},
-  // URL & tracking
-  urlParameters: '',
-  languages: '',
+  urlParameters: '', languages: '',
 };
 
 const DEFAULT_CAMPAIGN_CONFIG = {
-  pageId: '',
-  adSetup: 'SINGLE',
-  primaryText: '',
-  headline: '',
-  description: '',
-  ctaType: 'LEARN_MORE',
-  destinationUrl: '',
-  conversionLocation: 'WEBSITE',
-  pixelId: '',
-  conversionEvent: 'LEAD',
-  costPerResultGoal: '',
+  pageId: '', adSetup: 'SINGLE',
+  primaryText: '', headline: '', description: '',
+  ctaType: 'LEARN_MORE', destinationUrl: '',
+  conversionLocation: 'WEBSITE', pixelId: '',
+  conversionEvent: 'LEAD', costPerResultGoal: '',
   attributionSetting: '7D_CLICK_1D_VIEW',
-  budgetType: 'DAILY',
-  budgetAmount: '',
-  startTime: '',
-  endTime: '',
+  budgetType: 'DAILY', budgetAmount: '',
+  startTime: '', endTime: '',
 };
 
 function loadStored(key, fallback) {
@@ -120,10 +100,13 @@ const inputStyle = { background: '#0f172a', border: `1px solid ${S.border}`, bor
 const labelStyle = { color: S.muted, fontSize: 11, fontWeight: 600, letterSpacing: '0.05em', textTransform: 'uppercase', marginBottom: 3, display: 'block' };
 const btn = (color = S.blue, disabled = false) => ({ background: disabled ? '#334155' : color, color: disabled ? S.muted : '#fff', border: 'none', borderRadius: 6, padding: '6px 13px', fontSize: 13, cursor: disabled ? 'not-allowed' : 'pointer', fontWeight: 600, whiteSpace: 'nowrap' });
 
+const grid2 = { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 };
+const grid3 = { display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 };
+const grid4 = { display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 12 };
+
 function Spinner() {
   return <span style={{ display: 'inline-block', width: 13, height: 13, border: `2px solid ${S.border}`, borderTopColor: S.blue, borderRadius: '50%', animation: 'spin 0.7s linear infinite', verticalAlign: 'middle', marginRight: 5 }} />;
 }
-
 function Field({ label, children, col, hint }) {
   return (
     <div style={col ? { gridColumn: col } : {}}>
@@ -132,7 +115,6 @@ function Field({ label, children, col, hint }) {
     </div>
   );
 }
-
 function SectionHeader({ title, open, onToggle }) {
   return (
     <button onClick={onToggle} style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'none', border: 'none', color: S.text, cursor: 'pointer', width: '100%', textAlign: 'left', padding: 0, marginBottom: open ? 12 : 0 }}>
@@ -141,29 +123,207 @@ function SectionHeader({ title, open, onToggle }) {
     </button>
   );
 }
-
 function extractConcept(filename) {
   const base = filename.replace(/\.[^.]+$/, '');
   const parts = base.split('-');
   const result = [];
-  for (const p of parts) {
-    if (STATE_NAMES[p.toUpperCase()]) break;
-    result.push(p);
-  }
+  for (const p of parts) { if (STATE_NAMES[p.toUpperCase()]) break; result.push(p); }
   return result.join(' ') || base;
 }
-
-// Ad name = filename without extension, with state code + its surrounding dashes removed
 function adNameFromFile(filename) {
   const base = filename.replace(/\.[^.]+$/, '');
-  const parts = base.split('-');
-  const filtered = parts.filter(p => !STATE_NAMES[p.toUpperCase()]);
+  const filtered = base.split('-').filter(p => !STATE_NAMES[p.toUpperCase()]);
   return filtered.join('-').replace(/-{2,}/g, '-').replace(/^-|-$/g, '');
 }
 
-const grid2 = { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 };
-const grid3 = { display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 };
-const grid4 = { display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 12 };
+// ── Campaign Config Panel (top-level to prevent unmount on re-render) ─────────
+function CampaignConfigPanel({ campaign, campaigns, pendingConfig, pendingDirty, hasSaved, openSections, onUpdate, onSave, onClose, onToggleSection, onCopyTo }) {
+  const [showCopy, setShowCopy] = useState(false);
+  const [copyTargets, setCopyTargets] = useState(new Set());
+  const [copyDone, setCopyDone] = useState(false);
+
+  if (!campaign || !pendingConfig) return null;
+
+  const p = pendingConfig;
+  const others = campaigns.filter(c => c.id !== campaign.id);
+
+  function handleCopy() {
+    onCopyTo([...copyTargets]);
+    setCopyDone(true);
+    setTimeout(() => { setCopyDone(false); setShowCopy(false); setCopyTargets(new Set()); }, 1500);
+  }
+
+  function toggleTarget(id) {
+    setCopyTargets(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  }
+
+  return (
+    <div style={{ ...cardStyle, borderColor: S.blue, marginTop: -2 }}>
+      {/* Header */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16, flexWrap: 'wrap' }}>
+        <span style={{ fontWeight: 700, fontSize: 13 }}>{campaign.name}</span>
+        {campaign.stateCode && <span style={{ background: S.blue, borderRadius: 4, padding: '1px 7px', fontSize: 11, fontWeight: 700 }}>{campaign.stateCode}</span>}
+        {!hasSaved && <span style={{ fontSize: 11, color: S.muted }}>(using defaults)</span>}
+        <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          {pendingDirty && <span style={{ fontSize: 11, color: S.yellow }}>● Unsaved</span>}
+          <button style={btn('#475569')} onClick={() => { setShowCopy(s => !s); setCopyDone(false); }}>
+            {showCopy ? 'Cancel Copy' : 'Copy to…'}
+          </button>
+          <button style={btn(S.green, !pendingDirty)} disabled={!pendingDirty} onClick={onSave}>Save Settings</button>
+          <button style={btn('#475569')} onClick={onClose}>✕ Close</button>
+        </div>
+      </div>
+
+      {/* Copy panel */}
+      {showCopy && (
+        <div style={{ background: '#0f172a', border: `1px solid ${S.border}`, borderRadius: 8, padding: '12px 14px', marginBottom: 16 }}>
+          <div style={{ fontWeight: 700, fontSize: 12, color: S.muted, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 10 }}>
+            Copy current settings to:
+          </div>
+          {others.length === 0 ? (
+            <span style={{ color: S.muted, fontSize: 13 }}>No other campaigns.</span>
+          ) : (
+            <>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 10 }}>
+                {others.map(c => {
+                  const on = copyTargets.has(c.id);
+                  return (
+                    <button key={c.id} onClick={() => toggleTarget(c.id)} style={{ background: on ? '#1d4ed8' : '#1e293b', border: `1px solid ${on ? S.blue : S.border}`, borderRadius: 6, color: on ? '#fff' : S.muted, padding: '4px 10px', fontSize: 12, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 5 }}>
+                      {c.stateCode && <span style={{ background: on ? '#3b82f6' : S.border, borderRadius: 3, padding: '0 4px', fontSize: 10, fontWeight: 700 }}>{c.stateCode}</span>}
+                      {c.name}
+                    </button>
+                  );
+                })}
+              </div>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button style={btn('#475569')} onClick={() => setCopyTargets(new Set(others.map(c => c.id)))}>Select All</button>
+                <button style={btn('#475569')} onClick={() => setCopyTargets(new Set())}>Clear</button>
+                {copyDone
+                  ? <span style={{ color: S.green, fontSize: 13, alignSelf: 'center', fontWeight: 600 }}>✓ Copied to {copyTargets.size} campaign{copyTargets.size !== 1 ? 's' : ''}</span>
+                  : <button style={btn(S.green, copyTargets.size === 0)} disabled={copyTargets.size === 0} onClick={handleCopy}>
+                      Copy to {copyTargets.size} campaign{copyTargets.size !== 1 ? 's' : ''}
+                    </button>
+                }
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* Identity & Destination */}
+      <div style={{ borderTop: `1px solid ${S.border}`, paddingTop: 12, marginBottom: 10 }}>
+        <SectionHeader title="Identity & Destination" open={openSections.has('identity')} onToggle={() => onToggleSection('identity')} />
+        {openSections.has('identity') && (
+          <div style={grid3}>
+            <Field label="Facebook Page ID">
+              <input style={inputStyle} placeholder="e.g. 123456789" value={p.pageId} onChange={e => onUpdate('pageId', e.target.value)} />
+            </Field>
+            <Field label="Destination URL">
+              <input style={inputStyle} placeholder="https://" value={p.destinationUrl} onChange={e => onUpdate('destinationUrl', e.target.value)} />
+            </Field>
+            <Field label="CTA Type">
+              <select style={inputStyle} value={p.ctaType} onChange={e => onUpdate('ctaType', e.target.value)}>
+                {CTA_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+              </select>
+            </Field>
+          </div>
+        )}
+      </div>
+
+      {/* Conversion */}
+      <div style={{ borderTop: `1px solid ${S.border}`, paddingTop: 12, marginBottom: 10 }}>
+        <SectionHeader title="Conversion" open={openSections.has('conversion')} onToggle={() => onToggleSection('conversion')} />
+        {openSections.has('conversion') && (
+          <div style={grid3}>
+            <Field label="Conversion Location">
+              <select style={inputStyle} value={p.conversionLocation} onChange={e => onUpdate('conversionLocation', e.target.value)}>
+                <option value="WEBSITE">Website</option>
+                <option value="LEAD_GENERATION">Instant Forms (Lead Gen)</option>
+                <option value="MESSAGING">Messaging Apps</option>
+                <option value="CALLS">Calls</option>
+                <option value="APP">App</option>
+              </select>
+            </Field>
+            <Field label="Dataset / Pixel ID">
+              <input style={inputStyle} placeholder="Pixel or dataset ID" value={p.pixelId} onChange={e => onUpdate('pixelId', e.target.value)} />
+            </Field>
+            <Field label="Conversion Event">
+              <select style={inputStyle} value={p.conversionEvent} onChange={e => onUpdate('conversionEvent', e.target.value)}>
+                {CONVERSION_EVENTS.map(ev => <option key={ev.value} value={ev.value}>{ev.label}</option>)}
+              </select>
+            </Field>
+            <Field label="Cost Per Result Goal ($)">
+              <input style={inputStyle} type="number" min="0" step="0.01" placeholder="Leave blank = lowest cost" value={p.costPerResultGoal} onChange={e => onUpdate('costPerResultGoal', e.target.value)} />
+            </Field>
+            <Field label="Attribution Setting">
+              <select style={inputStyle} value={p.attributionSetting} onChange={e => onUpdate('attributionSetting', e.target.value)}>
+                <option value="7D_CLICK_1D_VIEW">7-day click, 1-day view</option>
+                <option value="7D_CLICK">7-day click only</option>
+                <option value="1D_CLICK">1-day click only</option>
+                <option value="1D_VIEW">1-day view only</option>
+              </select>
+            </Field>
+          </div>
+        )}
+      </div>
+
+      {/* Budget & Schedule */}
+      <div style={{ borderTop: `1px solid ${S.border}`, paddingTop: 12, marginBottom: 10 }}>
+        <SectionHeader title="Budget & Schedule" open={openSections.has('budget')} onToggle={() => onToggleSection('budget')} />
+        {openSections.has('budget') && (
+          <div style={grid4}>
+            <Field label="Budget Type">
+              <select style={inputStyle} value={p.budgetType} onChange={e => onUpdate('budgetType', e.target.value)}>
+                <option value="DAILY">Daily Budget</option>
+                <option value="LIFETIME">Lifetime Budget</option>
+              </select>
+            </Field>
+            <Field label="Amount ($)">
+              <input style={inputStyle} type="number" min="1" step="0.01" placeholder="e.g. 50" value={p.budgetAmount} onChange={e => onUpdate('budgetAmount', e.target.value)} />
+            </Field>
+            <Field label="Start Date / Time">
+              <input style={inputStyle} type="datetime-local" value={p.startTime} onChange={e => onUpdate('startTime', e.target.value)} />
+            </Field>
+            <Field label="End Date / Time">
+              <input style={inputStyle} type="datetime-local" value={p.endTime} onChange={e => onUpdate('endTime', e.target.value)} />
+            </Field>
+          </div>
+        )}
+      </div>
+
+      {/* Ad Creative */}
+      <div style={{ borderTop: `1px solid ${S.border}`, paddingTop: 12 }}>
+        <SectionHeader title="Ad Creative" open={openSections.has('adcreative')} onToggle={() => onToggleSection('adcreative')} />
+        {openSections.has('adcreative') && (
+          <div style={grid2}>
+            <Field label="Ad Setup">
+              <select style={inputStyle} value={p.adSetup} onChange={e => onUpdate('adSetup', e.target.value)}>
+                <option value="SINGLE">Single Image / Video</option>
+                <option value="CAROUSEL">Carousel</option>
+              </select>
+            </Field>
+            <div />
+            <Field label="Primary Text" col="1 / -1">
+              <textarea rows={3} style={{ ...inputStyle, resize: 'vertical' }} placeholder="Ad body copy…" value={p.primaryText} onChange={e => onUpdate('primaryText', e.target.value)} />
+            </Field>
+            <Field label="Headline">
+              <input style={inputStyle} placeholder="Short headline" value={p.headline} onChange={e => onUpdate('headline', e.target.value)} />
+            </Field>
+            <Field label="Description">
+              <input style={inputStyle} placeholder="Optional description" value={p.description} onChange={e => onUpdate('description', e.target.value)} />
+            </Field>
+          </div>
+        )}
+      </div>
+
+      {/* Save footer */}
+      <div style={{ borderTop: `1px solid ${S.border}`, paddingTop: 12, marginTop: 12, display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+        {pendingDirty && <span style={{ fontSize: 12, color: S.yellow, alignSelf: 'center' }}>● Unsaved changes</span>}
+        <button style={btn(S.green, !pendingDirty)} disabled={!pendingDirty} onClick={onSave}>Save Settings</button>
+      </div>
+    </div>
+  );
+}
 
 // ── Main component ────────────────────────────────────────────────────────────
 export default function AdsLauncher() {
@@ -202,19 +362,15 @@ export default function AdsLauncher() {
   const [rowStatuses, setRowStatuses]     = useState({});
   const [launchSummary, setLaunchSummary] = useState(null);
 
-  // ── Persistence ───────────────────────────────────────────────────────────
   useEffect(() => { localStorage.setItem(GLOBAL_KEY, JSON.stringify(globalConfig)); }, [globalConfig]);
   useEffect(() => { localStorage.setItem(CAMPAIGN_CFGS_KEY, JSON.stringify(campaignConfigs)); }, [campaignConfigs]);
 
   function updateGlobal(key, value) { setGlobalConfig(p => ({ ...p, [key]: value })); }
   function toggleGlobal(id) { setOpenGlobal(p => { const n = new Set(p); n.has(id) ? n.delete(id) : n.add(id); return n; }); }
   function toggleCampaignSection(id) { setOpenCampaign(p => { const n = new Set(p); n.has(id) ? n.delete(id) : n.add(id); return n; }); }
+  function toggleEnhancement(id, checked) { updateGlobal('creativeEnhancements', { ...globalConfig.creativeEnhancements, [id]: checked }); }
 
-  function toggleEnhancement(id, checked) {
-    updateGlobal('creativeEnhancements', { ...globalConfig.creativeEnhancements, [id]: checked });
-  }
-
-  // ── Presets ───────────────────────────────────────────────────────────────
+  // Presets
   function savePreset(name) {
     const updated = { ...presets, [name]: { ...globalConfig } };
     setPresets(updated); localStorage.setItem(PRESETS_KEY, JSON.stringify(updated)); setActivePreset(name);
@@ -229,7 +385,7 @@ export default function AdsLauncher() {
     if (activePreset === name) setActivePreset('');
   }
 
-  // ── Per-campaign config ───────────────────────────────────────────────────
+  // Per-campaign config
   function focusCampaign(id) {
     setFocusedCampaignId(id);
     setPendingConfig({ ...DEFAULT_CAMPAIGN_CONFIG, ...campaignConfigs[id] });
@@ -241,16 +397,22 @@ export default function AdsLauncher() {
     setCampaignConfigs(p => ({ ...p, [focusedCampaignId]: { ...pendingConfig } }));
     setPendingDirty(false);
   }
+  function copyConfigTo(campaignIds) {
+    if (!pendingConfig) return;
+    setCampaignConfigs(p => {
+      const next = { ...p };
+      for (const id of campaignIds) next[id] = { ...pendingConfig };
+      return next;
+    });
+  }
 
   function buildLaunchConfig(campaignId) {
     const cc = { ...DEFAULT_CAMPAIGN_CONFIG, ...campaignConfigs[campaignId] };
     return {
       ...cc,
       advantagePlusAudience: globalConfig.advantagePlusAudience,
-      ageMin: globalConfig.ageMin,
-      ageMax: globalConfig.ageMax,
-      genders: globalConfig.genders,
-      countries: globalConfig.countries,
+      ageMin: globalConfig.ageMin, ageMax: globalConfig.ageMax,
+      genders: globalConfig.genders, countries: globalConfig.countries,
       customAudienceIds: globalConfig.customAudienceIds,
       targetingSpec: globalConfig.targetingSpec,
       placementsType: globalConfig.placementsType,
@@ -261,7 +423,7 @@ export default function AdsLauncher() {
     };
   }
 
-  // ── Campaigns ─────────────────────────────────────────────────────────────
+  // Campaigns
   const fetchCampaigns = useCallback(async () => {
     setCampaignsLoading(true); setCampaignsError('');
     try {
@@ -277,7 +439,6 @@ export default function AdsLauncher() {
 
   useEffect(() => { fetchCampaigns(); }, [fetchCampaigns]);
 
-  // ── Files ─────────────────────────────────────────────────────────────────
   function addFiles(fileList) {
     setFiles(p => [...p, ...Array.from(fileList).map(f => ({ file: f, name: f.name, stateCode: extractStateFromFilename(f.name) }))]);
   }
@@ -288,7 +449,6 @@ export default function AdsLauncher() {
     setRowStatuses(p => { const n = { ...p }; delete n[idx]; return n; });
   }
 
-  // ── Adsets ────────────────────────────────────────────────────────────────
   const fetchAdsets = useCallback(async (campaignId) => {
     if (adsets[campaignId] || loadingAdsets.has(campaignId)) return;
     setLoadingAdsets(p => new Set([...p, campaignId]));
@@ -300,7 +460,6 @@ export default function AdsLauncher() {
     finally { setLoadingAdsets(p => { const n = new Set(p); n.delete(campaignId); return n; }); }
   }, [adsets, loadingAdsets]);
 
-  // ── Matches ───────────────────────────────────────────────────────────────
   const matches = useMemo(() => files.map((f, idx) => {
     if (!f.stateCode) return { ...f, idx, status: 'no_state', matchedCampaigns: [] };
     const matched = campaigns.filter(c => c.stateCode === f.stateCode && selectedCampaigns.has(c.id));
@@ -336,16 +495,11 @@ export default function AdsLauncher() {
 
   const readyCount = matches.filter(m => m.status === 'ready').length;
   const today = new Date().toISOString().slice(0, 10);
+  function resolveAdsetName(m) { return `${extractConcept(m.name)} - ${m.stateCode || '??'} - ${today}`; }
 
-  function resolveAdsetName(m) {
-    return `${extractConcept(m.name)} - ${m.stateCode || '??'} - ${today}`;
-  }
-
-  // ── Launch ────────────────────────────────────────────────────────────────
   async function doLaunch() {
     setLaunching(true); setConfirmLaunch(false); setLaunchSummary(null);
     let succeeded = 0, failed = 0;
-
     for (const m of matches) {
       if (m.status !== 'ready') continue;
       const idx = m.idx;
@@ -354,11 +508,7 @@ export default function AdsLauncher() {
         let adsetId;
         if (createNewAdset) {
           setRowStatuses(p => ({ ...p, [idx]: { phase: 'adset' } }));
-          const asRes = await fetch(`${BASE}/api/launcher/adset`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name: resolveAdsetName(m), campaignId: m.campaign.id, ...cfg }),
-          });
+          const asRes = await fetch(`${BASE}/api/launcher/adset`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: resolveAdsetName(m), campaignId: m.campaign.id, ...cfg }) });
           const asJson = await asRes.json();
           if (!asRes.ok) throw new Error(asJson.error);
           adsetId = asJson.adset_id;
@@ -366,10 +516,8 @@ export default function AdsLauncher() {
           adsetId = chosenAdsets[idx] || adsets[m.campaign.id]?.[0]?.id;
           if (!adsetId) throw new Error('No adset selected');
         }
-
         setRowStatuses(p => ({ ...p, [idx]: { phase: 'uploading' } }));
-        const fd = new FormData();
-        fd.append('file', m.file);
+        const fd = new FormData(); fd.append('file', m.file);
         const upRes = await fetch(`${BASE}/api/launcher/upload`, { method: 'POST', body: fd });
         const upJson = await upRes.json();
         if (!upRes.ok) throw new Error(upJson.error);
@@ -377,47 +525,23 @@ export default function AdsLauncher() {
         setRowStatuses(p => ({ ...p, [idx]: { phase: 'creative' } }));
         const adName = adNameFromFile(m.name);
         const crRes = await fetch(`${BASE}/api/launcher/creative`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            name: adName,
-            pageId: cfg.pageId,
-            primaryText: cfg.primaryText,
-            headline: cfg.headline,
-            description: cfg.description,
-            ctaType: cfg.ctaType,
-            destinationUrl: cfg.destinationUrl,
-            urlParameters: cfg.urlParameters,
-            creativeEnhancements: cfg.creativeEnhancements,
-            mediaType: upJson.type,
-            videoId: upJson.video_id,
-            imageHash: upJson.image_hash,
-          }),
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: adName, pageId: cfg.pageId, primaryText: cfg.primaryText, headline: cfg.headline, description: cfg.description, ctaType: cfg.ctaType, destinationUrl: cfg.destinationUrl, urlParameters: cfg.urlParameters, creativeEnhancements: cfg.creativeEnhancements, mediaType: upJson.type, videoId: upJson.video_id, imageHash: upJson.image_hash }),
         });
         const crJson = await crRes.json();
         if (!crRes.ok) throw new Error(crJson.error);
 
         setRowStatuses(p => ({ ...p, [idx]: { phase: 'ad' } }));
-        const adRes = await fetch(`${BASE}/api/launcher/ad`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: adName, adsetId, creativeId: crJson.creative_id }),
-        });
+        const adRes = await fetch(`${BASE}/api/launcher/ad`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: adName, adsetId, creativeId: crJson.creative_id }) });
         const adJson = await adRes.json();
         if (!adRes.ok) throw new Error(adJson.error);
 
-        setRowStatuses(p => ({ ...p, [idx]: { phase: 'done', adId: adJson.ad_id } }));
-        succeeded++;
-      } catch (e) {
-        setRowStatuses(p => ({ ...p, [idx]: { phase: 'error', error: e.message } }));
-        failed++;
-      }
+        setRowStatuses(p => ({ ...p, [idx]: { phase: 'done', adId: adJson.ad_id } })); succeeded++;
+      } catch (e) { setRowStatuses(p => ({ ...p, [idx]: { phase: 'error', error: e.message } })); failed++; }
     }
-    setLaunching(false);
-    setLaunchSummary({ succeeded, failed });
+    setLaunching(false); setLaunchSummary({ succeeded, failed });
   }
 
-  // ── Table helpers ─────────────────────────────────────────────────────────
   function renderStatus(m) {
     const rs = rowStatuses[m.idx];
     if (rs) {
@@ -434,176 +558,28 @@ export default function AdsLauncher() {
     if (m.status === 'ready')     return <span style={{ color: S.green }}>Ready</span>;
     return null;
   }
-
   function renderCampaignCell(m) {
     if (m.status === 'no_state') return <span style={{ color: S.muted }}>—</span>;
     if (m.status === 'no_match') return <span style={{ color: S.orange }}>No match ({m.stateCode})</span>;
     if (m.status === 'ambiguous' || (m.status === 'ready' && m.matchedCampaigns?.length > 1)) {
-      return (
-        <select value={chosenCampaigns[m.idx] || ''} onChange={e => setChosenCampaigns(p => ({ ...p, [m.idx]: e.target.value }))} style={{ ...inputStyle, padding: '4px 8px', fontSize: 12 }}>
-          <option value="">— pick campaign —</option>
-          {m.matchedCampaigns.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-        </select>
-      );
+      return <select value={chosenCampaigns[m.idx] || ''} onChange={e => setChosenCampaigns(p => ({ ...p, [m.idx]: e.target.value }))} style={{ ...inputStyle, padding: '4px 8px', fontSize: 12 }}><option value="">— pick campaign —</option>{m.matchedCampaigns.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select>;
     }
     return <span style={{ fontSize: 12 }}>{m.campaign?.name || '—'}</span>;
   }
-
   function renderAdsetCell(m) {
     if (!m.campaign) return <span style={{ color: S.muted }}>—</span>;
     if (createNewAdset) return <span style={{ color: S.muted, fontSize: 11, fontStyle: 'italic' }}>{resolveAdsetName(m)}</span>;
     const list = adsets[m.campaign.id];
     if (loadingAdsets.has(m.campaign.id)) return <span style={{ color: S.muted, fontSize: 12 }}><Spinner />Loading…</span>;
     if (!list?.length) return <span style={{ color: S.muted }}>No adsets</span>;
-    return (
-      <select value={chosenAdsets[m.idx] || list[0]?.id || ''} onChange={e => setChosenAdsets(p => ({ ...p, [m.idx]: e.target.value }))} style={{ ...inputStyle, padding: '4px 8px', fontSize: 12 }}>
-        {list.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
-      </select>
-    );
+    return <select value={chosenAdsets[m.idx] || list[0]?.id || ''} onChange={e => setChosenAdsets(p => ({ ...p, [m.idx]: e.target.value }))} style={{ ...inputStyle, padding: '4px 8px', fontSize: 12 }}>{list.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</select>;
   }
 
-  // ── Campaign config panel ─────────────────────────────────────────────────
-  function CampaignConfigPanel() {
-    if (!focusedCampaignId || !pendingConfig) return null;
-    const campaign = campaigns.find(c => c.id === focusedCampaignId);
-    const p = pendingConfig;
-    const u = updatePending;
-    const hasSaved = !!campaignConfigs[focusedCampaignId];
-
-    return (
-      <div style={{ ...cardStyle, borderColor: S.blue, marginTop: -2 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16, flexWrap: 'wrap' }}>
-          <span style={{ fontWeight: 700, fontSize: 13 }}>{campaign?.name || focusedCampaignId}</span>
-          {campaign?.stateCode && <span style={{ background: S.blue, borderRadius: 4, padding: '1px 7px', fontSize: 11, fontWeight: 700 }}>{campaign.stateCode}</span>}
-          {!hasSaved && <span style={{ fontSize: 11, color: S.muted }}>(using defaults)</span>}
-          <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
-            {pendingDirty && <span style={{ fontSize: 11, color: S.yellow }}>● Unsaved</span>}
-            <button style={btn(S.green, !pendingDirty)} disabled={!pendingDirty} onClick={savePendingConfig}>Save Settings</button>
-            <button style={btn('#475569')} onClick={() => { setFocusedCampaignId(null); setPendingConfig(null); setPendingDirty(false); }}>✕ Close</button>
-          </div>
-        </div>
-
-        {/* Identity & Destination */}
-        <div style={{ borderTop: `1px solid ${S.border}`, paddingTop: 12, marginBottom: 10 }}>
-          <SectionHeader title="Identity & Destination" open={openCampaign.has('identity')} onToggle={() => toggleCampaignSection('identity')} />
-          {openCampaign.has('identity') && (
-            <div style={grid3}>
-              <Field label="Facebook Page ID">
-                <input style={inputStyle} placeholder="e.g. 123456789" value={p.pageId} onChange={e => u('pageId', e.target.value)} />
-              </Field>
-              <Field label="Destination URL">
-                <input style={inputStyle} placeholder="https://" value={p.destinationUrl} onChange={e => u('destinationUrl', e.target.value)} />
-              </Field>
-              <Field label="CTA Type">
-                <select style={inputStyle} value={p.ctaType} onChange={e => u('ctaType', e.target.value)}>
-                  {CTA_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
-                </select>
-              </Field>
-            </div>
-          )}
-        </div>
-
-        {/* Conversion */}
-        <div style={{ borderTop: `1px solid ${S.border}`, paddingTop: 12, marginBottom: 10 }}>
-          <SectionHeader title="Conversion" open={openCampaign.has('conversion')} onToggle={() => toggleCampaignSection('conversion')} />
-          {openCampaign.has('conversion') && (
-            <div style={grid3}>
-              <Field label="Conversion Location">
-                <select style={inputStyle} value={p.conversionLocation} onChange={e => u('conversionLocation', e.target.value)}>
-                  <option value="WEBSITE">Website</option>
-                  <option value="LEAD_GENERATION">Instant Forms (Lead Gen)</option>
-                  <option value="MESSAGING">Messaging Apps</option>
-                  <option value="CALLS">Calls</option>
-                  <option value="APP">App</option>
-                </select>
-              </Field>
-              <Field label="Dataset / Pixel ID">
-                <input style={inputStyle} placeholder="Pixel or dataset ID" value={p.pixelId} onChange={e => u('pixelId', e.target.value)} />
-              </Field>
-              <Field label="Conversion Event">
-                <select style={inputStyle} value={p.conversionEvent} onChange={e => u('conversionEvent', e.target.value)}>
-                  {CONVERSION_EVENTS.map(ev => <option key={ev.value} value={ev.value}>{ev.label}</option>)}
-                </select>
-              </Field>
-              <Field label="Cost Per Result Goal ($)">
-                <input style={inputStyle} type="number" min="0" step="0.01" placeholder="Leave blank = lowest cost" value={p.costPerResultGoal} onChange={e => u('costPerResultGoal', e.target.value)} />
-              </Field>
-              <Field label="Attribution Setting">
-                <select style={inputStyle} value={p.attributionSetting} onChange={e => u('attributionSetting', e.target.value)}>
-                  <option value="7D_CLICK_1D_VIEW">7-day click, 1-day view</option>
-                  <option value="7D_CLICK">7-day click only</option>
-                  <option value="1D_CLICK">1-day click only</option>
-                  <option value="1D_VIEW">1-day view only</option>
-                </select>
-              </Field>
-            </div>
-          )}
-        </div>
-
-        {/* Budget & Schedule */}
-        <div style={{ borderTop: `1px solid ${S.border}`, paddingTop: 12, marginBottom: 10 }}>
-          <SectionHeader title="Budget & Schedule" open={openCampaign.has('budget')} onToggle={() => toggleCampaignSection('budget')} />
-          {openCampaign.has('budget') && (
-            <div style={grid4}>
-              <Field label="Budget Type">
-                <select style={inputStyle} value={p.budgetType} onChange={e => u('budgetType', e.target.value)}>
-                  <option value="DAILY">Daily Budget</option>
-                  <option value="LIFETIME">Lifetime Budget</option>
-                </select>
-              </Field>
-              <Field label="Amount ($)">
-                <input style={inputStyle} type="number" min="1" step="0.01" placeholder="e.g. 50" value={p.budgetAmount} onChange={e => u('budgetAmount', e.target.value)} />
-              </Field>
-              <Field label="Start Date / Time">
-                <input style={inputStyle} type="datetime-local" value={p.startTime} onChange={e => u('startTime', e.target.value)} />
-              </Field>
-              <Field label="End Date / Time">
-                <input style={inputStyle} type="datetime-local" value={p.endTime} onChange={e => u('endTime', e.target.value)} />
-              </Field>
-            </div>
-          )}
-        </div>
-
-        {/* Ad Creative */}
-        <div style={{ borderTop: `1px solid ${S.border}`, paddingTop: 12 }}>
-          <SectionHeader title="Ad Creative" open={openCampaign.has('adcreative')} onToggle={() => toggleCampaignSection('adcreative')} />
-          {openCampaign.has('adcreative') && (
-            <div style={grid2}>
-              <Field label="Ad Setup">
-                <select style={inputStyle} value={p.adSetup} onChange={e => u('adSetup', e.target.value)}>
-                  <option value="SINGLE">Single Image / Video</option>
-                  <option value="CAROUSEL">Carousel</option>
-                </select>
-              </Field>
-              <div />
-              <Field label="Primary Text" col="1 / -1">
-                <textarea rows={3} style={{ ...inputStyle, resize: 'vertical' }} placeholder="Ad body copy…" value={p.primaryText} onChange={e => u('primaryText', e.target.value)} />
-              </Field>
-              <Field label="Headline">
-                <input style={inputStyle} placeholder="Short headline" value={p.headline} onChange={e => u('headline', e.target.value)} />
-              </Field>
-              <Field label="Description">
-                <input style={inputStyle} placeholder="Optional description" value={p.description} onChange={e => u('description', e.target.value)} />
-              </Field>
-            </div>
-          )}
-        </div>
-
-        <div style={{ borderTop: `1px solid ${S.border}`, paddingTop: 12, marginTop: 12, display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-          {pendingDirty && <span style={{ fontSize: 12, color: S.yellow, alignSelf: 'center' }}>● Unsaved changes</span>}
-          <button style={btn(S.green, !pendingDirty)} disabled={!pendingDirty} onClick={savePendingConfig}>Save Settings</button>
-        </div>
-      </div>
-    );
-  }
-
-  // ── JSX ───────────────────────────────────────────────────────────────────
-  const enhancementGroups = ['Standard', 'Advantage+'];
+  const focusedCampaign = campaigns.find(c => c.id === focusedCampaignId) || null;
 
   return (
     <div style={{ background: S.bg, minHeight: '100vh', padding: '22px 26px', color: S.text, fontFamily: 'system-ui, sans-serif', fontSize: 14 }}>
       <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
-
       <h2 style={{ margin: '0 0 16px', fontWeight: 700, fontSize: 20 }}>Ads Launcher</h2>
 
       {/* ── Global Presets ──────────────────────────────────────────────── */}
@@ -635,22 +611,14 @@ export default function AdsLauncher() {
           {openGlobal.has('audience') && (
             <>
               <div style={{ ...grid4, marginBottom: 10 }}>
-                <Field label="Age Min">
-                  <input style={inputStyle} type="number" min={13} max={65} value={globalConfig.ageMin} onChange={e => updateGlobal('ageMin', e.target.value)} />
-                </Field>
-                <Field label="Age Max">
-                  <input style={inputStyle} type="number" min={13} max={65} value={globalConfig.ageMax} onChange={e => updateGlobal('ageMax', e.target.value)} />
-                </Field>
+                <Field label="Age Min"><input style={inputStyle} type="number" min={13} max={65} value={globalConfig.ageMin} onChange={e => updateGlobal('ageMin', e.target.value)} /></Field>
+                <Field label="Age Max"><input style={inputStyle} type="number" min={13} max={65} value={globalConfig.ageMax} onChange={e => updateGlobal('ageMax', e.target.value)} /></Field>
                 <Field label="Gender">
                   <select style={inputStyle} value={globalConfig.genders} onChange={e => updateGlobal('genders', e.target.value)}>
-                    <option value="0">All Genders</option>
-                    <option value="1">Male Only</option>
-                    <option value="2">Female Only</option>
+                    <option value="0">All Genders</option><option value="1">Male Only</option><option value="2">Female Only</option>
                   </select>
                 </Field>
-                <Field label="Countries">
-                  <input style={inputStyle} placeholder="US,CA" value={globalConfig.countries} onChange={e => updateGlobal('countries', e.target.value)} />
-                </Field>
+                <Field label="Countries"><input style={inputStyle} placeholder="US,CA" value={globalConfig.countries} onChange={e => updateGlobal('countries', e.target.value)} /></Field>
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                 <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 13 }}>
@@ -663,7 +631,7 @@ export default function AdsLauncher() {
                 </div>
                 <div>
                   <label style={{ ...labelStyle, marginBottom: 3 }}>Advanced Targeting JSON <span style={{ color: S.muted, fontWeight: 400, textTransform: 'none' }}>(overrides fields above)</span></label>
-                  <textarea rows={2} style={{ ...inputStyle, resize: 'vertical', fontFamily: 'monospace', fontSize: 11 }} placeholder={'{"geo_locations": {"countries": ["US"]}, "age_min": 25}'} value={globalConfig.targetingSpec} onChange={e => updateGlobal('targetingSpec', e.target.value)} />
+                  <textarea rows={2} style={{ ...inputStyle, resize: 'vertical', fontFamily: 'monospace', fontSize: 11 }} placeholder={'{"geo_locations":{"countries":["US"]},"age_min":25}'} value={globalConfig.targetingSpec} onChange={e => updateGlobal('targetingSpec', e.target.value)} />
                 </div>
               </div>
             </>
@@ -703,18 +671,14 @@ export default function AdsLauncher() {
         <div style={{ borderTop: `1px solid ${S.border}`, paddingTop: 12, marginBottom: 12 }}>
           <SectionHeader title="Creative Advancements" open={openGlobal.has('creative')} onToggle={() => toggleGlobal('creative')} />
           {openGlobal.has('creative') && (
-            <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap' }}>
-              {enhancementGroups.map(group => (
+            <div style={{ display: 'flex', gap: 32, flexWrap: 'wrap' }}>
+              {['Standard', 'Advantage+'].map(group => (
                 <div key={group}>
                   <div style={{ fontSize: 11, fontWeight: 700, color: S.muted, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>{group}</div>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                     {CREATIVE_ENHANCEMENTS.filter(e => e.group === group).map(e => (
                       <label key={e.id} style={{ display: 'flex', alignItems: 'center', gap: 7, cursor: 'pointer', fontSize: 13 }}>
-                        <input
-                          type="checkbox"
-                          checked={globalConfig.creativeEnhancements[e.id] || false}
-                          onChange={ev => toggleEnhancement(e.id, ev.target.checked)}
-                        />
+                        <input type="checkbox" checked={globalConfig.creativeEnhancements[e.id] || false} onChange={ev => toggleEnhancement(e.id, ev.target.checked)} />
                         {e.label}
                       </label>
                     ))}
@@ -758,9 +722,7 @@ export default function AdsLauncher() {
         </div>
         {campaigns.length > 0 && (
           <>
-            <div style={{ fontSize: 11, color: S.muted, marginBottom: 8 }}>
-              ✓/○ to select for launch · click name to configure
-            </div>
+            <div style={{ fontSize: 11, color: S.muted, marginBottom: 8 }}>✓/○ to select for launch · click name to configure</div>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
               {campaigns.map(c => {
                 const on = selectedCampaigns.has(c.id);
@@ -784,8 +746,20 @@ export default function AdsLauncher() {
         )}
       </div>
 
-      {/* ── Per-campaign Config Panel ────────────────────────────────────── */}
-      <CampaignConfigPanel />
+      {/* ── Campaign Config Panel ────────────────────────────────────────── */}
+      <CampaignConfigPanel
+        campaign={focusedCampaign}
+        campaigns={campaigns}
+        pendingConfig={pendingConfig}
+        pendingDirty={pendingDirty}
+        hasSaved={!!campaignConfigs[focusedCampaignId]}
+        openSections={openCampaign}
+        onUpdate={updatePending}
+        onSave={savePendingConfig}
+        onClose={() => { setFocusedCampaignId(null); setPendingConfig(null); setPendingDirty(false); }}
+        onToggleSection={toggleCampaignSection}
+        onCopyTo={copyConfigTo}
+      />
 
       {/* ── Creative Files ──────────────────────────────────────────────── */}
       <div style={cardStyle}>
@@ -801,9 +775,7 @@ export default function AdsLauncher() {
               <div key={idx} style={{ display: 'flex', alignItems: 'center', gap: 10, background: '#0f172a', border: `1px solid ${S.border}`, borderRadius: 6, padding: '5px 10px' }}>
                 <span style={{ flex: 1, fontSize: 12, wordBreak: 'break-all' }}>{f.name}</span>
                 <span style={{ fontSize: 11, color: S.muted, whiteSpace: 'nowrap' }}>→ {adNameFromFile(f.name)}</span>
-                <span style={{ fontSize: 12, color: f.stateCode ? S.green : S.red, whiteSpace: 'nowrap' }}>
-                  {f.stateCode ? `${f.stateCode} — ${STATE_NAMES[f.stateCode]}` : 'No state detected'}
-                </span>
+                <span style={{ fontSize: 12, color: f.stateCode ? S.green : S.red, whiteSpace: 'nowrap' }}>{f.stateCode ? `${f.stateCode} — ${STATE_NAMES[f.stateCode]}` : 'No state detected'}</span>
                 <button onClick={() => removeFile(idx)} style={{ background: 'none', border: 'none', color: S.muted, cursor: 'pointer', fontSize: 16, padding: '0 2px', lineHeight: 1 }}>×</button>
               </div>
             ))}
@@ -811,17 +783,15 @@ export default function AdsLauncher() {
         )}
       </div>
 
-      {/* ── Adset mode toggle ────────────────────────────────────────────── */}
+      {/* ── Adset mode ───────────────────────────────────────────────────── */}
       {files.length > 0 && (
         <div style={{ ...cardStyle, display: 'flex', gap: 20, alignItems: 'center' }}>
           <span style={{ fontWeight: 700, fontSize: 12, color: S.muted, textTransform: 'uppercase', letterSpacing: '0.05em', whiteSpace: 'nowrap' }}>Adset Mode</span>
           <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', fontSize: 13 }}>
-            <input type="radio" checked={createNewAdset} onChange={() => setCreateNewAdset(true)} />
-            Create new adset per creative
+            <input type="radio" checked={createNewAdset} onChange={() => setCreateNewAdset(true)} />Create new adset per creative
           </label>
           <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', fontSize: 13 }}>
-            <input type="radio" checked={!createNewAdset} onChange={() => setCreateNewAdset(false)} />
-            Add to existing adset
+            <input type="radio" checked={!createNewAdset} onChange={() => setCreateNewAdset(false)} />Add to existing adset
           </label>
         </div>
       )}
@@ -843,9 +813,7 @@ export default function AdsLauncher() {
                 <tr key={i} style={{ borderBottom: `1px solid ${S.border}` }}>
                   <td style={{ padding: '7px 10px', maxWidth: 180, wordBreak: 'break-all', fontSize: 12 }}>{m.name}</td>
                   <td style={{ padding: '7px 10px', fontSize: 12, color: S.muted, whiteSpace: 'nowrap' }}>{adNameFromFile(m.name)}</td>
-                  <td style={{ padding: '7px 10px', whiteSpace: 'nowrap', fontSize: 12 }}>
-                    {m.stateCode ? `${m.stateCode} — ${STATE_NAMES[m.stateCode]}` : <span style={{ color: S.red }}>—</span>}
-                  </td>
+                  <td style={{ padding: '7px 10px', whiteSpace: 'nowrap', fontSize: 12 }}>{m.stateCode ? `${m.stateCode} — ${STATE_NAMES[m.stateCode]}` : <span style={{ color: S.red }}>—</span>}</td>
                   <td style={{ padding: '7px 10px', minWidth: 180 }}>{renderCampaignCell(m)}</td>
                   <td style={{ padding: '7px 10px', minWidth: 180 }}>{renderAdsetCell(m)}</td>
                   <td style={{ padding: '7px 10px', whiteSpace: 'nowrap' }}>{renderStatus(m)}</td>
