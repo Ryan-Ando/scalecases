@@ -490,13 +490,18 @@ export default function AdsLauncher() {
       const effectiveCode = campaignConfigs[c.id]?.stateCodeOverride?.trim().toUpperCase() || c.stateCode;
       return effectiveCode === f.stateCode && selectedCampaigns.has(c.id);
     });
-    if (matched.length === 0) return { ...f, idx, status: 'no_match', matchedCampaigns: [] };
+    if (matched.length === 0) {
+      // No auto-match — allow manual override via chosenCampaigns
+      const manualCampaign = campaigns.find(c => c.id === chosenCampaigns[idx]);
+      if (manualCampaign) return { ...f, idx, status: 'ready', matchedCampaigns: [], campaign: manualCampaign };
+      return { ...f, idx, status: 'no_match', matchedCampaigns: [] };
+    }
     if (matched.length > 1) {
       const campaign = matched.find(c => c.id === chosenCampaigns[idx]) || null;
       return { ...f, idx, status: campaign ? 'ready' : 'ambiguous', matchedCampaigns: matched, campaign };
     }
     return { ...f, idx, status: 'ready', matchedCampaigns: matched, campaign: matched[0] };
-  }), [files, campaigns, chosenCampaigns, selectedCampaigns]);
+  }), [files, campaigns, chosenCampaigns, selectedCampaigns, campaignConfigs]);
 
   useEffect(() => {
     if (!createNewAdset) {
@@ -592,14 +597,19 @@ export default function AdsLauncher() {
       if (rs.phase === 'error')    return <span style={{ color: S.red, fontSize: 11 }}>✗ {rs.error}</span>;
     }
     if (m.status === 'no_state')  return <span style={{ color: S.red }}>No state in filename</span>;
-    if (m.status === 'no_match')  return <span style={{ color: S.orange }}>No campaign match</span>;
+    if (m.status === 'no_match')  return <span style={{ color: S.orange }}>Pick a campaign</span>;
     if (m.status === 'ambiguous') return <span style={{ color: S.yellow }}>Ambiguous ({m.matchedCampaigns.length} matches)</span>;
     if (m.status === 'ready')     return <span style={{ color: S.green }}>Ready</span>;
     return null;
   }
   function renderCampaignCell(m) {
     if (m.status === 'no_state') return <span style={{ color: S.muted }}>—</span>;
-    if (m.status === 'no_match') return <span style={{ color: S.orange }}>No match ({m.stateCode})</span>;
+    if (m.status === 'no_match') return (
+      <select value={chosenCampaigns[m.idx] || ''} onChange={e => setChosenCampaigns(p => ({ ...p, [m.idx]: e.target.value }))} style={{ ...inputStyle, padding: '4px 8px', fontSize: 12, borderColor: S.orange }}>
+        <option value="">⚠ No match ({m.stateCode}) — pick manually</option>
+        {campaigns.map(c => <option key={c.id} value={c.id}>{c.stateCode ? `[${c.stateCode}] ` : ''}{c.name}</option>)}
+      </select>
+    );
     if (m.status === 'ambiguous' || (m.status === 'ready' && m.matchedCampaigns?.length > 1)) {
       return <select value={chosenCampaigns[m.idx] || ''} onChange={e => setChosenCampaigns(p => ({ ...p, [m.idx]: e.target.value }))} style={{ ...inputStyle, padding: '4px 8px', fontSize: 12 }}><option value="">— pick campaign —</option>{m.matchedCampaigns.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select>;
     }
