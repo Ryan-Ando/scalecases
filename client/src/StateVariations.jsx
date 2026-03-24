@@ -29,6 +29,7 @@ const DEFAULT_SETTINGS = {
   topP:         0.95,
   topK:         40,
   seed:         '',
+  concurrency:  3,
 };
 
 // ── Styles ────────────────────────────────────────────────────────────────────
@@ -164,6 +165,8 @@ function SettingsPanel({ settings, onChange }) {
           <option value="webp">WEBP</option>
         </select>
       </Field>
+
+      <SliderField label="Concurrency" value={settings.concurrency} min={1} max={6} step={1} onChange={v => u('concurrency', v)} hint="parallel requests" />
 
       <SliderField label="Temperature" value={settings.temperature} min={0} max={2} step={0.05} onChange={v => u('temperature', v)} hint="lower = more accurate text" />
 
@@ -348,25 +351,30 @@ export default function StateVariations() {
       status: 'pending', image: null, mimeType: null, text: null, error: null, regenNotes: '',
     }));
     setItems(newItems);
-    runQueue(newItems, baseImage, prompt, settings, adName);
+    runQueue(newItems, baseImage, prompt, settings, adName, settings.concurrency);
   }
 
-  async function runQueue(queueItems, img, promptText, cfg, currentAdName) {
+  async function runQueue(queueItems, img, promptText, cfg, currentAdName, concurrency) {
     setRunning(true); runningRef.current = true;
-    for (let i = 0; i < queueItems.length; i++) {
-      if (!runningRef.current) break;
-      setItems(p => p.map((it, idx) => idx === i ? { ...it, status: 'generating' } : it));
-      const result = await callGemini(img, queueItems[i].stateDisplay, promptText, '', cfg);
-      if (!result.error) {
-        saveAd({ ...queueItems[i], image: result.image, mimeType: result.mimeType }, currentAdName);
+    let next = 0;
+
+    async function worker() {
+      while (runningRef.current) {
+        const i = next++;
+        if (i >= queueItems.length) break;
+        setItems(p => p.map((it, j) => j === i ? { ...it, status: 'generating' } : it));
+        const result = await callGemini(img, queueItems[i].stateDisplay, promptText, '', cfg);
+        if (!result.error) saveAd({ ...queueItems[i], image: result.image, mimeType: result.mimeType }, currentAdName);
+        setItems(p => p.map((it, j) => j === i
+          ? result.error
+            ? { ...it, status: 'error', error: result.error }
+            : { ...it, status: 'done', image: result.image, mimeType: result.mimeType, text: result.text }
+          : it
+        ));
       }
-      setItems(p => p.map((it, idx) => idx === i
-        ? result.error
-          ? { ...it, status: 'error', error: result.error }
-          : { ...it, status: 'done', image: result.image, mimeType: result.mimeType, text: result.text }
-        : it
-      ));
     }
+
+    await Promise.all(Array.from({ length: Math.min(concurrency, queueItems.length) }, worker));
     setRunning(false); runningRef.current = false;
   }
 
