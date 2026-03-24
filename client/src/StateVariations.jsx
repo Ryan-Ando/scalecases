@@ -16,16 +16,11 @@ CRITICAL TEXT RULES:
 - Read all text carefully before and after editing to confirm no duplication or corruption`;
 
 const DEFAULT_SETTINGS = {
-  outputFormat:  'jpeg',
-  temperature:   0.4,
-  aspectRatio:   '1:1',
-  thinkingLevel: 'none',
-  topP:          0.95,
-  topK:          40,
-  seed:          '',
-  grounding:     false,
-  codeExecution: false,
-  safetyFiltering: 'default',
+  outputFormat: 'jpeg',
+  temperature:  0.4,
+  topP:         0.95,
+  topK:         40,
+  seed:         '',
 };
 
 // ── Styles ────────────────────────────────────────────────────────────────────
@@ -80,14 +75,21 @@ function getStateDisplay(key) {
 }
 
 // ── Result card (top-level to prevent unmount issues) ─────────────────────────
-function ResultCard({ item, onRegenerate, onNotesChange }) {
+function ResultCard({ item, adName, onRegenerate, onNotesChange }) {
   const [showNotes, setShowNotes] = useState(false);
 
   function download() {
     const ext = item.mimeType?.split('/')[1] || 'jpg';
+    let filename;
+    if (adName && adName.trim()) {
+      // Replace _ with the state abbreviation (stateKey is the 2-letter code if available)
+      filename = adName.trim().replace(/_/g, item.stateKey) + `.${ext}`;
+    } else {
+      filename = `${item.stateDisplay.replace(/\s+/g, '-')}.${ext}`;
+    }
     const a = document.createElement('a');
     a.href = `data:${item.mimeType};base64,${item.image}`;
-    a.download = `${item.stateDisplay.replace(/\s+/g, '-')}.${ext}`;
+    a.download = filename;
     a.click();
   }
 
@@ -139,7 +141,7 @@ function ResultCard({ item, onRegenerate, onNotesChange }) {
 }
 
 // ── Settings panel (top-level) ────────────────────────────────────────────────
-function SettingsPanel({ settings, onChange, imageRatio }) {
+function SettingsPanel({ settings, onChange }) {
   const u = (key, val) => onChange({ ...settings, [key]: val });
   const [showAdvanced, setShowAdvanced] = useState(false);
 
@@ -155,61 +157,21 @@ function SettingsPanel({ settings, onChange, imageRatio }) {
         </select>
       </Field>
 
-      <SliderField label="Temperature" value={settings.temperature} min={0} max={2} step={0.05} onChange={v => u('temperature', v)} hint="creativity" />
+      <SliderField label="Temperature" value={settings.temperature} min={0} max={2} step={0.05} onChange={v => u('temperature', v)} hint="lower = more accurate text" />
 
-      <Field label="Aspect Ratio">
-        <select style={inputStyle} value={settings.aspectRatio} onChange={e => u('aspectRatio', e.target.value)}>
-          <option value="auto">Auto {imageRatio ? `(${imageRatio})` : '(match input)'}</option>
-          <option value="1:1">1:1 (Square)</option>
-          <option value="9:16">9:16 (Portrait)</option>
-          <option value="16:9">16:9 (Landscape)</option>
-          <option value="3:4">3:4</option>
-          <option value="4:3">4:3</option>
-        </select>
-      </Field>
-
-      <Field label="Thinking Level">
-        <select style={inputStyle} value={settings.thinkingLevel} onChange={e => u('thinkingLevel', e.target.value)}>
-          <option value="none">None</option>
-          <option value="low">Low (512 tokens)</option>
-          <option value="medium">Medium (2048 tokens)</option>
-          <option value="high">High (8192 tokens)</option>
-        </select>
-      </Field>
-
-      <div style={{ borderTop: `1px solid ${S.border}`, paddingTop: 12, marginBottom: 12 }}>
-        <div style={{ fontWeight: 700, fontSize: 11, color: S.muted, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 10 }}>Tools</div>
-        <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 13, marginBottom: 7 }}>
-          <input type="checkbox" checked={settings.grounding} onChange={e => u('grounding', e.target.checked)} />
-          Google Search Grounding
-        </label>
-        <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 13 }}>
-          <input type="checkbox" checked={settings.codeExecution} onChange={e => u('codeExecution', e.target.checked)} />
-          Code Execution
-        </label>
-      </div>
-
-      <div style={{ borderTop: `1px solid ${S.border}`, paddingTop: 12 }}>
+      <div style={{ borderTop: `1px solid ${S.border}`, paddingTop: 12, marginTop: 4 }}>
         <button
           onClick={() => setShowAdvanced(s => !s)}
           style={{ background: 'none', border: 'none', color: S.muted, cursor: 'pointer', fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', padding: 0, display: 'flex', alignItems: 'center', gap: 6, marginBottom: showAdvanced ? 12 : 0 }}
         >
-          <span style={{ fontSize: 10 }}>{showAdvanced ? '▼' : '▶'}</span> Advanced Settings
+          <span style={{ fontSize: 10 }}>{showAdvanced ? '▼' : '▶'}</span> Advanced
         </button>
-
         {showAdvanced && (
           <>
             <SliderField label="Top-P" value={settings.topP} min={0} max={1} step={0.01} onChange={v => u('topP', v)} hint="nucleus sampling" />
             <SliderField label="Top-K" value={settings.topK} min={1} max={100} step={1} onChange={v => u('topK', v)} hint="token candidates" />
             <Field label="Seed" hint="(blank = random)">
               <input style={inputStyle} type="number" placeholder="e.g. 42" value={settings.seed} onChange={e => u('seed', e.target.value)} />
-            </Field>
-            <Field label="Safety Filtering">
-              <select style={inputStyle} value={settings.safetyFiltering} onChange={e => u('safetyFiltering', e.target.value)}>
-                <option value="default">Default</option>
-                <option value="low">Low</option>
-                <option value="none">None (API only)</option>
-              </select>
             </Field>
           </>
         )}
@@ -220,6 +182,7 @@ function SettingsPanel({ settings, onChange, imageRatio }) {
 
 // ── Main component ────────────────────────────────────────────────────────────
 export default function StateVariations() {
+  const [adName, setAdName]         = useState('');
   const [baseImage, setBaseImage]   = useState(null);
   const [dragOver, setDragOver]     = useState(false);
   const [prompt, setPrompt]         = useState(DEFAULT_PROMPT);
@@ -361,6 +324,20 @@ export default function StateVariations() {
 
         {/* ── Left: controls ──────────────────────────────────────────── */}
         <div>
+          {/* Ad name */}
+          <div style={cardStyle}>
+            <div style={{ fontWeight: 700, fontSize: 12, color: S.muted, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>Ad Name</div>
+            <input
+              style={inputStyle}
+              placeholder="e.g. Summer-_-v1 (_ = state abbr)"
+              value={adName}
+              onChange={e => setAdName(e.target.value)}
+            />
+            <div style={{ fontSize: 11, color: S.muted, marginTop: 6 }}>
+              Use <code style={{ background: '#0f172a', borderRadius: 3, padding: '1px 4px' }}>_</code> where the state abbreviation should appear in the filename.
+            </div>
+          </div>
+
           {/* Base image */}
           <div style={cardStyle}>
             <div style={{ fontWeight: 700, fontSize: 12, color: S.muted, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 10 }}>Base Image</div>
@@ -475,6 +452,7 @@ export default function StateVariations() {
                 <ResultCard
                   key={item.id}
                   item={item}
+                  adName={adName}
                   onRegenerate={() => regenItem(idx)}
                   onNotesChange={val => updateRegenNotes(idx, val)}
                 />
