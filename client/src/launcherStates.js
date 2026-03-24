@@ -15,9 +15,9 @@ export const STATE_NAMES = {
 };
 
 // Extract valid state code from a filename
-// Looks for -XX- patterns between dashes where XX is a valid state code
+// Splits on dashes, underscores, and spaces
 export function extractStateFromFilename(filename) {
-  const parts = filename.replace(/\.[^.]+$/, '').split('-');
+  const parts = filename.replace(/\.[^.]+$/, '').split(/[-_\s]+/);
   for (const part of parts) {
     if (STATE_NAMES[part.toUpperCase()]) return part.toUpperCase();
   }

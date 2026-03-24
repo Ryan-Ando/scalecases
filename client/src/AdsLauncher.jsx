@@ -2,9 +2,10 @@ import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { extractStateFromFilename, extractStateFromCampaign, STATE_NAMES } from './launcherStates.js';
 
 const BASE              = import.meta.env.VITE_API_URL || 'http://localhost:3001';
-const GLOBAL_KEY        = 'launcher_global_v2';
-const CAMPAIGN_CFGS_KEY = 'launcher_campaign_configs_v1';
-const PRESETS_KEY       = 'launcher_presets_v2';
+const GLOBAL_KEY          = 'launcher_global_v2';
+const CAMPAIGN_CFGS_KEY   = 'launcher_campaign_configs_v1';
+const PRESETS_KEY         = 'launcher_presets_v2';
+const DEFAULT_PRESET_KEY  = 'launcher_default_preset';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 const CTA_TYPES = [
@@ -73,6 +74,7 @@ const DEFAULT_GLOBAL = {
 };
 
 const DEFAULT_CAMPAIGN_CONFIG = {
+  stateCodeOverride: '',
   pageId: '', adSetup: 'SINGLE',
   primaryText: '', headline: '', description: '',
   ctaType: 'LEARN_MORE', destinationUrl: '',
@@ -215,6 +217,9 @@ function CampaignConfigPanel({ campaign, campaigns, pendingConfig, pendingDirty,
         <SectionHeader title="Identity & Destination" open={openSections.has('identity')} onToggle={() => onToggleSection('identity')} />
         {openSections.has('identity') && (
           <div style={grid3}>
+            <Field label="State Code Override" hint="(overrides auto-detect for matching)">
+              <input style={inputStyle} placeholder={campaign.stateCode ? `Auto: ${campaign.stateCode}` : 'e.g. TX'} value={p.stateCodeOverride || ''} onChange={e => onUpdate('stateCodeOverride', e.target.value.toUpperCase().slice(0, 2))} maxLength={2} />
+            </Field>
             <Field label="Facebook Page ID">
               <input style={inputStyle} placeholder="e.g. 123456789" value={p.pageId} onChange={e => onUpdate('pageId', e.target.value)} />
             </Field>
@@ -328,7 +333,14 @@ function CampaignConfigPanel({ campaign, campaigns, pendingConfig, pendingDirty,
 // ── Main component ────────────────────────────────────────────────────────────
 export default function AdsLauncher() {
 
-  const [globalConfig, setGlobalConfig] = useState(() => ({ ...DEFAULT_GLOBAL, ...loadStored(GLOBAL_KEY, {}) }));
+  const [globalConfig, setGlobalConfig] = useState(() => {
+    const defaultPresetName = localStorage.getItem(DEFAULT_PRESET_KEY);
+    const storedPresets = loadStored(PRESETS_KEY, {});
+    if (defaultPresetName && storedPresets[defaultPresetName]) {
+      return { ...DEFAULT_GLOBAL, ...storedPresets[defaultPresetName] };
+    }
+    return { ...DEFAULT_GLOBAL, ...loadStored(GLOBAL_KEY, {}) };
+  });
   const [campaignConfigs, setCampaignConfigs] = useState(() => loadStored(CAMPAIGN_CFGS_KEY, {}));
   const [focusedCampaignId, setFocusedCampaignId] = useState(null);
   const [pendingConfig, setPendingConfig]         = useState(null);
@@ -336,7 +348,8 @@ export default function AdsLauncher() {
 
   const [presets, setPresets]           = useState(() => loadStored(PRESETS_KEY, {}));
   const [presetName, setPresetName]     = useState('');
-  const [activePreset, setActivePreset] = useState('');
+  const [activePreset, setActivePreset] = useState(() => localStorage.getItem(DEFAULT_PRESET_KEY) || '');
+  const [defaultPreset, setDefaultPreset] = useState(() => localStorage.getItem(DEFAULT_PRESET_KEY) || '');
 
   const [openGlobal, setOpenGlobal]     = useState(new Set(['audience', 'placements']));
   const [openCampaign, setOpenCampaign] = useState(new Set(['identity', 'conversion', 'budget', 'adcreative']));
@@ -383,6 +396,15 @@ export default function AdsLauncher() {
     const updated = { ...presets }; delete updated[name];
     setPresets(updated); localStorage.setItem(PRESETS_KEY, JSON.stringify(updated));
     if (activePreset === name) setActivePreset('');
+    if (defaultPreset === name) { setDefaultPreset(''); localStorage.removeItem(DEFAULT_PRESET_KEY); }
+  }
+  function setAsDefault(name) {
+    localStorage.setItem(DEFAULT_PRESET_KEY, name);
+    setDefaultPreset(name);
+  }
+  function unsetDefault() {
+    localStorage.removeItem(DEFAULT_PRESET_KEY);
+    setDefaultPreset('');
   }
 
   // Per-campaign config
@@ -462,7 +484,11 @@ export default function AdsLauncher() {
 
   const matches = useMemo(() => files.map((f, idx) => {
     if (!f.stateCode) return { ...f, idx, status: 'no_state', matchedCampaigns: [] };
-    const matched = campaigns.filter(c => c.stateCode === f.stateCode && selectedCampaigns.has(c.id));
+    // Use stateCodeOverride if set for a campaign, otherwise use auto-detected stateCode
+    const matched = campaigns.filter(c => {
+      const effectiveCode = campaignConfigs[c.id]?.stateCodeOverride?.trim().toUpperCase() || c.stateCode;
+      return effectiveCode === f.stateCode && selectedCampaigns.has(c.id);
+    });
     if (matched.length === 0) return { ...f, idx, status: 'no_match', matchedCampaigns: [] };
     if (matched.length > 1) {
       const campaign = matched.find(c => c.id === chosenCampaigns[idx]) || null;
@@ -590,9 +616,20 @@ export default function AdsLauncher() {
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
           <select value={activePreset} onChange={e => { setActivePreset(e.target.value); if (e.target.value) loadPresetByName(e.target.value); }} style={{ ...inputStyle, width: 210 }}>
             <option value="">— No preset loaded —</option>
-            {Object.keys(presets).map(n => <option key={n} value={n}>{n}</option>)}
+            {Object.keys(presets).map(n => <option key={n} value={n}>{n}{defaultPreset === n ? ' ★' : ''}</option>)}
           </select>
-          {activePreset && <button style={btn('#64748b')} onClick={() => deletePreset(activePreset)}>Delete</button>}
+          {activePreset && (
+            <>
+              <button
+                title={defaultPreset === activePreset ? 'Remove startup default' : 'Set as startup default (auto-loads on open)'}
+                style={{ ...btn(defaultPreset === activePreset ? S.yellow : '#475569'), padding: '6px 10px' }}
+                onClick={() => defaultPreset === activePreset ? unsetDefault() : setAsDefault(activePreset)}
+              >
+                {defaultPreset === activePreset ? '★ Default' : '☆ Set default'}
+              </button>
+              <button style={btn('#64748b')} onClick={() => deletePreset(activePreset)}>Delete</button>
+            </>
+          )}
           <div style={{ width: 1, height: 26, background: S.border, margin: '0 4px' }} />
           <input style={{ ...inputStyle, width: 170 }} placeholder="New preset name…" value={presetName} onChange={e => setPresetName(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && presetName.trim()) { savePreset(presetName.trim()); setPresetName(''); } }} />
           <button style={btn(S.blue, !presetName.trim())} disabled={!presetName.trim()} onClick={() => { savePreset(presetName.trim()); setPresetName(''); }}>Save Preset</button>
@@ -734,7 +771,12 @@ export default function AdsLauncher() {
                       {on ? '✓' : '○'}
                     </button>
                     <button onClick={() => focused ? (setFocusedCampaignId(null), setPendingConfig(null), setPendingDirty(false)) : focusCampaign(c.id)} style={{ background: 'none', border: 'none', color: 'inherit', padding: '6px 10px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, flex: 1, textAlign: 'left', minWidth: 0 }}>
-                      {c.stateCode && <span style={{ background: on ? '#3b82f6' : S.border, borderRadius: 4, padding: '1px 5px', fontSize: 11, fontWeight: 700, flexShrink: 0 }}>{c.stateCode}</span>}
+                      {(() => {
+                        const code = campaignConfigs[c.id]?.stateCodeOverride?.trim().toUpperCase() || c.stateCode;
+                        return code
+                          ? <span style={{ background: on ? '#3b82f6' : S.border, borderRadius: 4, padding: '1px 5px', fontSize: 11, fontWeight: 700, flexShrink: 0 }} title={campaignConfigs[c.id]?.stateCodeOverride ? 'Manual override' : 'Auto-detected'}>{code}{campaignConfigs[c.id]?.stateCodeOverride ? ' ✎' : ''}</span>
+                          : <span style={{ background: S.red, borderRadius: 4, padding: '1px 5px', fontSize: 11, fontWeight: 700, flexShrink: 0, opacity: 0.7 }} title="No state detected — open config to set override">?</span>;
+                      })()}
                       <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.name}</span>
                       {hasSaved && <span style={{ color: S.green, fontSize: 10, flexShrink: 0 }}>●</span>}
                     </button>
