@@ -300,26 +300,11 @@ router.post('/creative', async (req, res) => {
       }
     }
 
-    // Preserve original image aspect ratio via center crops
-    if (mediaType !== 'video' && imageWidth && imageHeight) {
+    // Use "Original" aspect ratio — set 100x100 crop to full image dimensions so FB shows the original ratio
+    if (mediaType === 'image' && imageWidth && imageHeight) {
       const w = parseInt(imageWidth), h = parseInt(imageHeight);
-      const crops = {};
-      // 1:1 square crop — take centered square
-      const sq = Math.min(w, h);
-      const sx = Math.floor((w - sq) / 2), sy = Math.floor((h - sq) / 2);
-      crops['100x100'] = [[sx, sy], [sx + sq, sy + sq]];
-      // 1.91:1 landscape crop — take centered 1.91:1 region
-      const targetW = Math.round(h * 1.91), targetH = Math.round(w / 1.91);
-      if (targetW <= w) {
-        const ox = Math.floor((w - targetW) / 2);
-        crops['191x100'] = [[ox, 0], [ox + targetW, h]];
-      } else {
-        const oy = Math.floor((h - targetH) / 2);
-        crops['191x100'] = [[0, oy], [w, oy + targetH]];
-      }
-      if (mediaType === 'image') {
-        if (objectStorySpec.link_data) objectStorySpec.link_data.image_crops = crops;
-      }
+      const crops = { '100x100': [[0, 0], [w, h]] };
+      if (objectStorySpec.link_data) objectStorySpec.link_data.image_crops = crops;
     }
 
     const r = await fetch(`${FB_API}/${account}/adcreatives`, {
