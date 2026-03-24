@@ -300,12 +300,6 @@ router.post('/creative', async (req, res) => {
       }
     }
 
-    // Use "Original" aspect ratio — set 100x100 crop to full image dimensions so FB shows the original ratio
-    if (mediaType === 'image' && imageWidth && imageHeight) {
-      const w = parseInt(imageWidth), h = parseInt(imageHeight);
-      const crops = { '100x100': [[0, 0], [w, h]] };
-      if (objectStorySpec.link_data) objectStorySpec.link_data.image_crops = crops;
-    }
 
     const r = await fetch(`${FB_API}/${account}/adcreatives`, {
       method: 'POST',

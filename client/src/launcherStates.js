@@ -15,32 +15,37 @@ export const STATE_NAMES = {
 };
 
 // Extract valid state code from a filename
-// Splits on dashes, underscores, and spaces
+// Scans from the END since state code is always near the end (e.g. "LSS-Campaign-TX-img.jpg")
 export function extractStateFromFilename(filename) {
   const parts = filename.replace(/\.[^.]+$/, '').split(/[-_\s]+/);
-  for (const part of parts) {
-    if (STATE_NAMES[part.toUpperCase()]) return part.toUpperCase();
+  for (let i = parts.length - 1; i >= 0; i--) {
+    if (STATE_NAMES[parts[i].toUpperCase()]) return parts[i].toUpperCase();
   }
   return null;
 }
 
 // Extract state code from a campaign name (handles full names and codes)
 export function extractStateFromCampaign(name) {
-  const segments = name.split(/[\s_\-\/]+/);
+  if (!name) return null;
 
-  // Pass 1: 2-letter segments that have at least one uppercase letter
-  // (rules out common lowercase words like "in", "or", "me", "hi", "ok")
-  for (const seg of segments) {
-    if (seg.length === 2 && seg !== seg.toLowerCase() && STATE_NAMES[seg.toUpperCase()]) {
-      return seg.toUpperCase();
-    }
+  // Pass 1: ALL-CAPS 2-letter state codes at word boundaries (e.g. "- TX -", "| FL |")
+  // Requiring all-caps rules out common lowercase words: "in", "or", "me", "hi", "ok"
+  const upperMatches = name.match(/\b([A-Z]{2})\b/g) || [];
+  for (const m of upperMatches) {
+    if (STATE_NAMES[m]) return m;
   }
 
-  // Pass 2: full state names (case-insensitive)
+  // Pass 2: full state name (case-insensitive) — handles "Texas", "Alabama", etc.
   const normalized = name.toLowerCase().replace(/[\s_\-]+/g, '');
   for (const [code, fullName] of Object.entries(STATE_NAMES)) {
-    const normalizedName = fullName.toLowerCase().replace(/\s+/g, '');
-    if (normalized.includes(normalizedName)) return code;
+    if (normalized.includes(fullName.toLowerCase().replace(/\s+/g, ''))) return code;
+  }
+
+  // Pass 3: any 2-letter word-boundary match regardless of case (last resort)
+  const anyMatches = name.match(/\b([a-zA-Z]{2})\b/g) || [];
+  for (const m of anyMatches) {
+    const code = m.toUpperCase();
+    if (STATE_NAMES[code]) return code;
   }
 
   return null;
