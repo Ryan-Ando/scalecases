@@ -13,26 +13,36 @@ const upload = multer({
 
 function token() { return process.env.FB_ACCESS_TOKEN; }
 
+function allAdAccounts() {
+  const accounts = (process.env.FB_AD_ACCOUNTS || '').split(',').map(s => s.trim()).filter(Boolean);
+  if (!accounts.length) throw new Error('FB_AD_ACCOUNTS not set');
+  return accounts.map(a => a.startsWith('act_') ? a : `act_${a}`);
+}
+
 function firstAdAccount() {
-  const raw = (process.env.FB_AD_ACCOUNTS || '').split(',')[0]?.trim();
-  if (!raw) throw new Error('FB_AD_ACCOUNTS not set');
-  return raw.startsWith('act_') ? raw : `act_${raw}`;
+  return allAdAccounts()[0];
+}
+
+async function fetchCampaignsForAccount(account) {
+  const all = [];
+  let url = `${FB_API}/${account}/campaigns?fields=id,name,status,objective&limit=200&filtering=${encodeURIComponent(JSON.stringify([{ field: 'effective_status', operator: 'IN', value: ['ACTIVE'] }]))}&access_token=${token()}`;
+  while (url) {
+    const r = await fetch(url);
+    const json = await r.json();
+    if (json.error) throw new Error(json.error.message);
+    all.push(...(json.data || []));
+    url = json.paging?.next || null;
+  }
+  return all.filter(c => c.status === 'ACTIVE').map(c => ({ id: c.id, name: c.name, status: c.status, objective: c.objective }));
 }
 
 // GET /api/launcher/campaigns
 router.get('/campaigns', async (req, res) => {
   try {
-    const account = firstAdAccount();
-    const all = [];
-    let url = `${FB_API}/${account}/campaigns?fields=id,name,status,objective&limit=200&filtering=${encodeURIComponent(JSON.stringify([{ field: 'effective_status', operator: 'IN', value: ['ACTIVE'] }]))}&access_token=${token()}`;
-    while (url) {
-      const r = await fetch(url);
-      const json = await r.json();
-      if (json.error) throw new Error(json.error.message);
-      all.push(...(json.data || []));
-      url = json.paging?.next || null;
-    }
-    res.json(all.filter(c => c.status === 'ACTIVE').map(c => ({ id: c.id, name: c.name, status: c.status, objective: c.objective })));
+    const accounts = allAdAccounts();
+    const results = await Promise.all(accounts.map(fetchCampaignsForAccount));
+    const all = results.flat();
+    res.json(all);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 

@@ -131,7 +131,7 @@ function ResultCard({ item, onRegenerate, onNotesChange }) {
 }
 
 // ── Settings panel (top-level) ────────────────────────────────────────────────
-function SettingsPanel({ settings, onChange }) {
+function SettingsPanel({ settings, onChange, imageRatio }) {
   const u = (key, val) => onChange({ ...settings, [key]: val });
   const [showAdvanced, setShowAdvanced] = useState(false);
 
@@ -151,6 +151,7 @@ function SettingsPanel({ settings, onChange }) {
 
       <Field label="Aspect Ratio">
         <select style={inputStyle} value={settings.aspectRatio} onChange={e => u('aspectRatio', e.target.value)}>
+          <option value="auto">Auto {imageRatio ? `(${imageRatio})` : '(match input)'}</option>
           <option value="1:1">1:1 (Square)</option>
           <option value="9:16">9:16 (Portrait)</option>
           <option value="16:9">16:9 (Landscape)</option>
@@ -252,7 +253,15 @@ export default function StateVariations() {
     const reader = new FileReader();
     reader.onload = e => {
       const dataUrl = e.target.result;
-      setBaseImage({ dataUrl, base64: dataUrl.split(',')[1], mimeType: file.type, name: file.name });
+      const img = new Image();
+      img.onload = () => {
+        const w = img.naturalWidth, h = img.naturalHeight;
+        const gcd = (a, b) => b === 0 ? a : gcd(b, a % b);
+        const d = gcd(w, h);
+        const ratio = `${w/d}:${h/d}`;
+        setBaseImage({ dataUrl, base64: dataUrl.split(',')[1], mimeType: file.type, name: file.name, width: w, height: h, ratio });
+      };
+      img.src = dataUrl;
     };
     reader.readAsDataURL(file);
   }
@@ -467,7 +476,7 @@ export default function StateVariations() {
         </div>
 
         {/* ── Right: settings ──────────────────────────────────────────── */}
-        <SettingsPanel settings={settings} onChange={setSettings} />
+        <SettingsPanel settings={settings} onChange={setSettings} imageRatio={baseImage?.ratio} />
 
       </div>
     </div>

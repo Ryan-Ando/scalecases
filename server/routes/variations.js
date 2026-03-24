@@ -54,7 +54,7 @@ router.post('/generate', async (req, res) => {
     // Image generation specific config
     const imgGenConfig = {};
     if (outputFormat) imgGenConfig.output_mime_type = `image/${outputFormat}`;
-    if (aspectRatio)  imgGenConfig.aspect_ratio     = aspectRatio;
+    if (aspectRatio && aspectRatio !== 'auto') imgGenConfig.aspect_ratio = aspectRatio;
     if (Object.keys(imgGenConfig).length) {
       generationConfig.image_generation_config = imgGenConfig;
     }
