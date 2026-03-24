@@ -58,8 +58,9 @@ router.post('/generate', async (req, res) => {
     if (json.error) throw new Error(`Gemini error: ${json.error.message}`);
 
     const parts = json.candidates?.[0]?.content?.parts || [];
-    const imgPart  = parts.find(p => p.inline_data);
+    const imgPart  = parts.find(p => p.inlineData || p.inline_data);
     const textPart = parts.find(p => p.text);
+    const imgData  = imgPart?.inlineData || imgPart?.inline_data;
 
     if (!imgPart) {
       const msg = textPart?.text
@@ -69,8 +70,8 @@ router.post('/generate', async (req, res) => {
     }
 
     res.json({
-      image:    imgPart.inline_data.data,
-      mimeType: imgPart.inline_data.mime_type,
+      image:    imgData.data,
+      mimeType: imgData.mimeType || imgData.mime_type,
       text:     textPart?.text || '',
     });
   } catch (e) { res.status(500).json({ error: e.message }); }
