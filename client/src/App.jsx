@@ -12,8 +12,17 @@ function Logo() {
 
 const TABS = ['Ads Tracking', 'Spend Sheet', 'Campaign Reports', 'Ads Launcher', 'State Variations'];
 
+// Lazy-mount: components mount on first visit and stay mounted (preserves state + ongoing work)
 export default function App() {
   const [tab, setTab] = useState('Ads Tracking');
+  const [mounted, setMounted] = useState(new Set(['Ads Tracking']));
+
+  function switchTab(t) {
+    setMounted(m => new Set([...m, t]));
+    setTab(t);
+  }
+
+  const show = t => ({ display: tab === t ? 'block' : 'none' });
 
   return (
     <div className="app">
@@ -21,16 +30,16 @@ export default function App() {
         <div className="header-brand"><Logo /> Scale Cases</div>
         <nav className="nav">
           {TABS.map(t => (
-            <button key={t} className={`nav-tab${tab === t ? ' nav-tab--active' : ''}`} onClick={() => setTab(t)}>{t}</button>
+            <button key={t} className={`nav-tab${tab === t ? ' nav-tab--active' : ''}`} onClick={() => switchTab(t)}>{t}</button>
           ))}
         </nav>
       </header>
       <main className="content" style={{ padding: 0, boxSizing: 'border-box', minWidth: 0, overflow: 'clip' }}>
-        {tab === 'Ads Tracking'    && <AdsTracking />}
-        {tab === 'Spend Sheet'     && <SpendSheet />}
-        {tab === 'Campaign Reports' && <CampaignReports />}
-        {tab === 'Ads Launcher'    && <AdsLauncher />}
-        {tab === 'State Variations' && <StateVariations />}
+        {mounted.has('Ads Tracking')     && <div style={show('Ads Tracking')}><AdsTracking /></div>}
+        {mounted.has('Spend Sheet')      && <div style={show('Spend Sheet')}><SpendSheet /></div>}
+        {mounted.has('Campaign Reports') && <div style={show('Campaign Reports')}><CampaignReports /></div>}
+        {mounted.has('Ads Launcher')     && <div style={show('Ads Launcher')}><AdsLauncher /></div>}
+        {mounted.has('State Variations') && <div style={show('State Variations')}><StateVariations /></div>}
       </main>
     </div>
   );

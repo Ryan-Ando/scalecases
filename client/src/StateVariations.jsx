@@ -3,6 +3,14 @@ import { extractStateFromCampaign, STATE_NAMES } from './launcherStates.js';
 
 const BASE = import.meta.env.VITE_API_URL || 'http://localhost:3001';
 
+const SAVED_KEY = 'variations_saved_ads';
+function loadSaved() {
+  try { return JSON.parse(localStorage.getItem(SAVED_KEY) || '[]'); } catch { return []; }
+}
+function persistSaved(list) {
+  try { localStorage.setItem(SAVED_KEY, JSON.stringify(list)); } catch { /* quota */ }
+}
+
 const DEFAULT_PROMPT = `Your main job is not to create new images but to alter existing ones. Primarily to change the U.S. State in the image to another as specified.
 
 State is specified simply by listing it out in the prompt.
@@ -180,6 +188,52 @@ function SettingsPanel({ settings, onChange }) {
   );
 }
 
+// ── Saved ads history (top-level) ─────────────────────────────────────────────
+function SavedAdsSection({ savedAds, onDelete, onDownload }) {
+  if (savedAds.length === 0) return null;
+
+  const byDate = {};
+  for (const ad of savedAds) {
+    if (!byDate[ad.date]) byDate[ad.date] = [];
+    byDate[ad.date].push(ad);
+  }
+  const dates = Object.keys(byDate).sort((a, b) => b.localeCompare(a));
+
+  function fmt(dateStr) {
+    return new Date(dateStr + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
+  }
+
+  return (
+    <div style={{ marginTop: 32, borderTop: `1px solid ${S.border}`, paddingTop: 24 }}>
+      <h3 style={{ margin: '0 0 18px', fontWeight: 700, fontSize: 16, color: S.text }}>
+        Saved Ads <span style={{ fontSize: 12, color: S.muted, fontWeight: 400 }}>({savedAds.length})</span>
+      </h3>
+      {dates.map(date => (
+        <div key={date} style={{ marginBottom: 24 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: S.muted, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 10 }}>
+            {fmt(date)}
+          </div>
+          <div style={{ display: 'flex', gap: 12, overflowX: 'auto', paddingBottom: 8 }}>
+            {byDate[date].map(ad => (
+              <div key={ad.id} style={{ background: S.card, border: `1px solid ${S.border}`, borderRadius: 10, overflow: 'hidden', flexShrink: 0, width: 200 }}>
+                <img src={`data:${ad.mimeType};base64,${ad.image}`} alt={ad.stateDisplay} style={{ width: '100%', display: 'block' }} />
+                <div style={{ padding: '8px 10px' }}>
+                  <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 2, color: S.blue }}>{ad.stateDisplay}</div>
+                  <div style={{ fontSize: 11, color: S.muted, marginBottom: 8, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{ad.filename}</div>
+                  <div style={{ display: 'flex', gap: 5 }}>
+                    <button style={{ ...btn(S.green), fontSize: 11, padding: '3px 8px', flex: 1 }} onClick={() => onDownload(ad)}>⬇</button>
+                    <button style={{ ...btn('#475569'), fontSize: 11, padding: '3px 8px' }} onClick={() => onDelete(ad.id)}>✕</button>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
 export default function StateVariations() {
   const [adName, setAdName]         = useState('');
@@ -197,6 +251,7 @@ export default function StateVariations() {
   const [running, setRunning] = useState(false);
   const runningRef            = useRef(false);
   const fileInputRef          = useRef(null);
+  const [savedAds, setSavedAds] = useState(() => loadSaved());
 
   const campaignStates = (() => {
     const seen = new Map();
@@ -250,6 +305,41 @@ export default function StateVariations() {
     setSelectedStates(p => { const n = new Set(p); n.delete(key); return n; });
   }
 
+  function makeFilename(item, currentAdName, mimeType) {
+    const ext = mimeType?.split('/')[1] || 'jpg';
+    if (currentAdName?.trim()) return currentAdName.trim().replace(/_/g, item.stateKey) + `.${ext}`;
+    return `${item.stateDisplay.replace(/\s+/g, '-')}.${ext}`;
+  }
+
+  function saveAd(item, currentAdName) {
+    const entry = {
+      id: item.id,
+      savedAt: new Date().toISOString(),
+      date: new Date().toISOString().slice(0, 10),
+      stateKey: item.stateKey,
+      stateDisplay: item.stateDisplay,
+      filename: makeFilename(item, currentAdName, item.mimeType),
+      image: item.image,
+      mimeType: item.mimeType,
+    };
+    setSavedAds(prev => {
+      const next = [...prev.filter(s => s.id !== item.id), entry];
+      persistSaved(next);
+      return next;
+    });
+  }
+
+  function deleteSaved(id) {
+    setSavedAds(prev => { const next = prev.filter(s => s.id !== id); persistSaved(next); return next; });
+  }
+
+  function downloadSaved(ad) {
+    const a = document.createElement('a');
+    a.href = `data:${ad.mimeType};base64,${ad.image}`;
+    a.download = ad.filename;
+    a.click();
+  }
+
   function startGeneration() {
     if (!baseImage || selectedStates.size === 0 || running) return;
     const newItems = [...selectedStates].map((sk, i) => ({
@@ -258,15 +348,18 @@ export default function StateVariations() {
       status: 'pending', image: null, mimeType: null, text: null, error: null, regenNotes: '',
     }));
     setItems(newItems);
-    runQueue(newItems, baseImage, prompt, settings);
+    runQueue(newItems, baseImage, prompt, settings, adName);
   }
 
-  async function runQueue(queueItems, img, promptText, cfg) {
+  async function runQueue(queueItems, img, promptText, cfg, currentAdName) {
     setRunning(true); runningRef.current = true;
     for (let i = 0; i < queueItems.length; i++) {
       if (!runningRef.current) break;
       setItems(p => p.map((it, idx) => idx === i ? { ...it, status: 'generating' } : it));
       const result = await callGemini(img, queueItems[i].stateDisplay, promptText, '', cfg);
+      if (!result.error) {
+        saveAd({ ...queueItems[i], image: result.image, mimeType: result.mimeType }, currentAdName);
+      }
       setItems(p => p.map((it, idx) => idx === i
         ? result.error
           ? { ...it, status: 'error', error: result.error }
@@ -282,6 +375,9 @@ export default function StateVariations() {
     if (!baseImage || !item) return;
     setItems(p => p.map((it, i) => i === idx ? { ...it, status: 'generating', image: null, error: null } : it));
     const result = await callGemini(baseImage, item.stateDisplay, prompt, item.regenNotes, settings);
+    if (!result.error) {
+      saveAd({ ...item, image: result.image, mimeType: result.mimeType }, adName);
+    }
     setItems(p => p.map((it, i) => i === idx
       ? result.error
         ? { ...it, status: 'error', error: result.error }
@@ -465,6 +561,9 @@ export default function StateVariations() {
         <SettingsPanel settings={settings} onChange={setSettings} imageRatio={baseImage?.ratio} />
 
       </div>
+
+      <SavedAdsSection savedAds={savedAds} onDelete={deleteSaved} onDownload={downloadSaved} />
+
     </div>
   );
 }
