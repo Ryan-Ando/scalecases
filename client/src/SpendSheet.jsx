@@ -99,6 +99,18 @@ export default function SpendSheet() {
     });
   }
 
+  function copyDatesToAll(st) {
+    const { startDate, endDate } = pacing[st] || {};
+    setPacing(prev => {
+      const next = { ...prev };
+      for (const s of pacingStates) {
+        next[s] = { ...next[s], startDate: startDate || '', endDate: endDate || '' };
+      }
+      localStorage.setItem(PACING_KEY, JSON.stringify(next));
+      return next;
+    });
+  }
+
   async function fetchPacingSpend() {
     const entries = Object.entries(pacing).filter(([, cfg]) => cfg?.startDate && cfg?.endDate);
     if (!entries.length) { setPacingError('Enter start/end dates for at least one state first.'); return; }
@@ -370,8 +382,8 @@ export default function SpendSheet() {
                 <tr>
                   <th style={pThL}>State</th>
                   <th style={{ ...pTh, textAlign: 'left', minWidth: 120 }}>Total Budget</th>
-                  <th style={{ ...pTh, textAlign: 'left', minWidth: 120 }}>Start Date</th>
-                  <th style={{ ...pTh, textAlign: 'left', minWidth: 120 }}>End Date</th>
+                  <th style={{ ...pTh, textAlign: 'left', minWidth: 150 }}>Start Date</th>
+                  <th style={{ ...pTh, textAlign: 'left', minWidth: 150 }}>End Date</th>
                   <th style={pTh}>Days Left</th>
                   <th style={pTh}>Spent to Date</th>
                   <th style={pTh}>Remaining</th>
@@ -402,12 +414,19 @@ export default function SpendSheet() {
 
                       {/* Start Date — editable */}
                       <td style={pTdEdit}>
-                        <input
-                          style={pacingInput}
-                          type="date"
-                          value={pacing[r.st]?.startDate || ''}
-                          onChange={e => updatePacing(r.st, 'startDate', e.target.value)}
-                        />
+                        <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                          <input
+                            style={{ ...pacingInput, flex: 1 }}
+                            type="date"
+                            value={pacing[r.st]?.startDate || ''}
+                            onChange={e => updatePacing(r.st, 'startDate', e.target.value)}
+                          />
+                          <button
+                            title="Copy these dates to all rows"
+                            onClick={() => copyDatesToAll(r.st)}
+                            style={{ background: 'none', border: '1px solid var(--border)', borderRadius: 4, color: 'var(--text-muted)', cursor: 'pointer', fontSize: 11, padding: '3px 5px', whiteSpace: 'nowrap', flexShrink: 0 }}
+                          >⬇ all</button>
+                        </div>
                       </td>
 
                       {/* End Date — editable */}
