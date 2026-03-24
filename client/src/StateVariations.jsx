@@ -3,13 +3,21 @@ import { extractStateFromCampaign, STATE_NAMES } from './launcherStates.js';
 
 const BASE = import.meta.env.VITE_API_URL || 'http://localhost:3001';
 
-const DEFAULT_PROMPT = `Your main job is not to create new images but to alter existing ones. primarily to change the U.S. State in the image to another as specified.
+const DEFAULT_PROMPT = `Your main job is not to create new images but to alter existing ones. Primarily to change the U.S. State in the image to another as specified.
 
-state is specified simply by listing it out in the prompt`;
+State is specified simply by listing it out in the prompt.
+
+CRITICAL TEXT RULES:
+- Preserve ALL existing text in the image exactly as written — same words, same order, same spelling, same punctuation
+- Do NOT duplicate any words or phrases
+- Do NOT add new words anywhere in the image
+- Do NOT remove any existing words
+- The ONLY text that should change is the U.S. state name or abbreviation itself
+- Read all text carefully before and after editing to confirm no duplication or corruption`;
 
 const DEFAULT_SETTINGS = {
   outputFormat:  'jpeg',
-  temperature:   1.0,
+  temperature:   0.4,
   aspectRatio:   '1:1',
   thinkingLevel: 'none',
   topP:          0.95,
