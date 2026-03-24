@@ -12,17 +12,12 @@ function apiKey() {
   return k;
 }
 
-const THINKING_BUDGETS = { low: 512, medium: 2048, high: 8192 };
-
 // POST /api/variations/generate
 router.post('/generate', async (req, res) => {
   try {
     const {
       imageBase64, mimeType, state, prompt, notes,
-      // generation settings
-      outputFormat, temperature, aspectRatio,
-      thinkingLevel, topP, topK, seed,
-      grounding, codeExecution,
+      temperature, topP, topK, seed,
     } = req.body;
 
     if (!imageBase64) throw new Error('No image provided');
@@ -33,40 +28,15 @@ router.post('/generate', async (req, res) => {
       ? `${prompt}\n\n${state}\n\nAdditional notes from user: ${notes.trim()}`
       : `${prompt}\n\n${state}`;
 
-    // Build generation config — image output only
+    // Build generation config — only fields this model accepts
     const generationConfig = {
       response_modalities: ['IMAGE'],
     };
 
-    if (temperature !== undefined && temperature !== '') {
-      generationConfig.temperature = parseFloat(temperature);
-    }
-    if (topP !== undefined && topP !== '') {
-      generationConfig.top_p = parseFloat(topP);
-    }
-    if (topK !== undefined && topK !== '') {
-      generationConfig.top_k = parseInt(topK);
-    }
-    if (seed !== undefined && seed !== '') {
-      generationConfig.seed = parseInt(seed);
-    }
-
-    // Image generation specific config
-    const imgGenConfig = {};
-    if (outputFormat) imgGenConfig.output_mime_type = `image/${outputFormat}`;
-    if (aspectRatio && aspectRatio !== 'auto') imgGenConfig.aspect_ratio = aspectRatio;
-    if (Object.keys(imgGenConfig).length) {
-      generationConfig.image_generation_config = imgGenConfig;
-    }
-
-    // Thinking config
-    const thinkingBudget = THINKING_BUDGETS[thinkingLevel];
-    const thinkingConfig = thinkingBudget ? { thinking_budget: thinkingBudget } : undefined;
-
-    // Tools
-    const tools = [];
-    if (grounding)     tools.push({ google_search: {} });
-    if (codeExecution) tools.push({ code_execution: {} });
+    if (temperature !== undefined && temperature !== '') generationConfig.temperature = parseFloat(temperature);
+    if (topP !== undefined && topP !== '')               generationConfig.top_p       = parseFloat(topP);
+    if (topK !== undefined && topK !== '')               generationConfig.top_k       = parseInt(topK);
+    if (seed !== undefined && seed !== '')               generationConfig.seed        = parseInt(seed);
 
     const body = {
       contents: [{
@@ -77,9 +47,6 @@ router.post('/generate', async (req, res) => {
       }],
       generation_config: generationConfig,
     };
-
-    if (thinkingConfig) body.thinking_config = thinkingConfig;
-    if (tools.length)   body.tools = tools;
 
     const r = await fetch(`${GEMINI_URL}?key=${apiKey()}`, {
       method: 'POST',
