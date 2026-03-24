@@ -71,10 +71,10 @@ export default function SpendSheet() {
     return dbGetAll('fbDailyInsights').then(setInsights);
   }
 
-  async function fetchAdsets() {
+  async function fetchAdsets(force = false) {
     setLoadingBudget(true);
     try {
-      const res  = await fetch(`${BASE}/api/facebook/adsets`);
+      const res  = await fetch(`${BASE}/api/facebook/adsets${force ? '?force=true' : ''}`);
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || res.statusText);
       setAdsets(data);
@@ -147,13 +147,23 @@ export default function SpendSheet() {
   // ── Live daily budget ───────────────────────────────────────────────────────
   const budgetByState = useMemo(() => {
     const map = {};
+    const countedCampaigns = new Set(); // avoid double-counting CBO campaign budgets
     for (const a of adsets) {
       if (a.effectiveStatus !== 'ACTIVE') continue;
       const state = extractState(a.campaignName);
       if (!state) continue;
-      const budget = parseFloat(a.dailyBudget) / 100 || 0;
-      if (budget <= 0) continue;
-      map[state] = (map[state] || 0) + budget;
+      const adsetBudget = parseFloat(a.dailyBudget) / 100 || 0;
+      if (adsetBudget > 0) {
+        // Adset-level budget (non-CBO)
+        map[state] = (map[state] || 0) + adsetBudget;
+      } else {
+        // CBO: budget is at campaign level — count once per campaign
+        const campBudget = parseFloat(a.campaignDailyBudget) / 100 || 0;
+        if (campBudget > 0 && !countedCampaigns.has(a.campaignId)) {
+          countedCampaigns.add(a.campaignId);
+          map[state] = (map[state] || 0) + campBudget;
+        }
+      }
     }
     return map;
   }, [adsets]);
@@ -339,11 +349,14 @@ export default function SpendSheet() {
       )}
       {!loadingBudget && budgetStates.length > 0 && (
         <div style={{ marginBottom: 28 }}>
-          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10, color: 'var(--text)' }}>
+          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10, color: 'var(--text)', display: 'flex', alignItems: 'center', gap: 10 }}>
             Live Daily Budget
-            <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 400, color: 'var(--text-muted)' }}>
-              sum of active adset daily budgets
+            <span style={{ fontSize: 11, fontWeight: 400, color: 'var(--text-muted)' }}>
+              sum of active adset/campaign daily budgets
             </span>
+            <button onClick={() => fetchAdsets(true)} disabled={loadingBudget} style={{ fontSize: 11, padding: '2px 8px', background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 4, cursor: 'pointer', color: 'var(--text-muted)' }}>
+              {loadingBudget ? 'Refreshing…' : '↺ Refresh'}
+            </button>
           </div>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'flex-end' }}>
             {budgetStates.map(st => (

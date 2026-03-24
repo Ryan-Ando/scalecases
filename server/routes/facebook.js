@@ -324,7 +324,7 @@ router.get('/adsets', async (req, res) => {
     if (cached) return res.json(cached);
     const timeRange = start && end ? { since: start, until: end } : null;
 
-    const listParams = { fields: 'id,name,status,effective_status,campaign_id,campaign{name},created_time,daily_budget,lifetime_budget,optimization_goal' };
+    const listParams = { fields: 'id,name,status,effective_status,campaign_id,campaign{name,daily_budget,lifetime_budget},created_time,daily_budget,lifetime_budget,optimization_goal' };
     if (campaign_id) listParams.filtering = JSON.stringify([{ field: 'campaign.id', operator: 'EQUAL', value: campaign_id }]);
 
     const [adsets, insights] = await Promise.all([
@@ -350,6 +350,8 @@ router.get('/adsets', async (req, res) => {
         createdTime: a.created_time,
         dailyBudget: a.daily_budget,
         lifetimeBudget: a.lifetime_budget,
+        campaignDailyBudget: a.campaign?.daily_budget,
+        campaignLifetimeBudget: a.campaign?.lifetime_budget,
         optimizationGoal: a.optimization_goal,
         effectiveStatus: a.effective_status,
         ...ins,
