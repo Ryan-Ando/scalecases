@@ -374,6 +374,7 @@ export default function AdsLauncher() {
   const [launching, setLaunching]         = useState(false);
   const [rowStatuses, setRowStatuses]     = useState({});
   const [launchSummary, setLaunchSummary] = useState(null);
+  const [launchStartMode, setLaunchStartMode] = useState('instant'); // 'instant' | 'midnight'
 
   useEffect(() => { localStorage.setItem(GLOBAL_KEY, JSON.stringify(globalConfig)); }, [globalConfig]);
   useEffect(() => { localStorage.setItem(CAMPAIGN_CFGS_KEY, JSON.stringify(campaignConfigs)); }, [campaignConfigs]);
@@ -529,12 +530,20 @@ export default function AdsLauncher() {
     for (const m of matches) {
       if (m.status !== 'ready') continue;
       const idx = m.idx;
-      const cfg = buildLaunchConfig(m.campaign.id);
+      let cfg = buildLaunchConfig(m.campaign.id);
       try {
         // Pre-flight validation
         if (!cfg.pageId?.trim())        throw new Error('Missing Facebook Page ID — open campaign config to set it');
         if (!cfg.destinationUrl?.trim()) throw new Error('Missing Destination URL — open campaign config to set it');
         if (!cfg.budgetAmount || parseFloat(cfg.budgetAmount) <= 0) throw new Error('Budget amount must be greater than 0 — open campaign config to set it');
+        // Apply start time override
+        if (launchStartMode === 'midnight') {
+          const tomorrow = new Date(); tomorrow.setDate(tomorrow.getDate() + 1); tomorrow.setHours(0, 0, 0, 0);
+          cfg = { ...cfg, startTime: tomorrow.toISOString() };
+        } else {
+          cfg = { ...cfg, startTime: '' };
+        }
+
         let adsetId;
         if (createNewAdset) {
           setRowStatuses(p => ({ ...p, [idx]: { phase: 'adset' } }));
@@ -874,6 +883,16 @@ export default function AdsLauncher() {
       {files.length > 0 && (
         <div style={{ ...cardStyle, display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
           <span style={{ fontWeight: 700 }}>{readyCount} ready to launch</span>
+          {/* Start time selector */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 13, color: S.muted }}>
+            <span style={{ fontWeight: 600, color: S.text }}>Start:</span>
+            {[{ value: 'instant', label: 'Instant' }, { value: 'midnight', label: '12:00 AM tomorrow' }].map(opt => (
+              <label key={opt.value} style={{ display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer', color: launchStartMode === opt.value ? S.text : S.muted, fontWeight: launchStartMode === opt.value ? 600 : 400 }}>
+                <input type="radio" name="launchStartMode" value={opt.value} checked={launchStartMode === opt.value} onChange={() => setLaunchStartMode(opt.value)} style={{ accentColor: S.blue }} />
+                {opt.label}
+              </label>
+            ))}
+          </div>
           {!confirmLaunch && (
             <button style={btn(S.green, readyCount === 0 || launching)} onClick={() => readyCount > 0 && !launching && setConfirmLaunch(true)} disabled={readyCount === 0 || launching}>
               {launching ? <><Spinner />Launching…</> : 'Launch All'}
