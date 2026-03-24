@@ -96,12 +96,14 @@ router.post('/adset', async (req, res) => {
     } else {
       targeting = {
         geo_locations: { countries: (countries || 'US').split(',').map(s => s.trim()).filter(Boolean) },
-        age_min: parseInt(ageMin) || 18,
-        age_max: parseInt(ageMax) || 65,
       };
-      const g = parseInt(genders);
-      if (g === 1 || g === 2) targeting.genders = [g];
-      if (advantagePlusAudience) targeting.targeting_automation = { advantage_audience: 1 };
+      // Skip demographic restrictions when using Advantage+ audience (they're ignored and can cause API errors)
+      if (!advantagePlusAudience) {
+        targeting.age_min = parseInt(ageMin) || 18;
+        targeting.age_max = parseInt(ageMax) || 65;
+        const g = parseInt(genders);
+        if (g === 1 || g === 2) targeting.genders = [g];
+      }
       if (customAudienceIds) {
         const ids = customAudienceIds.split(',').map(s => s.trim()).filter(Boolean);
         if (ids.length) targeting.custom_audiences = ids.map(id => ({ id }));
@@ -172,6 +174,7 @@ router.post('/adset', async (req, res) => {
       targeting,
       status: 'PAUSED',
       access_token: token(),
+      ...(advantagePlusAudience ? { targeting_automation: { advantage_audience: 1 } } : {}),
     };
 
     // Bid strategy
