@@ -50,16 +50,10 @@ const DEFAULT_MANUAL_PLACEMENTS = Object.fromEntries(PLACEMENT_OPTIONS.map(p => 
 
 const CREATIVE_ENHANCEMENTS = [
   { id: 'standard_enhancements',     label: 'Standard Enhancements (all)',  group: 'Standard' },
-  { id: 'image_brightness_contrast', label: 'Brightness & Contrast',        group: 'Standard' },
-  { id: 'image_templates',           label: 'Image Templates',              group: 'Standard' },
-  { id: 'relevant_comments',         label: 'Relevant Comments',            group: 'Standard' },
-  { id: 'add_text',                  label: 'Add Text Overlay',             group: 'Standard' },
   { id: 'translate',                 label: 'Auto-Translate',               group: 'Standard' },
+  { id: 'profile_card',              label: 'Profile Card',                 group: 'Standard' },
   { id: 'advantage_plus_creative',   label: 'Advantage+ Creative (all)',    group: 'Advantage+' },
-  { id: 'music',                     label: 'Music',                        group: 'Advantage+' },
   { id: 'image_uncrop',              label: 'Image Expansion (Uncrop)',     group: 'Advantage+' },
-  { id: 'profile_card',              label: 'Profile Card',                 group: 'Advantage+' },
-  { id: '3d_animation',              label: '3D Animation',                 group: 'Advantage+' },
 ];
 
 // ── Defaults ──────────────────────────────────────────────────────────────────
@@ -571,7 +565,7 @@ export default function AdsLauncher() {
         const adName = adNameFromFile(m.name);
         const crRes = await fetch(`${BASE}/api/launcher/creative`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: adName, accountId, pageId: cfg.pageId, primaryText: cfg.primaryText, headline: cfg.headline, description: cfg.description, ctaType: cfg.ctaType, destinationUrl: cfg.destinationUrl, urlParameters: cfg.urlParameters, creativeEnhancements: cfg.creativeEnhancements, mediaType: upJson.type, videoId: upJson.video_id, imageHash: upJson.image_hash }),
+          body: JSON.stringify({ name: adName, accountId, pageId: cfg.pageId, primaryText: cfg.primaryText, headline: cfg.headline, description: cfg.description, ctaType: cfg.ctaType, destinationUrl: cfg.destinationUrl, urlParameters: cfg.urlParameters, creativeEnhancements: cfg.creativeEnhancements, mediaType: upJson.type, videoId: upJson.video_id, imageHash: upJson.image_hash, imageWidth: upJson.width, imageHeight: upJson.height }),
         });
         const crJson = await crRes.json();
         if (!crRes.ok) throw new Error(crJson.error);

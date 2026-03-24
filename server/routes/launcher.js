@@ -232,7 +232,7 @@ router.post('/upload', upload.single('file'), async (req, res) => {
       if (json.error) throw new Error(json.error.message);
       const first = Object.values(json.images || {})[0];
       if (!first) throw new Error('No image hash returned from Facebook');
-      res.json({ type: 'image', image_hash: first.hash });
+      res.json({ type: 'image', image_hash: first.hash, width: first.width, height: first.height });
     }
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -274,14 +274,22 @@ router.post('/creative', async (req, res) => {
 
     const creativeBody = { name, object_story_spec: objectStorySpec, access_token: token() };
 
-    // Creative advancements — creativeEnhancements is { [featureId]: boolean }
-    const { creativeEnhancements } = req.body;
+    // Creative enhancements — map client IDs to valid Facebook API keys
+    const FEATURE_KEY_MAP = {
+      standard_enhancements: 'STANDARD_ENHANCEMENTS_CATALOG',
+      translate:              'TEXT_OVERLAY_TRANSLATION',
+      profile_card:           'PROFILE_CARD',
+      image_uncrop:           'PRODUCT_METADATA_AUTOMATION', // closest valid key for expansion
+    };
+    const { creativeEnhancements, imageWidth, imageHeight } = req.body;
     if (creativeEnhancements && typeof creativeEnhancements === 'object') {
       const enabled = Object.entries(creativeEnhancements).filter(([, v]) => v).map(([k]) => k);
       if (enabled.length) {
         const features = {};
         for (const id of enabled) {
-          if (id !== 'advantage_plus_creative') features[id] = { enroll_status: 'OPT_IN' };
+          if (id === 'advantage_plus_creative') continue;
+          const apiKey = FEATURE_KEY_MAP[id];
+          if (apiKey) features[apiKey] = { enroll_status: 'OPT_IN' };
         }
         if (Object.keys(features).length) {
           creativeBody.degrees_of_freedom_spec = { creative_features_spec: features };
@@ -289,6 +297,28 @@ router.post('/creative', async (req, res) => {
         if (enabled.includes('advantage_plus_creative')) {
           creativeBody.advantage_plus_creative = { enroll_status: 'OPT_IN' };
         }
+      }
+    }
+
+    // Preserve original image aspect ratio via center crops
+    if (mediaType !== 'video' && imageWidth && imageHeight) {
+      const w = parseInt(imageWidth), h = parseInt(imageHeight);
+      const crops = {};
+      // 1:1 square crop — take centered square
+      const sq = Math.min(w, h);
+      const sx = Math.floor((w - sq) / 2), sy = Math.floor((h - sq) / 2);
+      crops['100x100'] = [[sx, sy], [sx + sq, sy + sq]];
+      // 1.91:1 landscape crop — take centered 1.91:1 region
+      const targetW = Math.round(h * 1.91), targetH = Math.round(w / 1.91);
+      if (targetW <= w) {
+        const ox = Math.floor((w - targetW) / 2);
+        crops['191x100'] = [[ox, 0], [ox + targetW, h]];
+      } else {
+        const oy = Math.floor((h - targetH) / 2);
+        crops['191x100'] = [[0, oy], [w, oy + targetH]];
+      }
+      if (mediaType === 'image') {
+        if (objectStorySpec.link_data) objectStorySpec.link_data.image_crops = crops;
       }
     }
 
