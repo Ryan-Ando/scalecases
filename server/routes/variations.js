@@ -12,11 +12,19 @@ function apiKey() {
   return k;
 }
 
+const THINKING_BUDGETS = { low: 512, medium: 2048, high: 8192 };
+
 // POST /api/variations/generate
-// Body: { imageBase64, mimeType, state, prompt, notes? }
 router.post('/generate', async (req, res) => {
   try {
-    const { imageBase64, mimeType, state, prompt, notes } = req.body;
+    const {
+      imageBase64, mimeType, state, prompt, notes,
+      // generation settings
+      outputFormat, temperature, aspectRatio,
+      thinkingLevel, topP, topK, seed,
+      grounding, codeExecution,
+    } = req.body;
+
     if (!imageBase64) throw new Error('No image provided');
     if (!state)       throw new Error('No state provided');
     if (!prompt)      throw new Error('No prompt provided');
@@ -25,20 +33,58 @@ router.post('/generate', async (req, res) => {
       ? `${prompt}\n\n${state}\n\nAdditional notes from user: ${notes.trim()}`
       : `${prompt}\n\n${state}`;
 
+    // Build generation config — image output only
+    const generationConfig = {
+      response_modalities: ['IMAGE'],
+    };
+
+    if (temperature !== undefined && temperature !== '') {
+      generationConfig.temperature = parseFloat(temperature);
+    }
+    if (topP !== undefined && topP !== '') {
+      generationConfig.top_p = parseFloat(topP);
+    }
+    if (topK !== undefined && topK !== '') {
+      generationConfig.top_k = parseInt(topK);
+    }
+    if (seed !== undefined && seed !== '') {
+      generationConfig.seed = parseInt(seed);
+    }
+
+    // Image generation specific config
+    const imgGenConfig = {};
+    if (outputFormat) imgGenConfig.output_mime_type = `image/${outputFormat}`;
+    if (aspectRatio)  imgGenConfig.aspect_ratio     = aspectRatio;
+    if (Object.keys(imgGenConfig).length) {
+      generationConfig.image_generation_config = imgGenConfig;
+    }
+
+    // Thinking config
+    const thinkingBudget = THINKING_BUDGETS[thinkingLevel];
+    const thinkingConfig = thinkingBudget ? { thinking_budget: thinkingBudget } : undefined;
+
+    // Tools
+    const tools = [];
+    if (grounding)     tools.push({ google_search: {} });
+    if (codeExecution) tools.push({ code_execution: {} });
+
+    const body = {
+      contents: [{
+        parts: [
+          { inline_data: { mime_type: mimeType || 'image/jpeg', data: imageBase64 } },
+          { text: fullPrompt },
+        ],
+      }],
+      generation_config: generationConfig,
+    };
+
+    if (thinkingConfig) body.thinking_config = thinkingConfig;
+    if (tools.length)   body.tools = tools;
+
     const r = await fetch(`${GEMINI_URL}?key=${apiKey()}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{
-          parts: [
-            { inline_data: { mime_type: mimeType || 'image/jpeg', data: imageBase64 } },
-            { text: fullPrompt },
-          ],
-        }],
-        generation_config: {
-          response_modalities: ['TEXT', 'IMAGE'],
-        },
-      }),
+      body: JSON.stringify(body),
     });
 
     const json = await r.json();
@@ -49,7 +95,9 @@ router.post('/generate', async (req, res) => {
     const textPart = parts.find(p => p.text);
 
     if (!imgPart) {
-      const msg = textPart?.text ? `Gemini returned no image. Message: ${textPart.text}` : 'Gemini returned no image in response';
+      const msg = textPart?.text
+        ? `Gemini returned no image. Message: ${textPart.text}`
+        : `Gemini returned no image. Raw: ${JSON.stringify(json).slice(0, 300)}`;
       throw new Error(msg);
     }
 
