@@ -33,7 +33,7 @@ async function fetchCampaignsForAccount(account) {
     all.push(...(json.data || []));
     url = json.paging?.next || null;
   }
-  return all.filter(c => c.status === 'ACTIVE').map(c => ({ id: c.id, name: c.name, status: c.status, objective: c.objective }));
+  return all.filter(c => c.status === 'ACTIVE').map(c => ({ id: c.id, name: c.name, status: c.status, objective: c.objective, account_id: account }));
 }
 
 // GET /api/launcher/campaigns
@@ -66,9 +66,8 @@ router.get('/adsets/:campaignId', async (req, res) => {
 // POST /api/launcher/adset — create a new adset
 router.post('/adset', async (req, res) => {
   try {
-    const account = firstAdAccount();
     const {
-      name, campaignId, pageId,
+      name, campaignId, accountId, pageId,
       conversionLocation, pixelId, conversionEvent,
       costPerResultGoal, attributionSetting,
       budgetType, budgetAmount, startTime, endTime,
@@ -76,6 +75,8 @@ router.post('/adset', async (req, res) => {
       advantagePlusAudience, countries, customAudienceIds, targetingSpec,
       placementsType, manualPlacements, languages,
     } = req.body;
+
+    const account = accountId || firstAdAccount();
 
     // Optimization goal by conversion location
     const optGoalMap = {
@@ -208,7 +209,7 @@ router.post('/adset', async (req, res) => {
 // POST /api/launcher/upload
 router.post('/upload', upload.single('file'), async (req, res) => {
   try {
-    const account = firstAdAccount();
+    const account = req.body.accountId || firstAdAccount();
     const file = req.file;
     if (!file) throw new Error('No file provided');
     const isVideo = file.mimetype.startsWith('video/');
@@ -236,7 +237,7 @@ router.post('/upload', upload.single('file'), async (req, res) => {
 // POST /api/launcher/creative
 router.post('/creative', async (req, res) => {
   try {
-    const account = firstAdAccount();
+    const account = req.body.accountId || firstAdAccount();
     const {
       name, pageId,
       primaryText, headline, description,

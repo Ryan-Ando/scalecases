@@ -552,7 +552,7 @@ export default function AdsLauncher() {
         let adsetId;
         if (createNewAdset) {
           setRowStatuses(p => ({ ...p, [idx]: { phase: 'adset' } }));
-          const asRes = await fetch(`${BASE}/api/launcher/adset`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: resolveAdsetName(m), campaignId: m.campaign.id, ...cfg }) });
+          const asRes = await fetch(`${BASE}/api/launcher/adset`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: resolveAdsetName(m), campaignId: m.campaign.id, accountId: m.campaign.account_id, ...cfg }) });
           const asJson = await asRes.json();
           if (!asRes.ok) throw new Error(asJson.error);
           adsetId = asJson.adset_id;
@@ -560,8 +560,9 @@ export default function AdsLauncher() {
           adsetId = chosenAdsets[idx] || adsets[m.campaign.id]?.[0]?.id;
           if (!adsetId) throw new Error('No adset selected');
         }
+        const accountId = m.campaign.account_id;
         setRowStatuses(p => ({ ...p, [idx]: { phase: 'uploading' } }));
-        const fd = new FormData(); fd.append('file', m.file);
+        const fd = new FormData(); fd.append('file', m.file); if (accountId) fd.append('accountId', accountId);
         const upRes = await fetch(`${BASE}/api/launcher/upload`, { method: 'POST', body: fd });
         const upJson = await upRes.json();
         if (!upRes.ok) throw new Error(upJson.error);
@@ -570,7 +571,7 @@ export default function AdsLauncher() {
         const adName = adNameFromFile(m.name);
         const crRes = await fetch(`${BASE}/api/launcher/creative`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: adName, pageId: cfg.pageId, primaryText: cfg.primaryText, headline: cfg.headline, description: cfg.description, ctaType: cfg.ctaType, destinationUrl: cfg.destinationUrl, urlParameters: cfg.urlParameters, creativeEnhancements: cfg.creativeEnhancements, mediaType: upJson.type, videoId: upJson.video_id, imageHash: upJson.image_hash }),
+          body: JSON.stringify({ name: adName, accountId, pageId: cfg.pageId, primaryText: cfg.primaryText, headline: cfg.headline, description: cfg.description, ctaType: cfg.ctaType, destinationUrl: cfg.destinationUrl, urlParameters: cfg.urlParameters, creativeEnhancements: cfg.creativeEnhancements, mediaType: upJson.type, videoId: upJson.video_id, imageHash: upJson.image_hash }),
         });
         const crJson = await crRes.json();
         if (!crRes.ok) throw new Error(crJson.error);
