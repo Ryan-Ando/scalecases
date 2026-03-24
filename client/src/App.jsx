@@ -4,12 +4,13 @@ import AdsTracking from './AdsTracking.jsx';
 import SpendSheet from './SpendSheet.jsx';
 import CampaignReports from './CampaignReports.jsx';
 import AdsLauncher from './AdsLauncher.jsx';
+import StateVariations from './StateVariations.jsx';
 
 function Logo() {
   return <img src="/logo.png" width="32" height="32" style={{ borderRadius: 8, display: 'block' }} alt="Scale Cases" />;
 }
 
-const TABS = ['Ads Tracking', 'Spend Sheet', 'Campaign Reports', 'Ads Launcher'];
+const TABS = ['Ads Tracking', 'Spend Sheet', 'Campaign Reports', 'Ads Launcher', 'State Variations'];
 
 export default function App() {
   const [tab, setTab] = useState('Ads Tracking');
@@ -29,6 +30,7 @@ export default function App() {
         {tab === 'Spend Sheet'     && <SpendSheet />}
         {tab === 'Campaign Reports' && <CampaignReports />}
         {tab === 'Ads Launcher'    && <AdsLauncher />}
+        {tab === 'State Variations' && <StateVariations />}
       </main>
     </div>
   );
