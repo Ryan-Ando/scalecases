@@ -84,14 +84,13 @@ function getStateDisplay(key) {
 }
 
 // ── Result card (top-level to prevent unmount issues) ─────────────────────────
-function ResultCard({ item, adName, onRegenerate, onNotesChange }) {
+function ResultCard({ item, adName, selected, onToggleSelect, onRegenerate, onNotesChange }) {
   const [showNotes, setShowNotes] = useState(false);
 
   function download() {
     const ext = item.mimeType?.split('/')[1] || 'jpg';
     let filename;
     if (adName && adName.trim()) {
-      // Replace _ with the state abbreviation (stateKey is the 2-letter code if available)
       filename = adName.trim().replace(/_/g, item.stateKey) + `.${ext}`;
     } else {
       filename = `${item.stateDisplay.replace(/\s+/g, '-')}.${ext}`;
@@ -105,8 +104,11 @@ function ResultCard({ item, adName, onRegenerate, onNotesChange }) {
   const statusColor = { done: S.green, error: S.red, generating: S.blue, pending: S.muted }[item.status] || S.muted;
 
   return (
-    <div style={{ background: S.card, border: `1px solid ${item.status === 'error' ? S.red : S.border}`, borderRadius: 10, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+    <div style={{ background: S.card, border: `1px solid ${selected ? S.blue : item.status === 'error' ? S.red : S.border}`, borderRadius: 10, overflow: 'hidden', display: 'flex', flexDirection: 'column', outline: selected ? `2px solid ${S.blue}` : 'none' }}>
       <div style={{ padding: '8px 12px', borderBottom: `1px solid ${S.border}`, display: 'flex', alignItems: 'center', gap: 8 }}>
+        {item.status === 'done' && (
+          <input type="checkbox" checked={selected} onChange={onToggleSelect} style={{ accentColor: S.blue, cursor: 'pointer', flexShrink: 0 }} />
+        )}
         <span style={{ fontWeight: 700, fontSize: 13 }}>{item.stateDisplay}</span>
         <span style={{ fontSize: 11, color: statusColor, marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 4 }}>
           {item.status === 'generating' && <Spinner />}
@@ -192,7 +194,7 @@ function SettingsPanel({ settings, onChange }) {
 }
 
 // ── Saved ads history (top-level) ─────────────────────────────────────────────
-function SavedAdsSection({ savedAds, onDelete, onDownload }) {
+function SavedAdsSection({ savedAds, selectedIds, onToggleSelect, onDelete, onDownload }) {
   if (savedAds.length === 0) return null;
 
   const byDate = {};
@@ -207,7 +209,7 @@ function SavedAdsSection({ savedAds, onDelete, onDownload }) {
   }
 
   return (
-    <div style={{ marginTop: 32, borderTop: `1px solid ${S.border}`, paddingTop: 24 }}>
+    <div style={{ marginTop: 32, borderTop: `1px solid ${S.border}`, paddingTop: 24, paddingBottom: 80 }}>
       <h3 style={{ margin: '0 0 18px', fontWeight: 700, fontSize: 16, color: S.text }}>
         Saved Ads <span style={{ fontSize: 12, color: S.muted, fontWeight: 400 }}>({savedAds.length})</span>
       </h3>
@@ -217,19 +219,25 @@ function SavedAdsSection({ savedAds, onDelete, onDownload }) {
             {fmt(date)}
           </div>
           <div style={{ display: 'flex', gap: 12, overflowX: 'auto', paddingBottom: 8 }}>
-            {byDate[date].map(ad => (
-              <div key={ad.id} style={{ background: S.card, border: `1px solid ${S.border}`, borderRadius: 10, overflow: 'hidden', flexShrink: 0, width: 200 }}>
-                <img src={`data:${ad.mimeType};base64,${ad.image}`} alt={ad.stateDisplay} style={{ width: '100%', display: 'block' }} />
-                <div style={{ padding: '8px 10px' }}>
-                  <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 2, color: S.blue }}>{ad.stateDisplay}</div>
-                  <div style={{ fontSize: 11, color: S.muted, marginBottom: 8, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{ad.filename}</div>
-                  <div style={{ display: 'flex', gap: 5 }}>
-                    <button style={{ ...btn(S.green), fontSize: 11, padding: '3px 8px', flex: 1 }} onClick={() => onDownload(ad)}>⬇</button>
-                    <button style={{ ...btn('#475569'), fontSize: 11, padding: '3px 8px' }} onClick={() => onDelete(ad.id)}>✕</button>
+            {byDate[date].map(ad => {
+              const sel = selectedIds.has(ad.id);
+              return (
+                <div key={ad.id} style={{ background: S.card, border: `1px solid ${sel ? S.blue : S.border}`, borderRadius: 10, overflow: 'hidden', flexShrink: 0, width: 200, outline: sel ? `2px solid ${S.blue}` : 'none' }}>
+                  <div style={{ position: 'relative' }}>
+                    <img src={`data:${ad.mimeType};base64,${ad.image}`} alt={ad.stateDisplay} style={{ width: '100%', display: 'block' }} />
+                    <input type="checkbox" checked={sel} onChange={() => onToggleSelect(ad.id)} style={{ position: 'absolute', top: 8, left: 8, accentColor: S.blue, cursor: 'pointer', width: 16, height: 16 }} />
+                  </div>
+                  <div style={{ padding: '8px 10px' }}>
+                    <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 2, color: S.blue }}>{ad.stateDisplay}</div>
+                    <div style={{ fontSize: 11, color: S.muted, marginBottom: 8, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{ad.filename}</div>
+                    <div style={{ display: 'flex', gap: 5 }}>
+                      <button style={{ ...btn(S.green), fontSize: 11, padding: '3px 8px', flex: 1 }} onClick={() => onDownload(ad)}>⬇</button>
+                      <button style={{ ...btn('#475569'), fontSize: 11, padding: '3px 8px' }} onClick={() => onDelete(ad.id)}>✕</button>
+                    </div>
                   </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       ))}
@@ -255,6 +263,7 @@ export default function StateVariations() {
   const runningRef            = useRef(false);
   const fileInputRef          = useRef(null);
   const [savedAds, setSavedAds] = useState(() => loadSaved());
+  const [selectedIds, setSelectedIds] = useState(new Set());
 
   const campaignStates = (() => {
     const seen = new Map();
@@ -341,6 +350,48 @@ export default function StateVariations() {
     a.href = `data:${ad.mimeType};base64,${ad.image}`;
     a.download = ad.filename;
     a.click();
+  }
+
+  function toggleSelect(id) {
+    setSelectedIds(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  }
+
+  async function exportSelected() {
+    // Gather all exportable items (current session done items + saved ads) that are selected
+    const sessionItems = items
+      .filter(it => it.status === 'done' && selectedIds.has(it.id))
+      .map(it => ({ id: it.id, image: it.image, mimeType: it.mimeType, filename: makeFilename(it, adName, it.mimeType) }));
+    const savedItems = savedAds.filter(ad => selectedIds.has(ad.id));
+    const all = [...sessionItems, ...savedItems];
+    if (!all.length) return;
+
+    if (!window.showDirectoryPicker) {
+      // Fallback: download individually
+      for (const item of all) {
+        const a = document.createElement('a');
+        a.href = `data:${item.mimeType};base64,${item.image}`;
+        a.download = item.filename;
+        a.click();
+        await new Promise(r => setTimeout(r, 200));
+      }
+      return;
+    }
+
+    try {
+      const dir = await window.showDirectoryPicker({ mode: 'readwrite' });
+      for (const item of all) {
+        const bytes = atob(item.image);
+        const arr = new Uint8Array(bytes.length);
+        for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
+        const fh = await dir.getFileHandle(item.filename, { create: true });
+        const w = await fh.createWritable();
+        await w.write(new Blob([arr], { type: item.mimeType }));
+        await w.close();
+      }
+      setSelectedIds(new Set());
+    } catch (e) {
+      if (e.name !== 'AbortError') alert('Export failed: ' + e.message);
+    }
   }
 
   function startGeneration() {
@@ -557,6 +608,8 @@ export default function StateVariations() {
                   key={item.id}
                   item={item}
                   adName={adName}
+                  selected={selectedIds.has(item.id)}
+                  onToggleSelect={() => toggleSelect(item.id)}
                   onRegenerate={() => regenItem(idx)}
                   onNotesChange={val => updateRegenNotes(idx, val)}
                 />
@@ -570,7 +623,20 @@ export default function StateVariations() {
 
       </div>
 
-      <SavedAdsSection savedAds={savedAds} onDelete={deleteSaved} onDownload={downloadSaved} />
+      <SavedAdsSection savedAds={savedAds} selectedIds={selectedIds} onToggleSelect={toggleSelect} onDelete={deleteSaved} onDownload={downloadSaved} />
+
+      {/* ── Sticky export bar ───────────────────────────────────────────── */}
+      {selectedIds.size > 0 && (
+        <div style={{ position: 'fixed', bottom: 0, left: 0, right: 0, background: '#1e293b', borderTop: `1px solid ${S.blue}`, padding: '12px 32px', display: 'flex', alignItems: 'center', gap: 16, zIndex: 100, boxShadow: '0 -4px 24px rgba(0,0,0,0.4)' }}>
+          <span style={{ fontWeight: 700, fontSize: 14, color: S.text }}>{selectedIds.size} selected</span>
+          <button style={{ ...btn('#475569'), fontSize: 12 }} onClick={() => setSelectedIds(new Set())}>Clear</button>
+          <div style={{ marginLeft: 'auto', display: 'flex', gap: 10 }}>
+            <button style={{ ...btn(S.blue), fontSize: 13, padding: '8px 20px' }} onClick={exportSelected}>
+              ⬇ Export to folder
+            </button>
+          </div>
+        </div>
+      )}
 
     </div>
   );
