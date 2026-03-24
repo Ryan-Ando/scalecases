@@ -586,6 +586,31 @@ router.post('/campaign/:id/status', async (req, res) => {
   }
 });
 
+// GET /api/facebook/campaign-spend?since=YYYY-MM-DD&until=YYYY-MM-DD
+// Returns total spend per campaign for a custom date range (for pacing calculations)
+router.get('/campaign-spend', async (req, res) => {
+  try {
+    const { since, until } = req.query;
+    if (!since || !until) return res.status(400).json({ error: 'since and until required' });
+    const cacheKey = `campaign-spend:${since}:${until}`;
+    const cached = req.query.force ? null : cacheGet(cacheKey);
+    if (cached) return res.json(cached);
+
+    const insights = await fetchInsights('campaign', null, {}, { since, until });
+    const result = insights.map(i => ({
+      campaign_id: i.campaign_id,
+      campaign_name: i.campaign_name,
+      spend: parseFloat(i.spend) || 0,
+    }));
+
+    cacheSet(cacheKey, result);
+    res.json(result);
+  } catch (err) {
+    console.error('FB campaign-spend error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // GET /api/facebook/stats — API usage metrics for this server session
 router.get('/stats', (req, res) => {
   const cacheSize = _cache.size;

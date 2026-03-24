@@ -23,8 +23,25 @@ function extractState(campaignName) {
 const MONTH_NAMES = ['January','February','March','April','May','June','July','August','September','October','November','December'];
 
 function fmt(v) {
-  if (!v) return '';
+  if (!v && v !== 0) return '';
   return `$${v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+function fmtOrDash(v) {
+  if (v == null || v === '') return '—';
+  return fmt(v);
+}
+
+// ── Pacing helpers ────────────────────────────────────────────────────────────
+const PACING_KEY = 'spend_pacing_v1';
+function loadPacing() {
+  try { return JSON.parse(localStorage.getItem(PACING_KEY) || '{}'); } catch { return {}; }
+}
+function daysLeft(endDate) {
+  if (!endDate) return null;
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const end = new Date(endDate + 'T00:00:00');
+  const d = Math.floor((end - today) / 86400000);
+  return d >= 0 ? d : 0;
 }
 
 export default function SpendSheet() {
@@ -37,6 +54,12 @@ export default function SpendSheet() {
   const [viewYear, setViewYear]     = useState(new Date().getFullYear());
   const [viewMonth, setViewMonth]   = useState(new Date().getMonth());
 
+  // Pacing state
+  const [pacing, setPacing]             = useState(() => loadPacing());
+  const [pacingSpend, setPacingSpend]   = useState({});
+  const [pacingLoading, setPacingLoading] = useState(false);
+  const [pacingError, setPacingError]   = useState('');
+
   // Column order: persisted to localStorage
   const [colOrder, setColOrder] = useState(() => {
     try { const s = localStorage.getItem('spendSheetColOrder'); return s ? JSON.parse(s) : null; }
@@ -48,7 +71,6 @@ export default function SpendSheet() {
     return dbGetAll('fbDailyInsights').then(setInsights);
   }
 
-  // Fetch live adset budgets from the server (budgets live at adset level in FB)
   async function fetchAdsets() {
     setLoadingBudget(true);
     try {
@@ -68,8 +90,49 @@ export default function SpendSheet() {
     fetchAdsets();
   }, []);
 
-  // Live daily budget: sum active adset daily budgets per campaign state
-  // FB returns dailyBudget in cents
+  // ── Pacing functions ────────────────────────────────────────────────────────
+  function updatePacing(st, field, value) {
+    setPacing(prev => {
+      const next = { ...prev, [st]: { ...prev[st], [field]: value } };
+      localStorage.setItem(PACING_KEY, JSON.stringify(next));
+      return next;
+    });
+  }
+
+  async function fetchPacingSpend() {
+    const entries = Object.entries(pacing).filter(([, cfg]) => cfg?.startDate && cfg?.endDate);
+    if (!entries.length) { setPacingError('Enter start/end dates for at least one state first.'); return; }
+
+    setPacingLoading(true);
+    setPacingError('');
+    try {
+      // Group states by unique date range to minimise API calls
+      const byRange = {};
+      for (const [, cfg] of entries) {
+        const key = `${cfg.startDate}|${cfg.endDate}`;
+        if (!byRange[key]) byRange[key] = { since: cfg.startDate, until: cfg.endDate };
+      }
+
+      const spendMap = {};
+      await Promise.all(Object.values(byRange).map(async ({ since, until }) => {
+        const r = await fetch(`${BASE}/api/facebook/campaign-spend?since=${since}&until=${until}`);
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.error || 'Fetch failed');
+        for (const c of data) {
+          const st = extractState(c.campaign_name);
+          if (!st) continue;
+          spendMap[st] = (spendMap[st] || 0) + c.spend;
+        }
+      }));
+      setPacingSpend(spendMap);
+    } catch (e) {
+      setPacingError(e.message);
+    } finally {
+      setPacingLoading(false);
+    }
+  }
+
+  // ── Live daily budget ───────────────────────────────────────────────────────
   const budgetByState = useMemo(() => {
     const map = {};
     for (const a of adsets) {
@@ -86,6 +149,29 @@ export default function SpendSheet() {
   const budgetStates     = useMemo(() => Object.keys(budgetByState).sort(), [budgetByState]);
   const totalDailyBudget = useMemo(() => Object.values(budgetByState).reduce((s, v) => s + v, 0), [budgetByState]);
 
+  // ── Pacing table rows ───────────────────────────────────────────────────────
+  const pacingStates = useMemo(() => {
+    const all = new Set([...budgetStates, ...Object.keys(pacing)]);
+    return [...all].sort();
+  }, [budgetStates, pacing]);
+
+  const pacingRows = useMemo(() => {
+    return pacingStates.map(st => {
+      const cfg          = pacing[st] || {};
+      const totalBudget  = parseFloat(cfg.totalBudget) || null;
+      const startDate    = cfg.startDate || '';
+      const endDate      = cfg.endDate   || '';
+      const dl           = endDate ? daysLeft(endDate) : null;
+      const spentToDate  = pacingSpend[st] ?? null;
+      const remaining    = (totalBudget != null && spentToDate != null) ? Math.max(0, totalBudget - spentToDate) : null;
+      const dailyNeeded  = (remaining != null && dl != null && dl > 0) ? remaining / dl : (dl === 0 && remaining != null ? remaining : null);
+      const liveBudget   = budgetByState[st] || null;
+      const shortfall    = (dailyNeeded != null && liveBudget != null) ? dailyNeeded - liveBudget : null;
+      return { st, totalBudget, startDate, endDate, daysLeft: dl, spentToDate, remaining, dailyNeeded, liveBudget, shortfall };
+    });
+  }, [pacingStates, pacing, pacingSpend, budgetByState]);
+
+  // ── Monthly grid ────────────────────────────────────────────────────────────
   async function syncMonth() {
     setSyncing(true);
     setSyncError('');
@@ -110,7 +196,6 @@ export default function SpendSheet() {
     }
   }
 
-  // Build grid from insights
   const { dataStates, days, grid, rowTotals, colTotals, grandTotal } = useMemo(() => {
     const monthStr    = `${viewYear}-${String(viewMonth + 1).padStart(2, '0')}`;
     const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate();
@@ -144,7 +229,6 @@ export default function SpendSheet() {
     return { dataStates, days, grid, rowTotals, colTotals, grandTotal };
   }, [insights, viewYear, viewMonth]);
 
-  // Apply saved order; new states append at end
   const states = useMemo(() => {
     if (!colOrder) return dataStates;
     const ordered = colOrder.filter(s => dataStates.includes(s));
@@ -152,7 +236,6 @@ export default function SpendSheet() {
     return [...ordered, ...added];
   }, [dataStates, colOrder]);
 
-  // Drag handlers for column reorder
   function onDragStart(st) { dragSrc.current = st; }
   function onDragOver(e) { e.preventDefault(); }
   function onDrop(targetSt) {
@@ -166,12 +249,10 @@ export default function SpendSheet() {
     localStorage.setItem('spendSheetColOrder', JSON.stringify(next));
     dragSrc.current = null;
   }
-
   function resetOrder() {
     setColOrder(null);
     localStorage.removeItem('spendSheetColOrder');
   }
-
   function prevMonth() {
     if (viewMonth === 0) { setViewMonth(11); setViewYear(y => y - 1); }
     else setViewMonth(m => m - 1);
@@ -181,7 +262,7 @@ export default function SpendSheet() {
     else setViewMonth(m => m + 1);
   }
 
-  // Styles
+  // ── Styles ──────────────────────────────────────────────────────────────────
   const thBase = {
     position: 'sticky', top: 0, zIndex: 2,
     background: 'var(--surface)', borderBottom: '2px solid var(--border)',
@@ -195,6 +276,21 @@ export default function SpendSheet() {
   const dayTd  = { ...td, textAlign: 'left', position: 'sticky', left: 0, zIndex: 1, background: 'var(--surface)', fontWeight: 600, color: 'var(--text-muted)' };
   const totTd  = { ...td, fontWeight: 700, background: 'var(--bg)', borderTop: '2px solid var(--border)' };
   const totDay = { ...dayTd, fontWeight: 700, background: 'var(--bg)', borderTop: '2px solid var(--border)' };
+
+  const pacingInput = {
+    background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 4,
+    color: 'var(--text)', padding: '4px 7px', fontSize: 12, outline: 'none',
+    width: '100%', boxSizing: 'border-box',
+  };
+  const pTh = {
+    padding: '8px 12px', fontSize: 11, fontWeight: 700, textTransform: 'uppercase',
+    letterSpacing: '0.05em', color: 'var(--text-muted)', textAlign: 'right',
+    whiteSpace: 'nowrap', background: 'var(--surface)', borderBottom: '2px solid var(--border)',
+  };
+  const pThL = { ...pTh, textAlign: 'left', position: 'sticky', left: 0, zIndex: 3, minWidth: 60 };
+  const pTd = { padding: '8px 12px', fontSize: 12, textAlign: 'right', borderBottom: '1px solid var(--border)', whiteSpace: 'nowrap' };
+  const pTdL = { ...pTd, textAlign: 'left', position: 'sticky', left: 0, background: 'var(--surface)', fontWeight: 700, zIndex: 1 };
+  const pTdEdit = { ...pTd, padding: '4px 8px', minWidth: 110 };
 
   return (
     <div style={{ padding: '24px 28px' }}>
@@ -225,7 +321,7 @@ export default function SpendSheet() {
         </div>
       </div>
 
-      {/* Live Daily Budget section */}
+      {/* ── Live Daily Budget ─────────────────────────────────────────────── */}
       {loadingBudget && (
         <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 16 }}>Loading live budgets…</div>
       )}
@@ -239,24 +335,12 @@ export default function SpendSheet() {
           </div>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'flex-end' }}>
             {budgetStates.map(st => (
-              <div key={st} style={{
-                background: 'var(--surface)',
-                border: '1px solid var(--border)',
-                borderRadius: 8,
-                padding: '10px 16px',
-                minWidth: 90,
-              }}>
+              <div key={st} style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 8, padding: '10px 16px', minWidth: 90 }}>
                 <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>{st}</div>
                 <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text)' }}>{fmt(budgetByState[st])}</div>
               </div>
             ))}
-            <div style={{
-              background: 'var(--green-light)',
-              border: '1px solid var(--green)',
-              borderRadius: 8,
-              padding: '10px 16px',
-              minWidth: 90,
-            }}>
+            <div style={{ background: 'var(--green-light)', border: '1px solid var(--green)', borderRadius: 8, padding: '10px 16px', minWidth: 90 }}>
               <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--green-dark)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>Total / day</div>
               <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--green-dark)' }}>{fmt(totalDailyBudget)}</div>
             </div>
@@ -264,6 +348,117 @@ export default function SpendSheet() {
         </div>
       )}
 
+      {/* ── Budget Pacing ─────────────────────────────────────────────────── */}
+      {pacingStates.length > 0 && (
+        <div style={{ marginBottom: 32 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12, flexWrap: 'wrap' }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>
+              Budget Pacing
+              <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 400, color: 'var(--text-muted)' }}>
+                daily spend needed to hit budget within timeframe
+              </span>
+            </div>
+            <button className="btn btn--sm" onClick={fetchPacingSpend} disabled={pacingLoading} style={{ marginLeft: 'auto' }}>
+              {pacingLoading ? 'Fetching…' : 'Fetch Spend'}
+            </button>
+          </div>
+          {pacingError && <div style={{ fontSize: 12, color: '#dc2626', marginBottom: 8 }}>{pacingError}</div>}
+
+          <div style={{ overflowX: 'auto', border: '1px solid var(--border)', borderRadius: 10 }}>
+            <table style={{ borderCollapse: 'collapse', width: '100%' }}>
+              <thead>
+                <tr>
+                  <th style={pThL}>State</th>
+                  <th style={{ ...pTh, textAlign: 'left', minWidth: 120 }}>Total Budget</th>
+                  <th style={{ ...pTh, textAlign: 'left', minWidth: 120 }}>Start Date</th>
+                  <th style={{ ...pTh, textAlign: 'left', minWidth: 120 }}>End Date</th>
+                  <th style={pTh}>Days Left</th>
+                  <th style={pTh}>Spent to Date</th>
+                  <th style={pTh}>Remaining</th>
+                  <th style={pTh}>Daily Needed</th>
+                  <th style={pTh}>Live Daily Budget</th>
+                  <th style={{ ...pTh, borderLeft: '2px solid var(--border)' }}>Shortfall</th>
+                </tr>
+              </thead>
+              <tbody>
+                {pacingRows.map(r => {
+                  const shortfallColor = r.shortfall == null ? 'var(--text-muted)'
+                    : r.shortfall > 0 ? '#dc2626' : '#16a34a';
+                  return (
+                    <tr key={r.st}>
+                      <td style={pTdL}>{r.st}</td>
+
+                      {/* Total Budget — editable */}
+                      <td style={pTdEdit}>
+                        <input
+                          style={pacingInput}
+                          type="number"
+                          min="0"
+                          placeholder="e.g. 50000"
+                          value={pacing[r.st]?.totalBudget || ''}
+                          onChange={e => updatePacing(r.st, 'totalBudget', e.target.value)}
+                        />
+                      </td>
+
+                      {/* Start Date — editable */}
+                      <td style={pTdEdit}>
+                        <input
+                          style={pacingInput}
+                          type="date"
+                          value={pacing[r.st]?.startDate || ''}
+                          onChange={e => updatePacing(r.st, 'startDate', e.target.value)}
+                        />
+                      </td>
+
+                      {/* End Date — editable */}
+                      <td style={pTdEdit}>
+                        <input
+                          style={pacingInput}
+                          type="date"
+                          value={pacing[r.st]?.endDate || ''}
+                          onChange={e => updatePacing(r.st, 'endDate', e.target.value)}
+                        />
+                      </td>
+
+                      {/* Days Left */}
+                      <td style={pTd}>
+                        {r.daysLeft == null ? '—' : r.daysLeft === 0
+                          ? <span style={{ color: '#dc2626', fontWeight: 700 }}>0</span>
+                          : r.daysLeft}
+                      </td>
+
+                      {/* Spent to Date */}
+                      <td style={pTd}>
+                        {pacingLoading ? <span style={{ color: 'var(--text-muted)' }}>…</span> : fmtOrDash(r.spentToDate)}
+                      </td>
+
+                      {/* Remaining = Total Budget − Spent */}
+                      <td style={pTd}>{fmtOrDash(r.remaining)}</td>
+
+                      {/* Daily Needed = Remaining ÷ Days Left */}
+                      <td style={{ ...pTd, fontWeight: 600 }}>{fmtOrDash(r.dailyNeeded)}</td>
+
+                      {/* Live Daily Budget */}
+                      <td style={pTd}>{fmtOrDash(r.liveBudget)}</td>
+
+                      {/* Shortfall = Daily Needed − Live Daily Budget */}
+                      <td style={{ ...pTd, fontWeight: 700, color: shortfallColor, borderLeft: '2px solid var(--border)' }}>
+                        {r.shortfall == null ? '—' : `${r.shortfall >= 0 ? '+' : ''}${fmt(r.shortfall)}`}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          <div style={{ marginTop: 8, fontSize: 11, color: 'var(--text-muted)' }}>
+            Shortfall = Daily Needed − Live Daily Budget · Red = underpacing · Green = on track or ahead · Values auto-save · Click <strong>Fetch Spend</strong> to pull current totals from Facebook
+          </div>
+        </div>
+      )}
+
+      {/* ── Daily spend grid ─────────────────────────────────────────────── */}
       {loading ? (
         <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>Loading…</div>
       ) : states.length === 0 ? (
