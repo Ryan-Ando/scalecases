@@ -531,6 +531,10 @@ export default function AdsLauncher() {
       const idx = m.idx;
       const cfg = buildLaunchConfig(m.campaign.id);
       try {
+        // Pre-flight validation
+        if (!cfg.pageId?.trim())        throw new Error('Missing Facebook Page ID — open campaign config to set it');
+        if (!cfg.destinationUrl?.trim()) throw new Error('Missing Destination URL — open campaign config to set it');
+        if (!cfg.budgetAmount || parseFloat(cfg.budgetAmount) <= 0) throw new Error('Budget amount must be greater than 0 — open campaign config to set it');
         let adsetId;
         if (createNewAdset) {
           setRowStatuses(p => ({ ...p, [idx]: { phase: 'adset' } }));

@@ -200,7 +200,7 @@ router.post('/adset', async (req, res) => {
       body: JSON.stringify(body),
     });
     const json = await r.json();
-    if (json.error) throw new Error(`${json.error.message} (code: ${json.error.code})`);
+    if (json.error) throw new Error(`${json.error.error_user_msg || json.error.message} (code: ${json.error.code})`);
     res.json({ adset_id: json.id });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
