@@ -26,17 +26,22 @@ export function extractStateFromFilename(filename) {
 
 // Extract state code from a campaign name (handles full names and codes)
 export function extractStateFromCampaign(name) {
-  // Check each word/segment for state codes first
   const segments = name.split(/[\s_\-\/]+/);
+
+  // Pass 1: 2-letter segments that have at least one uppercase letter
+  // (rules out common lowercase words like "in", "or", "me", "hi", "ok")
   for (const seg of segments) {
-    const upper = seg.toUpperCase();
-    if (STATE_NAMES[upper]) return upper;
+    if (seg.length === 2 && seg !== seg.toLowerCase() && STATE_NAMES[seg.toUpperCase()]) {
+      return seg.toUpperCase();
+    }
   }
-  // Then check for full state names (case insensitive, ignoring spaces/underscores)
+
+  // Pass 2: full state names (case-insensitive)
   const normalized = name.toLowerCase().replace(/[\s_\-]+/g, '');
   for (const [code, fullName] of Object.entries(STATE_NAMES)) {
     const normalizedName = fullName.toLowerCase().replace(/\s+/g, '');
     if (normalized.includes(normalizedName)) return code;
   }
+
   return null;
 }
