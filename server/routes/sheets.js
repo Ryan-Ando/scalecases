@@ -89,12 +89,13 @@ router.post('/enrich-utm', async (req, res) => {
     const auth   = await getAuthClient(true);
     const sheets = google.sheets({ version: 'v4', auth });
 
-    const data = rows.flatMap(({ rowIndex, utmCampaign, utmAdset, utmContent, utmTerm, date }) => {
+    const data = rows.flatMap(({ rowIndex, utmCampaign, utmAdset, utmContent, utmTerm, date, status }) => {
       const entries = [{
         range: `${tabName}!G${rowIndex}:J${rowIndex}`,
         values: [[utmCampaign || '', utmAdset || '', utmContent || '', utmTerm || '']],
       }];
-      if (date) entries.push({ range: `${tabName}!F${rowIndex}`, values: [[date]] });
+      if (date)   entries.push({ range: `${tabName}!F${rowIndex}`, values: [[date]] });
+      if (status) entries.push({ range: `${tabName}!E${rowIndex}`, values: [[status]] });
       return entries;
     });
 
@@ -106,6 +107,32 @@ router.post('/enrich-utm', async (req, res) => {
     res.json({ updated: rows.length });
   } catch (err) {
     console.error('Sheets enrich-utm error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/sheets/mark-status
+// Body: [{ rowIndex, status }] — writes status string to col E
+router.post('/mark-status', async (req, res) => {
+  try {
+    const rows = req.body;
+    if (!Array.isArray(rows) || rows.length === 0) return res.json({ updated: 0 });
+    const sheetId = process.env.SHEETS_ID;
+    const tabName = process.env.SHEETS_TAB_NAME || 'Sheet1';
+    if (!sheetId) return res.status(503).json({ error: 'SHEETS_ID not set' });
+    const auth   = await getAuthClient(true);
+    const sheets = google.sheets({ version: 'v4', auth });
+    const data = rows.map(({ rowIndex, status }) => ({
+      range: `${tabName}!E${rowIndex}`,
+      values: [[status || '']],
+    }));
+    await sheets.spreadsheets.values.batchUpdate({
+      spreadsheetId: sheetId,
+      requestBody: { valueInputOption: 'USER_ENTERED', data },
+    });
+    res.json({ updated: rows.length });
+  } catch (err) {
+    console.error('Sheets mark-status error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
@@ -219,24 +246,45 @@ router.post('/import-month', async (req, res) => {
       masterRows.map(r => normalizePhone(r[1])).filter(Boolean)
     );
 
-    // Read monthly A–J (captures attribution columns G–J as well as A–F)
+    // Read monthly including row 1 header to detect column layout
     const monthRes = await sheets.spreadsheets.values.get({
       spreadsheetId: monthlySheetId,
-      range: `${monthlyTab}!A2:J`,
+      range: `${monthlyTab}!A1:Z`,
     });
-    const monthRows = monthRes.data.values || [];
+    const allMonthRows = monthRes.data.values || [];
+    if (allMonthRows.length < 2) return res.json({ added: 0, skipped: 0 });
+
+    // Detect columns by header name (case-insensitive)
+    const headerRow = allMonthRows[0].map(h => (h || '').toLowerCase().trim());
+    const monthRows = allMonthRows.slice(1);
+
+    function colIdx(...names) {
+      for (const name of names) {
+        const i = headerRow.findIndex(h => h.includes(name));
+        if (i >= 0) return i;
+      }
+      return -1;
+    }
+
+    // Env var overrides (0-based) take priority over header detection
+    const iName  = parseInt(process.env.MONTHLY_COL_NAME  ?? colIdx('name', 'first', 'client', 'contact'));
+    const iPhone = parseInt(process.env.MONTHLY_COL_PHONE ?? colIdx('phone', 'mobile', 'cell', 'number'));
+    const iState = parseInt(process.env.MONTHLY_COL_STATE ?? colIdx('state', 'st'));
+    const iDate  = parseInt(process.env.MONTHLY_COL_DATE  ?? colIdx('date', 'created', 'signed', 'intake'));
 
     // Keep only rows whose phone doesn't already exist in master
     const toAppend = monthRows
       .filter(r => {
-        const phone = normalizePhone(r[1]);
+        const phone = normalizePhone(iPhone >= 0 ? r[iPhone] : r[1]);
         return phone && !existingPhones.has(phone);
       })
       .map(r => {
-        // Pad to exactly 10 columns so every value lands in the correct master column
-        const row = [...r];
-        while (row.length < 10) row.push('');
-        return row.slice(0, 10);
+        const name  = (iName  >= 0 ? r[iName]  : r[0] || '').trim();
+        const phone = (iPhone >= 0 ? r[iPhone] : r[1] || '').trim();
+        const state = (iState >= 0 ? r[iState] : r[3] || '').trim().toUpperCase();
+        const date  = (iDate  >= 0 ? r[iDate]  : r[5] || '').trim();
+        // Master layout: A=name B=phone C=campaign D=state E=status F=date G-J=utm
+        return [name, phone, '', state, '', date, '', '', '', ''];
       });
 
     if (toAppend.length > 0) {

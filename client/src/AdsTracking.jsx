@@ -1280,31 +1280,59 @@ export default function AdsTracking() {
     return map;
   }, [ghlContacts]);
 
-  // Write GHL UTM data to sheet for rows that don't have column I populated yet
+  // Write GHL UTM data + col E status for all sheet rows once GHL contacts are loaded
   useEffect(() => {
     if (!ghlContacts.length || !sheetCases.length) return;
-    const toEnrich = sheetCases
-      .map(sc => {
-        const key = (sc.phone || '').replace(/\D/g, '').slice(-10);
-        const contact = ghlByPhone[key];
-        if (!contact) return null;
+
+    // Name-based fallback lookup: normalized "firstname lastname"
+    const ghlByName = {};
+    for (const c of ghlContacts) {
+      const key = (c.name || '').toLowerCase().replace(/\s+/g, '');
+      if (key) ghlByName[key] = c;
+    }
+
+    const toEnrich  = [];
+    const noMatch   = [];
+
+    for (const sc of sheetCases) {
+      // Skip if already has UTM content written (col I already populated in sheet)
+      if (sc.utmContent) continue;
+
+      // Phone match first, then name fallback
+      const phoneKey = (sc.phone || '').replace(/\D/g, '').slice(-10);
+      const nameKey  = (sc.name  || '').toLowerCase().replace(/\s+/g, '');
+      const contact  = (phoneKey && ghlByPhone[phoneKey]) || (nameKey && ghlByName[nameKey]) || null;
+
+      if (contact) {
         const missingDate = !sc.date && contact.dateAdded;
-        return {
+        toEnrich.push({
           rowIndex:    sc.rowIndex,
           utmCampaign: contact.utmCampaign,
           utmAdset:    contact.utmAdset,
           utmContent:  contact.utmContent,
           utmTerm:     contact.utmTerm,
+          status:      'Matched',
           date:        missingDate ? new Date(contact.dateAdded).toLocaleDateString('en-US') : undefined,
-        };
-      })
-      .filter(Boolean);
-    if (!toEnrich.length) return;
-    fetch(`${BASE}/api/sheets/enrich-utm`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(toEnrich),
-    }).catch(err => console.warn('UTM enrich error:', err.message));
+        });
+      } else {
+        noMatch.push({ rowIndex: sc.rowIndex, status: 'No match' });
+      }
+    }
+
+    if (toEnrich.length) {
+      fetch(`${BASE}/api/sheets/enrich-utm`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(toEnrich),
+      }).catch(err => console.warn('UTM enrich error:', err.message));
+    }
+    if (noMatch.length) {
+      fetch(`${BASE}/api/sheets/mark-status`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(noMatch),
+      }).catch(err => console.warn('Mark no-match error:', err.message));
+    }
   }, [ghlContacts, sheetCases]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Match cases from column I (ad name) — populated by sheet or just-enriched GHL data
