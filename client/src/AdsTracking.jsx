@@ -1335,13 +1335,17 @@ export default function AdsTracking() {
       }
 
       if (contact?.utmContent) {
-        // Direct match with attribution data
-        toEnrich.push(buildRow(contact, 'Matched'));
+        // Determine if this is the same person or a referral by comparing names
+        const scName  = (sc.name       || '').toLowerCase().replace(/\s+/g, '');
+        const cName   = (contact.name  || '').toLowerCase().replace(/\s+/g, '');
+        const samePersone = scName && cName && (scName === cName || scName.includes(cName) || cName.includes(scName));
+        toEnrich.push(buildRow(contact, samePersone ? 'Matched' : 'Referral'));
       } else if (phoneKey && phoneToUTM[phoneKey]?.utmContent) {
-        // Same phone as another lead that HAS attribution → Referral
+        // Phone found in GHL but that contact has no UTM; however another lead/case
+        // with the same phone number does have attribution — inherit it as a Referral
         toEnrich.push(buildRow(phoneToUTM[phoneKey], 'Referral'));
       } else if (contact) {
-        // Found in GHL but zero attribution anywhere for this phone
+        // Found in GHL but no UTM attribution anywhere for this phone
         statusOnly.push({ rowIndex: sc.rowIndex, status: 'No attribution' });
       } else {
         statusOnly.push({ rowIndex: sc.rowIndex, status: 'No match' });
