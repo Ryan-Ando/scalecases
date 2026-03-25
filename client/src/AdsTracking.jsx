@@ -1275,7 +1275,9 @@ export default function AdsTracking() {
     const map = {};
     for (const c of ghlContacts) {
       const key = (c.phone || '').replace(/\D/g, '').slice(-10);
-      if (key) map[key] = c;
+      if (!key) continue;
+      // Prefer contacts that have UTM attribution data
+      if (!map[key] || (!map[key].utmContent && c.utmContent)) map[key] = c;
     }
     return map;
   }, [ghlContacts]);
@@ -1284,38 +1286,65 @@ export default function AdsTracking() {
   useEffect(() => {
     if (!ghlContacts.length || !sheetCases.length) return;
 
-    // Name-based fallback lookup: normalized "firstname lastname"
+    // Name-based fallback: normalized full name
     const ghlByName = {};
     for (const c of ghlContacts) {
       const key = (c.name || '').toLowerCase().replace(/\s+/g, '');
-      if (key) ghlByName[key] = c;
+      if (key && (!ghlByName[key] || (!ghlByName[key].utmContent && c.utmContent))) ghlByName[key] = c;
+    }
+
+    // Pass 1 — build best UTM per phone across all GHL contacts AND already-enriched sheet cases
+    // This powers the "Referral" detection: if a case has no GHL UTM but shares a phone
+    // with a case that does, it inherits that attribution.
+    const phoneToUTM = {};
+    for (const c of ghlContacts) {
+      const phone = (c.phone || '').replace(/\D/g, '').slice(-10);
+      if (!phone) continue;
+      if (!phoneToUTM[phone] || (!phoneToUTM[phone].utmContent && c.utmContent)) phoneToUTM[phone] = c;
+    }
+    for (const sc of sheetCases) {
+      if (!sc.utmContent) continue;
+      const phone = (sc.phone || '').replace(/\D/g, '').slice(-10);
+      if (phone && !phoneToUTM[phone]?.utmContent) {
+        phoneToUTM[phone] = { utmContent: sc.utmContent, utmCampaign: sc.utmCampaign, utmAdset: sc.utmAdset, utmTerm: sc.utmTerm, dateAdded: sc.date };
+      }
     }
 
     const toEnrich  = [];
-    const noMatch   = [];
+    const statusOnly = [];
 
+    // Pass 2 — classify each unenriched case
     for (const sc of sheetCases) {
-      // Skip if already has UTM content written (col I already populated in sheet)
-      if (sc.utmContent) continue;
+      if (sc.utmContent) continue; // already has data in sheet col I
 
-      // Phone match first, then name fallback
       const phoneKey = (sc.phone || '').replace(/\D/g, '').slice(-10);
       const nameKey  = (sc.name  || '').toLowerCase().replace(/\s+/g, '');
       const contact  = (phoneKey && ghlByPhone[phoneKey]) || (nameKey && ghlByName[nameKey]) || null;
 
-      if (contact) {
-        const missingDate = !sc.date && contact.dateAdded;
-        toEnrich.push({
+      function buildRow(src, status) {
+        const missingDate = !sc.date && src.dateAdded;
+        return {
           rowIndex:    sc.rowIndex,
-          utmCampaign: contact.utmCampaign,
-          utmAdset:    contact.utmAdset,
-          utmContent:  contact.utmContent,
-          utmTerm:     contact.utmTerm,
-          status:      'Matched',
-          date:        missingDate ? new Date(contact.dateAdded).toLocaleDateString('en-US') : undefined,
-        });
+          utmCampaign: src.utmCampaign || '',
+          utmAdset:    src.utmAdset    || '',
+          utmContent:  src.utmContent  || '',
+          utmTerm:     src.utmTerm     || '',
+          status,
+          date: missingDate ? new Date(src.dateAdded).toLocaleDateString('en-US') : undefined,
+        };
+      }
+
+      if (contact?.utmContent) {
+        // Direct match with attribution data
+        toEnrich.push(buildRow(contact, 'Matched'));
+      } else if (phoneKey && phoneToUTM[phoneKey]?.utmContent) {
+        // Same phone as another lead that HAS attribution → Referral
+        toEnrich.push(buildRow(phoneToUTM[phoneKey], 'Referral'));
+      } else if (contact) {
+        // Found in GHL but zero attribution anywhere for this phone
+        statusOnly.push({ rowIndex: sc.rowIndex, status: 'No attribution' });
       } else {
-        noMatch.push({ rowIndex: sc.rowIndex, status: 'No match' });
+        statusOnly.push({ rowIndex: sc.rowIndex, status: 'No match' });
       }
     }
 
@@ -1326,12 +1355,12 @@ export default function AdsTracking() {
         body: JSON.stringify(toEnrich),
       }).catch(err => console.warn('UTM enrich error:', err.message));
     }
-    if (noMatch.length) {
+    if (statusOnly.length) {
       fetch(`${BASE}/api/sheets/mark-status`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(noMatch),
-      }).catch(err => console.warn('Mark no-match error:', err.message));
+        body: JSON.stringify(statusOnly),
+      }).catch(err => console.warn('Mark status error:', err.message));
     }
   }, [ghlContacts, sheetCases]); // eslint-disable-line react-hooks/exhaustive-deps
 
