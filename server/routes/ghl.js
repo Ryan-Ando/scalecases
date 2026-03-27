@@ -130,4 +130,36 @@ router.get('/contacts', async (req, res) => {
 });
 
 
+// POST /api/ghl/tag-contacts
+// Body: { contactIds: string[], tags: string[] }
+// Adds the given tags to each contact (non-destructive — existing tags are preserved)
+router.post('/tag-contacts', async (req, res) => {
+  try {
+    if (!token() || !locationId()) return res.status(503).json({ error: 'GHL not configured' });
+    const { contactIds = [], tags = [] } = req.body;
+    if (!contactIds.length || !tags.length) return res.json({ updated: 0 });
+
+    const results = await Promise.allSettled(contactIds.map(async id => {
+      const r = await fetch(`${GHL_API}/contacts/${id}/tags`, {
+        method: 'POST',
+        headers: GHL_HEADERS(),
+        body: JSON.stringify({ tags }),
+      });
+      if (!r.ok) {
+        const txt = await r.text();
+        throw new Error(`contact ${id}: ${r.status} ${txt.slice(0, 120)}`);
+      }
+      return id;
+    }));
+
+    const failed = results.filter(r => r.status === 'rejected').map(r => r.reason?.message);
+    if (failed.length) console.warn('[GHL] tag-contacts failures:', failed);
+
+    res.json({ updated: results.filter(r => r.status === 'fulfilled').length, failed });
+  } catch (err) {
+    console.error('GHL tag-contacts error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 export default router;

@@ -1324,11 +1324,12 @@ export default function AdsTracking() {
       function buildRow(src, status) {
         const missingDate = !sc.date && src.dateAdded;
         return {
-          rowIndex:    sc.rowIndex,
-          utmCampaign: src.utmCampaign || '',
-          utmAdset:    src.utmAdset    || '',
-          utmContent:  src.utmContent  || '',
-          utmTerm:     src.utmTerm     || '',
+          rowIndex:     sc.rowIndex,
+          ghlContactId: src.id || null,
+          utmCampaign:  src.utmCampaign || '',
+          utmAdset:     src.utmAdset    || '',
+          utmContent:   src.utmContent  || '',
+          utmTerm:      src.utmTerm     || '',
           status,
           date: missingDate ? new Date(src.dateAdded).toLocaleDateString('en-US') : undefined,
         };
@@ -1336,16 +1337,13 @@ export default function AdsTracking() {
 
       if (contact?.utmContent) {
         // Determine if this is the same person or a referral by comparing names
-        const scName  = (sc.name       || '').toLowerCase().replace(/\s+/g, '');
-        const cName   = (contact.name  || '').toLowerCase().replace(/\s+/g, '');
-        const samePersone = scName && cName && (scName === cName || scName.includes(cName) || cName.includes(scName));
-        toEnrich.push(buildRow(contact, samePersone ? 'Matched' : 'Referral'));
+        const scName   = (sc.name      || '').toLowerCase().replace(/\s+/g, '');
+        const cName    = (contact.name || '').toLowerCase().replace(/\s+/g, '');
+        const samePerson = scName && cName && (scName === cName || scName.includes(cName) || cName.includes(scName));
+        toEnrich.push(buildRow(contact, samePerson ? 'Matched' : 'Referral'));
       } else if (phoneKey && phoneToUTM[phoneKey]?.utmContent) {
-        // Phone found in GHL but that contact has no UTM; however another lead/case
-        // with the same phone number does have attribution — inherit it as a Referral
         toEnrich.push(buildRow(phoneToUTM[phoneKey], 'Referral'));
       } else if (contact) {
-        // Found in GHL but no UTM attribution anywhere for this phone
         statusOnly.push({ rowIndex: sc.rowIndex, status: 'No attribution' });
       } else {
         statusOnly.push({ rowIndex: sc.rowIndex, status: 'No match' });
@@ -1358,6 +1356,16 @@ export default function AdsTracking() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(toEnrich),
       }).catch(err => console.warn('UTM enrich error:', err.message));
+
+      // Tag all matched/referral GHL contacts as "signed"
+      const contactIds = [...new Set(toEnrich.map(r => r.ghlContactId).filter(Boolean))];
+      if (contactIds.length) {
+        fetch(`${BASE}/api/ghl/tag-contacts`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ contactIds, tags: ['signed'] }),
+        }).catch(err => console.warn('GHL tag error:', err.message));
+      }
     }
     if (statusOnly.length) {
       fetch(`${BASE}/api/sheets/mark-status`, {
