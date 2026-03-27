@@ -253,6 +253,9 @@ export default function StateVariations() {
   const [prompt, setPrompt]         = useState(DEFAULT_PROMPT);
   const [settings, setSettings]     = useState(DEFAULT_SETTINGS);
 
+  const [stateMode, setStateMode]           = useState(true);   // include state substitution
+  const [customEdit, setCustomEdit]         = useState('');     // additional / alternative instructions
+
   const [campaigns, setCampaigns]           = useState([]);
   const [campaignsLoading, setCampaignsLoading] = useState(false);
   const [selectedStates, setSelectedStates] = useState(new Set());
@@ -395,17 +398,29 @@ export default function StateVariations() {
   }
 
   function startGeneration() {
-    if (!baseImage || selectedStates.size === 0 || running) return;
-    const newItems = [...selectedStates].map((sk, i) => ({
-      id: `${sk}-${Date.now()}-${i}`,
-      stateKey: sk, stateDisplay: getStateDisplay(sk),
-      status: 'pending', image: null, mimeType: null, text: null, error: null, regenNotes: '',
-    }));
+    if (!baseImage || running) return;
+    if (stateMode && selectedStates.size === 0 && !customEdit.trim()) return;
+
+    let newItems;
+    if (stateMode && selectedStates.size > 0) {
+      newItems = [...selectedStates].map((sk, i) => ({
+        id: `${sk}-${Date.now()}-${i}`,
+        stateKey: sk, stateDisplay: getStateDisplay(sk),
+        status: 'pending', image: null, mimeType: null, text: null, error: null, regenNotes: '',
+      }));
+    } else {
+      // Custom-only mode: single item with no state
+      newItems = [{
+        id: `custom-${Date.now()}`,
+        stateKey: 'custom', stateDisplay: '',
+        status: 'pending', image: null, mimeType: null, text: null, error: null, regenNotes: '',
+      }];
+    }
     setItems(newItems);
-    runQueue(newItems, baseImage, prompt, settings, adName, settings.concurrency);
+    runQueue(newItems, baseImage, prompt, settings, adName, settings.concurrency, customEdit, stateMode);
   }
 
-  async function runQueue(queueItems, img, promptText, cfg, currentAdName, concurrency) {
+  async function runQueue(queueItems, img, promptText, cfg, currentAdName, concurrency, currentCustomEdit = '', currentStateMode = true) {
     setRunning(true); runningRef.current = true;
     let next = 0;
 
@@ -414,7 +429,8 @@ export default function StateVariations() {
         const i = next++;
         if (i >= queueItems.length) break;
         setItems(p => p.map((it, j) => j === i ? { ...it, status: 'generating' } : it));
-        const result = await callGemini(img, queueItems[i].stateDisplay, promptText, '', cfg);
+        const stateDisplay = currentStateMode ? queueItems[i].stateDisplay : '';
+        const result = await callGemini(img, stateDisplay, promptText, '', cfg, currentCustomEdit);
         if (!result.error) saveAd({ ...queueItems[i], image: result.image, mimeType: result.mimeType }, currentAdName);
         setItems(p => p.map((it, j) => j === i
           ? result.error
@@ -433,7 +449,7 @@ export default function StateVariations() {
     const item = items[idx];
     if (!baseImage || !item) return;
     setItems(p => p.map((it, i) => i === idx ? { ...it, status: 'generating', image: null, error: null } : it));
-    const result = await callGemini(baseImage, item.stateDisplay, prompt, item.regenNotes, settings);
+    const result = await callGemini(baseImage, stateMode ? item.stateDisplay : '', prompt, item.regenNotes, settings, customEdit);
     if (!result.error) {
       saveAd({ ...item, image: result.image, mimeType: result.mimeType }, adName);
     }
@@ -445,14 +461,15 @@ export default function StateVariations() {
     ));
   }
 
-  async function callGemini(img, stateDisplay, promptText, notes, cfg) {
+  async function callGemini(img, stateDisplay, promptText, notes, cfg, extraEdit = '') {
     try {
       const r = await fetch(`${BASE}/api/variations/generate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           imageBase64: img.base64, mimeType: img.mimeType,
-          state: stateDisplay, prompt: promptText, notes: notes || '',
+          state: stateDisplay || '', customEdit: extraEdit || '',
+          prompt: promptText, notes: notes || '',
           ...cfg,
         }),
       });
@@ -518,6 +535,31 @@ export default function StateVariations() {
             <input ref={fileInputRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={e => { loadImage(e.target.files[0]); e.target.value = ''; }} />
           </div>
 
+          {/* Custom edit instructions */}
+          <div style={cardStyle}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+              <div style={{ fontWeight: 700, fontSize: 12, color: S.muted, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Custom Instructions</div>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', fontSize: 12, color: stateMode ? S.blue : S.muted, fontWeight: 600, userSelect: 'none' }}>
+                <input
+                  type="checkbox"
+                  checked={stateMode}
+                  onChange={e => setStateMode(e.target.checked)}
+                  style={{ accentColor: S.blue }}
+                />
+                State substitution
+              </label>
+            </div>
+            <textarea
+              rows={3}
+              style={{ ...inputStyle, resize: 'vertical', lineHeight: 1.5 }}
+              placeholder={stateMode
+                ? 'Optional: describe additional edits alongside state substitution…'
+                : 'Describe the edit to make (state substitution disabled)…'}
+              value={customEdit}
+              onChange={e => setCustomEdit(e.target.value)}
+            />
+          </div>
+
           {/* Prompt */}
           <div style={cardStyle}>
             <div style={{ fontWeight: 700, fontSize: 12, color: S.muted, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>Prompt Template</div>
@@ -526,7 +568,7 @@ export default function StateVariations() {
           </div>
 
           {/* State selection */}
-          <div style={cardStyle}>
+          <div style={{ ...cardStyle, opacity: stateMode ? 1 : 0.4, pointerEvents: stateMode ? 'auto' : 'none' }}>
             <div style={{ fontWeight: 700, fontSize: 12, color: S.muted, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 10 }}>Select States</div>
 
             {campaignsLoading
@@ -578,13 +620,15 @@ export default function StateVariations() {
           </div>
 
           <button
-            style={{ ...btn(S.green, !baseImage || selectedStates.size === 0 || running), width: '100%', padding: '10px', fontSize: 14 }}
-            disabled={!baseImage || selectedStates.size === 0 || running}
+            style={{ ...btn(S.green, !baseImage || running || (stateMode && selectedStates.size === 0 && !customEdit.trim()) || (!stateMode && !customEdit.trim())), width: '100%', padding: '10px', fontSize: 14 }}
+            disabled={!baseImage || running || (stateMode && selectedStates.size === 0 && !customEdit.trim()) || (!stateMode && !customEdit.trim())}
             onClick={startGeneration}
           >
             {running
               ? <><Spinner />Generating… ({items.filter(i => i.status === 'done' || i.status === 'error').length}/{items.length})</>
-              : `Generate ${selectedStates.size} variation${selectedStates.size !== 1 ? 's' : ''}`
+              : stateMode && selectedStates.size > 0
+                ? `Generate ${selectedStates.size} variation${selectedStates.size !== 1 ? 's' : ''}`
+                : 'Generate'
             }
           </button>
 

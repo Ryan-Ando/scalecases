@@ -16,17 +16,17 @@ function apiKey() {
 router.post('/generate', async (req, res) => {
   try {
     const {
-      imageBase64, mimeType, state, prompt, notes,
+      imageBase64, mimeType, state, customEdit, prompt, notes,
       temperature, topP, topK, seed,
     } = req.body;
 
     if (!imageBase64) throw new Error('No image provided');
-    if (!state)       throw new Error('No state provided');
     if (!prompt)      throw new Error('No prompt provided');
 
-    const fullPrompt = notes?.trim()
-      ? `${prompt}\n\n${state}\n\nAdditional notes from user: ${notes.trim()}`
-      : `${prompt}\n\n${state}`;
+    let fullPrompt = prompt;
+    if (state?.trim())      fullPrompt += `\n\n${state.trim()}`;
+    if (customEdit?.trim()) fullPrompt += `\n\nAdditional instructions: ${customEdit.trim()}`;
+    if (notes?.trim())      fullPrompt += `\n\nAdditional notes from user: ${notes.trim()}`;
 
     // Build generation config — only fields this model accepts
     const generationConfig = {
