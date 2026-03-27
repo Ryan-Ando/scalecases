@@ -48,14 +48,24 @@ router.post('/generate', async (req, res) => {
       generation_config: generationConfig,
     };
 
-    const r = await fetch(`${GEMINI_URL}?key=${apiKey()}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-
-    const json = await r.json();
-    if (json.error) throw new Error(`Gemini error: ${json.error.message}`);
+    // Retry up to 3 times on transient internal errors
+    let json;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      const r = await fetch(`${GEMINI_URL}?key=${apiKey()}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      json = await r.json();
+      if (!json.error) break;
+      const code = json.error.code;
+      const isRetryable = code === 500 || code === 503 || (json.error.message || '').toLowerCase().includes('internal');
+      if (!isRetryable || attempt === 3) {
+        throw new Error(`Gemini error (attempt ${attempt}): ${json.error.message} [code ${code}]`);
+      }
+      console.warn(`[Gemini] attempt ${attempt} failed (${code}), retrying in ${attempt * 2}s…`);
+      await new Promise(r => setTimeout(r, attempt * 2000));
+    }
 
     const parts = json.candidates?.[0]?.content?.parts || [];
     const imgPart  = parts.find(p => p.inlineData || p.inline_data);
