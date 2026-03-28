@@ -24,6 +24,10 @@ const US_STATES = new Set([
   'VA','WA','WV','WI','WY','DC',
 ]);
 
+// Dates permanently blacklisted from lead counting (e.g., CAPI mis-config periods)
+const LEAD_BLACKLIST_DATES = new Set(['2026-03-28']);
+const LEAD_OVERRIDES_LSKEY = 'lead_manual_overrides';
+
 // 'lead' excluded — it aggregates CAPI + pixel and inflates when CAPI has duplicates
 const LEAD_ACTION_TYPES = [
   'offsite_conversion.fb_pixel_lead',
@@ -286,7 +290,7 @@ function fmtPhone(p) {
   return p;
 }
 
-function AdDetailModal({ adName, state, allAds, sheetByName, accountLabel, mergeGroups, allAdDailyInsights, onSyncMax, onUnmerge, onClose }) {
+function AdDetailModal({ adName, state, allAds, sheetByName, accountLabel, mergeGroups, allAdDailyInsights, onSyncMax, onUnmerge, onClose, manualOverrides = {}, onSaveOverride, onDeleteOverride }) {
   const [period, setPeriod]           = useState('90');
   const [sortKey, setSortKey]         = useState('spend');
   const [sortDir, setSortDir]         = useState('desc');
@@ -296,6 +300,8 @@ function AdDetailModal({ adName, state, allAds, sheetByName, accountLabel, merge
   const [tableStart, setTableStart]   = useState('');
   const [tableEnd, setTableEnd]       = useState('');
   const [togglingId, setTogglingId]   = useState(null);
+  const [newDate, setNewDate]         = useState('');
+  const [newCount, setNewCount]       = useState('');
 
   // GHL contacts + sheet cases — fetched on-demand when modal opens
   const [ghlContacts, setGhlContacts] = useState([]);
@@ -432,6 +438,15 @@ function AdDetailModal({ adName, state, allAds, sheetByName, accountLabel, merge
   );
 
   const hasStoredSpend = adDailyInsights.length > 0;
+
+  // Manual lead corrections for this ad+state
+  const myCorrections = useMemo(() => {
+    const prefix = `${adName}|${state}|`;
+    return Object.entries(manualOverrides)
+      .filter(([k]) => k.startsWith(prefix))
+      .map(([k, v]) => ({ date: k.slice(prefix.length), count: v }))
+      .sort((a, b) => (a.date < b.date ? 1 : -1));
+  }, [manualOverrides, adName, state]);
 
   const cutoff = useMemo(() => {
     const today = new Date().toISOString().slice(0, 10);
@@ -847,6 +862,69 @@ function AdDetailModal({ adName, state, allAds, sheetByName, accountLabel, merge
           {fbInstances.length === 0 && cases.length === 0 && (
             <div className="empty" style={{ padding: 48 }}>No data found for this ad</div>
           )}
+
+          {/* Lead Corrections — persists through full resets */}
+          <div style={{ marginTop: 28 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)', marginBottom: 10 }}>
+              Lead Corrections
+              <span style={{ fontWeight: 400, textTransform: 'none', marginLeft: 6 }}>Override FB lead count for a specific date</span>
+            </div>
+            {myCorrections.length > 0 && (
+              <table className="tracking-grid" style={{ marginBottom: 12, width: 'auto' }}>
+                <thead>
+                  <tr>
+                    <th className="tracking-th-state" style={{ textAlign: 'left', paddingLeft: 8 }}>Date</th>
+                    <th className="tracking-th-state">Corrected Leads</th>
+                    <th className="tracking-th-state" />
+                  </tr>
+                </thead>
+                <tbody>
+                  {myCorrections.map(c => (
+                    <tr key={c.date}>
+                      <td className="tracking-td-cell" style={{ paddingLeft: 8 }}>{c.date}</td>
+                      <td className="tracking-td-cell" style={{ textAlign: 'center', fontWeight: 700 }}>{c.count}</td>
+                      <td className="tracking-td-cell" style={{ textAlign: 'center' }}>
+                        <button
+                          className="ad-row-delete-btn"
+                          onClick={() => onDeleteOverride(adName, state, c.date)}
+                          title="Remove this correction"
+                        >×</button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <input
+                type="date"
+                value={newDate}
+                onChange={e => setNewDate(e.target.value)}
+                style={{ fontSize: 12, padding: '4px 8px', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--surface)', color: 'var(--text)' }}
+              />
+              <input
+                type="number"
+                min="0"
+                value={newCount}
+                onChange={e => setNewCount(e.target.value)}
+                placeholder="Lead count"
+                style={{ width: 100, fontSize: 12, padding: '4px 8px', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--surface)', color: 'var(--text)' }}
+              />
+              <button
+                className="btn btn--sm btn--primary"
+                disabled={!newDate || newCount === ''}
+                onClick={() => {
+                  const n = parseInt(newCount, 10);
+                  if (isNaN(n) || n < 0) return;
+                  onSaveOverride(adName, state, newDate, n);
+                  setNewDate('');
+                  setNewCount('');
+                }}
+              >
+                Save
+              </button>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -875,6 +953,24 @@ export default function AdsTracking() {
   const [syncNote, setSyncNote]   = useState('');
   const [syncError, setSyncError] = useState('');
   const syncingRef = useRef(false);
+
+  // Manual lead overrides — stored in localStorage, NOT cleared by dbClearAll
+  const [manualOverrides, setManualOverrides] = useState(() => {
+    try { return JSON.parse(localStorage.getItem(LEAD_OVERRIDES_LSKEY) || '{}'); } catch { return {}; }
+  });
+
+  function saveLeadOverride(adName, state, date, count) {
+    if (!adName || !state || !date || isNaN(count)) return;
+    const next = { ...manualOverrides, [`${adName}|${state}|${date}`]: count };
+    setManualOverrides(next);
+    localStorage.setItem(LEAD_OVERRIDES_LSKEY, JSON.stringify(next));
+  }
+  function deleteLeadOverride(adName, state, date) {
+    const next = { ...manualOverrides };
+    delete next[`${adName}|${state}|${date}`];
+    setManualOverrides(next);
+    localStorage.setItem(LEAD_OVERRIDES_LSKEY, JSON.stringify(next));
+  }
 
   // UI
   const [accountNames, setAccountNames] = useState(() => {
@@ -1252,11 +1348,29 @@ export default function AdsTracking() {
     const map = {};
     for (const adName of adNames) { map[adName] = {}; for (const st of states) map[adName][st] = 0; }
 
+    // Build ad_id → {adName, state} lookup for blacklist/override resolution
+    const adIdInfo = {};
+    for (const a of activeAds) {
+      const rawName = (a.name || '').trim();
+      const st = extractState(a.campaignName);
+      if (!rawName || !st || deletedAds.has(rawName)) continue;
+      adIdInfo[a.id] = { adName: memberToCanonical[rawName] || rawName, state: st };
+    }
+
     // Use FB daily insights or stored actions
     const adDailyLeads = {};
     for (const r of allAdDailyInsights) {
       if (!r.ad_id) continue;
-      adDailyLeads[r.ad_id] = (adDailyLeads[r.ad_id] || 0) + extractLeadsFromActions(r.actions);
+      if (LEAD_BLACKLIST_DATES.has(r.date_start)) continue;  // permanently blacklisted date
+      const info = adIdInfo[r.ad_id];
+      let leads;
+      if (info) {
+        const okey = `${info.adName}|${info.state}|${r.date_start}`;
+        leads = okey in manualOverrides ? manualOverrides[okey] : extractLeadsFromActions(r.actions);
+      } else {
+        leads = extractLeadsFromActions(r.actions);
+      }
+      adDailyLeads[r.ad_id] = (adDailyLeads[r.ad_id] || 0) + leads;
     }
     for (const a of activeAds) {
       const rawName = (a.name || '').trim();
@@ -1268,7 +1382,7 @@ export default function AdsTracking() {
         map[adName][state] += leads;
     }
     return map;
-  }, [adNames, states, activeAds, deletedAds, memberToCanonical, allAdDailyInsights]);
+  }, [adNames, states, activeAds, deletedAds, memberToCanonical, allAdDailyInsights, manualOverrides]);
 
   // Alias for backward-compat with existing grid render references
   const grid = leadsMap;
@@ -1604,7 +1718,7 @@ export default function AdsTracking() {
       if (chartEnd   && date > chartEnd)   continue;
       if (!fbMap[date]) fbMap[date] = { spend: 0, leads: 0, cpm_sum: 0, cpm_count: 0 };
       fbMap[date].spend += parseFloat(row.spend) || 0;
-      fbMap[date].leads += actionsLeads(row.actions || []);
+      if (!LEAD_BLACKLIST_DATES.has(date)) fbMap[date].leads += actionsLeads(row.actions || []);
       if (row.cpm) { fbMap[date].cpm_sum += parseFloat(row.cpm); fbMap[date].cpm_count++; }
     }
     return Object.keys(fbMap).sort().map(date => {
@@ -2163,6 +2277,9 @@ export default function AdsTracking() {
           onSyncMax={syncAdMax}
           onUnmerge={unmergeGroup}
           onClose={() => setAdDetail(null)}
+          manualOverrides={manualOverrides}
+          onSaveOverride={saveLeadOverride}
+          onDeleteOverride={deleteLeadOverride}
         />
       )}
 
