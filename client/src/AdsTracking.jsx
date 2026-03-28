@@ -1257,12 +1257,6 @@ export default function AdsTracking() {
       if (!r.ad_id) continue;
       adDailyLeads[r.ad_id] = (adDailyLeads[r.ad_id] || 0) + extractLeadsFromActions(r.actions);
     }
-    // DEBUG: log action types present on first 3 ads so we can see what FB is returning
-    activeAds.slice(0, 3).forEach(a => {
-      const types = (a.actions || []).map(x => `${x.action_type}=${x.value}`).join(', ');
-      console.log(`[leads debug] ad="${a.name}" actions: ${types || '(none)'} | results=${a.results}`);
-    });
-
     for (const a of activeAds) {
       const rawName = (a.name || '').trim();
       const state   = extractState(a.campaignName);
