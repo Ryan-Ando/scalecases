@@ -1262,7 +1262,9 @@ export default function AdsTracking() {
       const state   = extractState(a.campaignName);
       if (!rawName || !state || deletedAds.has(rawName)) continue;
       const adName  = memberToCanonical[rawName] || rawName;
-      const leads   = a.id in adDailyLeads ? adDailyLeads[a.id] : (a.results || 0);
+      // Prefer daily-row sum (pixel-only extraction), fall back to re-extracting from stored actions.
+      // Never use a.results directly — it was computed with the old 'lead' priority (includes CAPI).
+      const leads   = a.id in adDailyLeads ? adDailyLeads[a.id] : extractLeadsFromActions(a.actions);
       if (map[adName]?.[state] !== undefined)
         map[adName][state] += leads;
     }
@@ -1633,7 +1635,7 @@ export default function AdsTracking() {
   // ── AI Chat context snapshot ─────────────────────────────────────────────────
   const chatContext = useMemo(() => {
     const totalSpend  = activeAds.reduce((s, a) => s + (parseFloat(a.spend) || 0), 0);
-    const totalLeads  = activeAds.reduce((s, a) => s + (a.results || 0), 0);
+    const totalLeads  = adNames.reduce((s, a) => s + states.reduce((ss, st) => ss + (leadsMap[a]?.[st] || 0), 0), 0);
     const overallCPL  = totalLeads > 0 ? (totalSpend / totalLeads).toFixed(2) : null;
 
     // Per-state summary
