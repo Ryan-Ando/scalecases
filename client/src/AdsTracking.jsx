@@ -872,8 +872,7 @@ export default function AdsTracking() {
 
   function parseGhlCsv(text) {
     const lines = text.trim().split('\n');
-    if (lines.length < 2) return {};
-    // Parse quoted CSV header
+    if (lines.length < 2) return null;
     const parseRow = line => {
       const cols = [];
       let cur = '', inQ = false;
@@ -886,15 +885,23 @@ export default function AdsTracking() {
       return cols;
     };
     const headers = parseRow(lines[0]);
-    const utmIdx  = headers.findIndex(h => h.toLowerCase().includes('utm_content'));
-    if (utmIdx < 0) return {};
-    const counts = {};
+    const utmIdx   = headers.findIndex(h => h.toLowerCase().includes('utm_content'));
+    const stateIdx = headers.findIndex(h => h.toLowerCase().includes('state'));
+    if (utmIdx < 0) return null;
+
+    // Count by ad+state key so each combination is counted exactly once
+    const byAdState = {}; // "adName|ST" → count
+    const byAd      = {}; // "adName"    → count (fallback)
     for (let i = 1; i < lines.length; i++) {
       const cols = parseRow(lines[i]);
       const ad   = (cols[utmIdx] || '').trim();
-      if (ad) counts[ad] = (counts[ad] || 0) + 1;
+      if (!ad) continue;
+      const st   = stateIdx >= 0 ? (cols[stateIdx] || '').trim().toUpperCase() : '';
+      const key  = st ? `${ad}|${st}` : ad;
+      byAdState[key] = (byAdState[key] || 0) + 1;
+      byAd[ad]       = (byAd[ad]       || 0) + 1;
     }
-    return counts;
+    return { byAdState, byAd };
   }
 
   function importGhlCsv() {
@@ -906,11 +913,12 @@ export default function AdsTracking() {
       if (!file) return;
       const reader = new FileReader();
       reader.onload = ev => {
-        const counts = parseGhlCsv(ev.target.result);
-        const total  = Object.values(counts).reduce((s, v) => s + v, 0);
-        if (!total) { alert('No utm_content data found in CSV.'); return; }
-        const today  = new Date().toISOString().slice(0, 10);
-        saveGhlOverride({ date: today, byAd: counts, total, importedAt: new Date().toISOString() });
+        const parsed = parseGhlCsv(ev.target.result);
+        if (!parsed) { alert('No utm_content column found in CSV.'); return; }
+        const total = Object.values(parsed.byAd).reduce((s, v) => s + v, 0);
+        if (!total) { alert('No leads with utm_content found in CSV.'); return; }
+        const today = new Date().toISOString().slice(0, 10);
+        saveGhlOverride({ date: today, ...parsed, total, importedAt: new Date().toISOString() });
       };
       reader.readAsText(file);
     };
@@ -1326,18 +1334,22 @@ export default function AdsTracking() {
     const map = {};
     for (const adName of adNames) { map[adName] = {}; for (const st of states) map[adName][st] = 0; }
 
-    const ghlByAd = ghlOverride?.byAd || null;
-
-    // If GHL override is active, build lead map purely from GHL counts keyed by ad name
-    if (ghlByAd) {
+    // If GHL override is active, use GHL counts keyed by adName|state (one count per unique combo)
+    if (ghlOverride?.byAdState) {
+      const { byAdState, byAd } = ghlOverride;
+      const seen = new Set();
       for (const a of activeAds) {
         const rawName = (a.name || '').trim();
         const state   = extractState(a.campaignName);
         if (!rawName || !state || deletedAds.has(rawName)) continue;
         const adName  = memberToCanonical[rawName] || rawName;
-        const leads   = ghlByAd[adName] ?? ghlByAd[rawName] ?? 0;
+        const combo   = `${adName}|${state}`;
+        if (seen.has(combo)) continue; // same ad+state already counted
+        seen.add(combo);
+        // prefer ad+state exact match, fall back to ad-only total
+        const leads = byAdState[combo] ?? byAdState[`${rawName}|${state}`] ?? byAd?.[adName] ?? byAd?.[rawName] ?? 0;
         if (map[adName]?.[state] !== undefined)
-          map[adName][state] += leads;
+          map[adName][state] = leads;
       }
       return map;
     }
