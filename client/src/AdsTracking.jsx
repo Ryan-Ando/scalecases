@@ -1310,8 +1310,17 @@ export default function AdsTracking() {
       }
     }
 
-    const toEnrich  = [];
+    const toEnrich   = [];
     const statusOnly = [];
+    const tagIds     = new Set(); // all GHL contact IDs to tag as "signed" (new + previously matched)
+
+    // Tag GHL contacts for ALL cases that have a match — including already-enriched ones
+    for (const sc of sheetCases) {
+      const pk = (sc.phone || '').replace(/\D/g, '').slice(-10);
+      const nk = (sc.name  || '').toLowerCase().replace(/\s+/g, '');
+      const c  = (pk && ghlByPhone[pk]) || (nk && ghlByName[nk]) || null;
+      if (c?.id) tagIds.add(c.id);
+    }
 
     // Pass 2 — classify each unenriched case
     for (const sc of sheetCases) {
@@ -1357,15 +1366,15 @@ export default function AdsTracking() {
         body: JSON.stringify(toEnrich),
       }).catch(err => console.warn('UTM enrich error:', err.message));
 
-      // Tag all matched/referral GHL contacts as "signed"
-      const contactIds = [...new Set(toEnrich.map(r => r.ghlContactId).filter(Boolean))];
-      if (contactIds.length) {
-        fetch(`${BASE}/api/ghl/tag-contacts`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ contactIds, tags: ['signed'] }),
-        }).catch(err => console.warn('GHL tag error:', err.message));
-      }
+    }
+
+    // Tag ALL matched GHL contacts as "signed" (new + previously enriched)
+    if (tagIds.size) {
+      fetch(`${BASE}/api/ghl/tag-contacts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contactIds: [...tagIds], tags: ['signed'] }),
+      }).catch(err => console.warn('GHL tag error:', err.message));
     }
     if (statusOnly.length) {
       fetch(`${BASE}/api/sheets/mark-status`, {
