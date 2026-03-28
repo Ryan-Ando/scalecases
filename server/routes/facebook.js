@@ -106,12 +106,12 @@ function extractResults(insightRow) {
   const actions = insightRow.actions || [];
 
   const leadTypes = [
-    'lead',
-    'onsite_conversion.lead_grouped',
-    'offsite_conversion.fb_pixel_lead',
+    'offsite_conversion.fb_pixel_lead', // pixel-only — excludes CAPI/server events
+    'onsite_conversion.lead_grouped',   // lead form submissions
     'contact',
     'schedule',
     'submit_application',
+    // NOTE: 'lead' intentionally excluded — it aggregates CAPI + pixel and inflates counts when CAPI dupes occur
   ];
 
   for (const type of leadTypes) {
@@ -119,8 +119,8 @@ function extractResults(insightRow) {
     if (action) return { results: parseInt(action.value, 10) || 0, resultType: 'Leads' };
   }
 
-  // Broad fallback: any action type containing 'lead'
-  const broadLead = actions.find(a => a.action_type.includes('lead'));
+  // Broad fallback: any lead-related type EXCEPT 'lead' (which includes CAPI)
+  const broadLead = actions.find(a => a.action_type !== 'lead' && a.action_type.includes('lead'));
   if (broadLead) return { results: parseInt(broadLead.value, 10) || 0, resultType: 'Leads' };
 
   // Fall back to computing from spend ÷ cost_per_result if available

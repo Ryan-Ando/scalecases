@@ -24,8 +24,10 @@ const US_STATES = new Set([
   'VA','WA','WV','WI','WY','DC',
 ]);
 
+// 'lead' excluded — it aggregates CAPI + pixel and inflates when CAPI has duplicates
 const LEAD_ACTION_TYPES = [
-  'lead', 'onsite_conversion.lead_grouped', 'offsite_conversion.fb_pixel_lead',
+  'offsite_conversion.fb_pixel_lead',
+  'onsite_conversion.lead_grouped',
   'contact', 'schedule', 'submit_application',
 ];
 function extractLeadsFromActions(actions = []) {
@@ -1585,7 +1587,7 @@ export default function AdsTracking() {
   }, [chartPeriod, rangeStart, rangeEnd]);
 
   const chartData = useMemo(() => {
-    const LEAD_TYPES = ['lead','onsite_conversion.lead_grouped','offsite_conversion.fb_pixel_lead','contact','schedule','submit_application'];
+    const LEAD_TYPES = ['offsite_conversion.fb_pixel_lead','onsite_conversion.lead_grouped','contact','schedule','submit_application'];
     function actionsLeads(actions = []) {
       for (const type of LEAD_TYPES) {
         const a = actions.find(x => x.action_type === type);
