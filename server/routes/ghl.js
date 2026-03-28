@@ -139,23 +139,46 @@ router.post('/tag-contacts', async (req, res) => {
     const { contactIds = [], tags = [] } = req.body;
     if (!contactIds.length || !tags.length) return res.json({ updated: 0 });
 
-    const results = await Promise.allSettled(contactIds.map(async id => {
-      const r = await fetch(`${GHL_API}/contacts/${id}/tags`, {
-        method: 'POST',
-        headers: GHL_HEADERS(),
-        body: JSON.stringify({ tags }),
-      });
-      if (!r.ok) {
-        const txt = await r.text();
-        throw new Error(`contact ${id}: ${r.status} ${txt.slice(0, 120)}`);
+    // Process in small batches to avoid 429 rate limiting
+    const BATCH_SIZE = 5;
+    const BATCH_DELAY = 1200; // ms between batches
+    const TAG_RETRY_DELAY = 2000;
+    const succeeded_ids = [];
+    const failed = [];
+
+    async function tagOne(id) {
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        const r = await fetch(`${GHL_API}/contacts/${id}/tags`, {
+          method: 'POST',
+          headers: GHL_HEADERS(),
+          body: JSON.stringify({ tags }),
+        });
+        if (r.status === 429) {
+          if (attempt === 3) { failed.push(`contact ${id}: 429 rate limit`); return; }
+          await sleep(TAG_RETRY_DELAY * attempt);
+          continue;
+        }
+        if (!r.ok) {
+          const txt = await r.text();
+          failed.push(`contact ${id}: ${r.status} ${txt.slice(0, 120)}`);
+          return;
+        }
+        succeeded_ids.push(id);
+        return;
       }
-      return id;
-    }));
+    }
 
-    const failed = results.filter(r => r.status === 'rejected').map(r => r.reason?.message);
+    for (let i = 0; i < contactIds.length; i += BATCH_SIZE) {
+      const batch = contactIds.slice(i, i + BATCH_SIZE);
+      await Promise.all(batch.map(id => tagOne(id)));
+      if (i + BATCH_SIZE < contactIds.length) await sleep(BATCH_DELAY);
+    }
+
+    const succeeded = succeeded_ids.length;
     if (failed.length) console.warn('[GHL] tag-contacts failures:', failed);
+    console.log(`[GHL] tag-contacts: ${succeeded} tagged, ${failed.length} failed`);
 
-    res.json({ updated: results.filter(r => r.status === 'fulfilled').length, failed });
+    res.json({ updated: succeeded, failed });
   } catch (err) {
     console.error('GHL tag-contacts error:', err.message);
     res.status(500).json({ error: err.message });
