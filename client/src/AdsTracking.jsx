@@ -1182,6 +1182,22 @@ export default function AdsTracking() {
         dbUpsert('fbDailyInsights', dailyRecords),
       ]);
 
+      // Fetch ad-level daily data for last_30d so date blacklist can filter per-day
+      // (the aggregated fallback in leadsMap can't be date-filtered without this)
+      const adIds = mergedAds.map(a => a.id).filter(Boolean);
+      if (adIds.length > 0) {
+        setSyncNote(`Fetching per-day ad data (${adIds.length} ads)…`);
+        try {
+          const adDailyRaw = await apiFetch(
+            `/api/facebook/daily?date_preset=last_30d&ad_ids=${encodeURIComponent(adIds.join(','))}&_t=${Date.now()}`
+          );
+          const adDailyRecords = adDailyRaw.map(r => ({ ...r, id: `${r.date_start}|${r.ad_id}` }));
+          await dbUpsert('adDailyInsights', adDailyRecords);
+        } catch (e) {
+          console.warn('Ad-level daily fetch failed (non-fatal):', e.message);
+        }
+      }
+
       await dbSetMeta('lastSync', now);
       await loadFromDB();
       if (rateLimited) {
