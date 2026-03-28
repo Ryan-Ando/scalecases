@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef } from 'react';
+import { useState, useEffect, useMemo, useRef, Fragment } from 'react';
 import { dbGetAll, dbUpsert } from './db.js';
 
 const BASE = import.meta.env.VITE_API_URL || 'http://localhost:3001';
@@ -32,7 +32,7 @@ function fmtOrDash(v) {
 }
 
 // ── Pacing helpers ────────────────────────────────────────────────────────────
-const PACING_KEY = 'spend_pacing_v1';
+const PACING_KEY = 'spend_pacing_v2';
 function loadPacing() {
   try { return JSON.parse(localStorage.getItem(PACING_KEY) || '{}'); } catch { return {}; }
 }
@@ -42,6 +42,23 @@ function daysLeft(endDate) {
   const end = new Date(endDate + 'T00:00:00');
   const d = Math.floor((end - today) / 86400000);
   return d >= 0 ? d : 0;
+}
+function monthsBetween(startDate, endDate) {
+  if (!startDate || !endDate) return [];
+  const months = [];
+  const s = new Date(startDate + 'T00:00:00');
+  const e = new Date(endDate   + 'T00:00:00');
+  let cur  = new Date(s.getFullYear(), s.getMonth(), 1);
+  const last = new Date(e.getFullYear(), e.getMonth(), 1);
+  while (cur <= last) {
+    months.push(`${cur.getFullYear()}-${String(cur.getMonth() + 1).padStart(2, '0')}`);
+    cur.setMonth(cur.getMonth() + 1);
+  }
+  return months;
+}
+function monthLabel(ym) {
+  const [y, m] = ym.split('-');
+  return `${MONTH_NAMES[parseInt(m) - 1]} ${y}`;
 }
 
 export default function SpendSheet() {
@@ -59,6 +76,7 @@ export default function SpendSheet() {
   const [pacingSpend, setPacingSpend]   = useState({});
   const [pacingLoading, setPacingLoading] = useState(false);
   const [pacingError, setPacingError]   = useState('');
+  const [expandedRows, setExpandedRows] = useState(new Set());
 
   // Column order: persisted to localStorage
   const [colOrder, setColOrder] = useState(() => {
@@ -99,6 +117,28 @@ export default function SpendSheet() {
     });
   }
 
+  function updateMonthBudget(st, ym, value) {
+    setPacing(prev => {
+      const next = {
+        ...prev,
+        [st]: {
+          ...prev[st],
+          monthlyBudgets: { ...(prev[st]?.monthlyBudgets || {}), [ym]: value },
+        },
+      };
+      localStorage.setItem(PACING_KEY, JSON.stringify(next));
+      return next;
+    });
+  }
+
+  function toggleExpand(st) {
+    setExpandedRows(prev => {
+      const next = new Set(prev);
+      if (next.has(st)) next.delete(st); else next.add(st);
+      return next;
+    });
+  }
+
   function copyDatesToAll(st) {
     const { startDate, endDate } = pacing[st] || {};
     setPacing(prev => {
@@ -112,21 +152,21 @@ export default function SpendSheet() {
   }
 
   async function fetchPacingSpend() {
-    const entries = Object.entries(pacing).filter(([, cfg]) => cfg?.startDate && cfg?.endDate);
-    if (!entries.length) { setPacingError('Enter start/end dates for at least one state first.'); return; }
+    const entries = Object.entries(pacing).filter(([, cfg]) => cfg?.startDate);
+    if (!entries.length) { setPacingError('Enter a start date for at least one state first.'); return; }
 
     setPacingLoading(true);
     setPacingError('');
     try {
-      // Group states by unique date range to minimise API calls
-      const byRange = {};
+      const today = new Date().toISOString().slice(0, 10);
+      // Group by unique startDate to minimise API calls
+      const byStart = {};
       for (const [, cfg] of entries) {
-        const key = `${cfg.startDate}|${cfg.endDate}`;
-        if (!byRange[key]) byRange[key] = { since: cfg.startDate, until: cfg.endDate };
+        if (!byStart[cfg.startDate]) byStart[cfg.startDate] = { since: cfg.startDate, until: today };
       }
 
       const spendMap = {};
-      await Promise.all(Object.values(byRange).map(async ({ since, until }) => {
+      await Promise.all(Object.values(byStart).map(async ({ since, until }) => {
         const r = await fetch(`${BASE}/api/facebook/campaign-spend?since=${since}&until=${until}`);
         const data = await r.json();
         if (!r.ok) throw new Error(data.error || 'Fetch failed');
@@ -179,17 +219,20 @@ export default function SpendSheet() {
 
   const pacingRows = useMemo(() => {
     return pacingStates.map(st => {
-      const cfg          = pacing[st] || {};
-      const totalBudget  = parseFloat(cfg.totalBudget) || null;
-      const startDate    = cfg.startDate || '';
-      const endDate      = cfg.endDate   || '';
-      const dl           = endDate ? daysLeft(endDate) : null;
-      const spentToDate  = pacingSpend[st] ?? null;
-      const remaining    = (totalBudget != null && spentToDate != null) ? Math.max(0, totalBudget - spentToDate) : null;
-      const dailyNeeded  = (remaining != null && dl != null && dl > 0) ? remaining / dl : (dl === 0 && remaining != null ? remaining : null);
-      const liveBudget   = budgetByState[st] || null;
-      const shortfall    = (dailyNeeded != null && liveBudget != null) ? dailyNeeded - liveBudget : null;
-      return { st, totalBudget, startDate, endDate, daysLeft: dl, spentToDate, remaining, dailyNeeded, liveBudget, shortfall };
+      const cfg       = pacing[st] || {};
+      const startDate = cfg.startDate || '';
+      const endDate   = cfg.endDate   || '';
+      const months    = monthsBetween(startDate, endDate);
+      const totalBudget = months.length > 0
+        ? months.reduce((s, ym) => s + (parseFloat(cfg.monthlyBudgets?.[ym]) || 0), 0)
+        : null;
+      const dl          = endDate ? daysLeft(endDate) : null;
+      const spentToDate = pacingSpend[st] ?? null;
+      const remaining   = (totalBudget != null && totalBudget > 0 && spentToDate != null) ? Math.max(0, totalBudget - spentToDate) : null;
+      const dailyNeeded = (remaining != null && dl != null && dl > 0) ? remaining / dl : (dl === 0 && remaining != null ? remaining : null);
+      const liveBudget  = budgetByState[st] || null;
+      const shortfall   = (dailyNeeded != null && liveBudget != null) ? dailyNeeded - liveBudget : null;
+      return { st, totalBudget, startDate, endDate, months, daysLeft: dl, spentToDate, remaining, dailyNeeded, liveBudget, shortfall };
     });
   }, [pacingStates, pacing, pacingSpend, budgetByState]);
 
@@ -394,14 +437,14 @@ export default function SpendSheet() {
               <thead>
                 <tr>
                   <th style={pThL}>State</th>
-                  <th style={{ ...pTh, textAlign: 'left', minWidth: 120 }}>Total Budget</th>
+                  <th style={{ ...pTh, textAlign: 'left', minWidth: 160 }}>Total Budget</th>
                   <th style={{ ...pTh, textAlign: 'left', minWidth: 150 }}>Start Date</th>
-                  <th style={{ ...pTh, textAlign: 'left', minWidth: 150 }}>End Date</th>
+                  <th style={{ ...pTh, textAlign: 'left', minWidth: 130 }}>End Date</th>
                   <th style={pTh}>Days Left</th>
                   <th style={pTh}>Spent to Date</th>
                   <th style={pTh}>Remaining</th>
                   <th style={pTh}>Daily Needed</th>
-                  <th style={pTh}>Live Daily Budget</th>
+                  <th style={pTh}>Live Daily</th>
                   <th style={{ ...pTh, borderLeft: '2px solid var(--border)' }}>Shortfall</th>
                 </tr>
               </thead>
@@ -409,75 +452,119 @@ export default function SpendSheet() {
                 {pacingRows.map(r => {
                   const shortfallColor = r.shortfall == null ? 'var(--text-muted)'
                     : r.shortfall > 0 ? '#dc2626' : '#16a34a';
+                  const isExpanded = expandedRows.has(r.st);
                   return (
-                    <tr key={r.st}>
-                      <td style={pTdL}>{r.st}</td>
+                    <Fragment key={r.st}>
+                      <tr>
+                        <td style={pTdL}>{r.st}</td>
 
-                      {/* Total Budget — editable */}
-                      <td style={pTdEdit}>
-                        <input
-                          style={pacingInput}
-                          type="number"
-                          min="0"
-                          placeholder="e.g. 50000"
-                          value={pacing[r.st]?.totalBudget || ''}
-                          onChange={e => updatePacing(r.st, 'totalBudget', e.target.value)}
-                        />
-                      </td>
+                        {/* Total Budget — computed from monthly breakdown */}
+                        <td style={{ ...pTdEdit, minWidth: 160 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                            <span style={{ flex: 1, fontWeight: 600, color: r.totalBudget ? 'var(--text)' : 'var(--text-muted)' }}>
+                              {r.totalBudget ? fmt(r.totalBudget) : '—'}
+                            </span>
+                            <button
+                              title={isExpanded ? 'Collapse monthly budgets' : 'Enter monthly budgets'}
+                              onClick={() => toggleExpand(r.st)}
+                              style={{ background: isExpanded ? 'var(--green-light)' : 'none', border: '1px solid var(--border)', borderRadius: 4, color: isExpanded ? 'var(--green-dark)' : 'var(--text-muted)', cursor: 'pointer', fontSize: 10, padding: '2px 6px', whiteSpace: 'nowrap', flexShrink: 0 }}
+                            >
+                              {isExpanded ? '▲' : '▼'} monthly
+                            </button>
+                          </div>
+                        </td>
 
-                      {/* Start Date — editable */}
-                      <td style={pTdEdit}>
-                        <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                        {/* Start Date */}
+                        <td style={pTdEdit}>
+                          <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                            <input
+                              style={{ ...pacingInput, flex: 1 }}
+                              type="date"
+                              value={pacing[r.st]?.startDate || ''}
+                              onChange={e => updatePacing(r.st, 'startDate', e.target.value)}
+                            />
+                            <button
+                              title="Copy these dates to all rows"
+                              onClick={() => copyDatesToAll(r.st)}
+                              style={{ background: 'none', border: '1px solid var(--border)', borderRadius: 4, color: 'var(--text-muted)', cursor: 'pointer', fontSize: 11, padding: '3px 5px', whiteSpace: 'nowrap', flexShrink: 0 }}
+                            >⬇ all</button>
+                          </div>
+                        </td>
+
+                        {/* End Date */}
+                        <td style={pTdEdit}>
                           <input
-                            style={{ ...pacingInput, flex: 1 }}
+                            style={pacingInput}
                             type="date"
-                            value={pacing[r.st]?.startDate || ''}
-                            onChange={e => updatePacing(r.st, 'startDate', e.target.value)}
+                            value={pacing[r.st]?.endDate || ''}
+                            onChange={e => updatePacing(r.st, 'endDate', e.target.value)}
                           />
-                          <button
-                            title="Copy these dates to all rows"
-                            onClick={() => copyDatesToAll(r.st)}
-                            style={{ background: 'none', border: '1px solid var(--border)', borderRadius: 4, color: 'var(--text-muted)', cursor: 'pointer', fontSize: 11, padding: '3px 5px', whiteSpace: 'nowrap', flexShrink: 0 }}
-                          >⬇ all</button>
-                        </div>
-                      </td>
+                        </td>
 
-                      {/* End Date — editable */}
-                      <td style={pTdEdit}>
-                        <input
-                          style={pacingInput}
-                          type="date"
-                          value={pacing[r.st]?.endDate || ''}
-                          onChange={e => updatePacing(r.st, 'endDate', e.target.value)}
-                        />
-                      </td>
+                        {/* Days Left */}
+                        <td style={pTd}>
+                          {r.daysLeft == null ? '—' : r.daysLeft === 0
+                            ? <span style={{ color: '#dc2626', fontWeight: 700 }}>0</span>
+                            : r.daysLeft}
+                        </td>
 
-                      {/* Days Left */}
-                      <td style={pTd}>
-                        {r.daysLeft == null ? '—' : r.daysLeft === 0
-                          ? <span style={{ color: '#dc2626', fontWeight: 700 }}>0</span>
-                          : r.daysLeft}
-                      </td>
+                        {/* Spent to Date */}
+                        <td style={pTd}>
+                          {pacingLoading ? <span style={{ color: 'var(--text-muted)' }}>…</span> : fmtOrDash(r.spentToDate)}
+                        </td>
 
-                      {/* Spent to Date */}
-                      <td style={pTd}>
-                        {pacingLoading ? <span style={{ color: 'var(--text-muted)' }}>…</span> : fmtOrDash(r.spentToDate)}
-                      </td>
+                        {/* Remaining */}
+                        <td style={pTd}>{fmtOrDash(r.remaining)}</td>
 
-                      {/* Remaining = Total Budget − Spent */}
-                      <td style={pTd}>{fmtOrDash(r.remaining)}</td>
+                        {/* Daily Needed */}
+                        <td style={{ ...pTd, fontWeight: 600 }}>{fmtOrDash(r.dailyNeeded)}</td>
 
-                      {/* Daily Needed = Remaining ÷ Days Left */}
-                      <td style={{ ...pTd, fontWeight: 600 }}>{fmtOrDash(r.dailyNeeded)}</td>
+                        {/* Live Daily Budget */}
+                        <td style={pTd}>{fmtOrDash(r.liveBudget)}</td>
 
-                      {/* Live Daily Budget */}
-                      <td style={pTd}>{fmtOrDash(r.liveBudget)}</td>
+                        {/* Shortfall */}
+                        <td style={{ ...pTd, fontWeight: 700, color: shortfallColor, borderLeft: '2px solid var(--border)' }}>
+                          {r.shortfall == null ? '—' : `${r.shortfall >= 0 ? '+' : ''}${fmt(r.shortfall)}`}
+                        </td>
+                      </tr>
 
-                      {/* Shortfall = Daily Needed − Live Daily Budget */}
-                      <td style={{ ...pTd, fontWeight: 700, color: shortfallColor, borderLeft: '2px solid var(--border)' }}>
-                        {r.shortfall == null ? '—' : `${r.shortfall >= 0 ? '+' : ''}${fmt(r.shortfall)}`}
-                      </td>
-                    </tr>
+                      {/* Expandable monthly budget inputs */}
+                      {isExpanded && (
+                        <tr>
+                          <td colSpan={10} style={{ padding: '14px 20px', background: 'var(--bg)', borderBottom: '2px solid var(--border)' }}>
+                            {r.months.length === 0 ? (
+                              <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                                Set start and end dates to define monthly budget periods.
+                              </span>
+                            ) : (
+                              <div>
+                                <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)', marginBottom: 10 }}>
+                                  Monthly Budgets — {r.st}
+                                </div>
+                                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
+                                  {r.months.map(ym => (
+                                    <div key={ym} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                                      <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)' }}>{monthLabel(ym)}</label>
+                                      <input
+                                        style={{ ...pacingInput, width: 120 }}
+                                        type="number"
+                                        min="0"
+                                        placeholder="0"
+                                        value={pacing[r.st]?.monthlyBudgets?.[ym] || ''}
+                                        onChange={e => updateMonthBudget(r.st, ym, e.target.value)}
+                                      />
+                                    </div>
+                                  ))}
+                                </div>
+                                <div style={{ marginTop: 10, fontSize: 12, color: 'var(--text-muted)' }}>
+                                  Total: <strong style={{ color: 'var(--text)' }}>{fmt(r.totalBudget || 0)}</strong>
+                                </div>
+                              </div>
+                            )}
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
                   );
                 })}
               </tbody>
@@ -485,7 +572,7 @@ export default function SpendSheet() {
           </div>
 
           <div style={{ marginTop: 8, fontSize: 11, color: 'var(--text-muted)' }}>
-            Shortfall = Daily Needed − Live Daily Budget · Red = underpacing · Green = on track or ahead · Values auto-save · Click <strong>Fetch Spend</strong> to pull current totals from Facebook
+            Shortfall = Daily Needed − Live Daily Budget · Red = underpacing · Green = on track · Click <strong>▼ monthly</strong> to enter per-month budgets · <strong>Fetch Spend</strong> pulls cumulative spend from start date to today
           </div>
         </div>
       )}
