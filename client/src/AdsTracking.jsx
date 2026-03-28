@@ -855,76 +855,6 @@ function AdDetailModal({ adName, state, allAds, sheetByName, accountLabel, merge
 
 // ── Main Component ────────────────────────────────────────────────────────────
 export default function AdsTracking() {
-  // GHL lead override (replaces FB lead counts when CAPI inflation is present)
-  const GHL_OVERRIDE_KEY = 'ghl_lead_override_v1';
-  const [ghlOverride, setGhlOverride] = useState(() => {
-    try { return JSON.parse(localStorage.getItem(GHL_OVERRIDE_KEY) || 'null'); } catch { return null; }
-  });
-
-  function saveGhlOverride(data) {
-    localStorage.setItem(GHL_OVERRIDE_KEY, JSON.stringify(data));
-    setGhlOverride(data);
-  }
-  function clearGhlOverride() {
-    localStorage.removeItem(GHL_OVERRIDE_KEY);
-    setGhlOverride(null);
-  }
-
-  function parseGhlCsv(text) {
-    const lines = text.trim().split('\n');
-    if (lines.length < 2) return null;
-    const parseRow = line => {
-      const cols = [];
-      let cur = '', inQ = false;
-      for (const ch of line) {
-        if (ch === '"') { inQ = !inQ; }
-        else if (ch === ',' && !inQ) { cols.push(cur); cur = ''; }
-        else cur += ch;
-      }
-      cols.push(cur);
-      return cols;
-    };
-    const headers = parseRow(lines[0]);
-    const utmIdx   = headers.findIndex(h => h.toLowerCase().includes('utm_content'));
-    const stateIdx = headers.findIndex(h => h.toLowerCase().includes('state'));
-    if (utmIdx < 0) return null;
-
-    // Count by ad+state key so each combination is counted exactly once
-    const byAdState = {}; // "adName|ST" → count
-    const byAd      = {}; // "adName"    → count (fallback)
-    for (let i = 1; i < lines.length; i++) {
-      const cols = parseRow(lines[i]);
-      const ad   = (cols[utmIdx] || '').trim();
-      if (!ad) continue;
-      const st   = stateIdx >= 0 ? (cols[stateIdx] || '').trim().toUpperCase() : '';
-      const key  = st ? `${ad}|${st}` : ad;
-      byAdState[key] = (byAdState[key] || 0) + 1;
-      byAd[ad]       = (byAd[ad]       || 0) + 1;
-    }
-    return { byAdState, byAd };
-  }
-
-  function importGhlCsv() {
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.accept = '.csv';
-    input.onchange = e => {
-      const file = e.target.files[0];
-      if (!file) return;
-      const reader = new FileReader();
-      reader.onload = ev => {
-        const parsed = parseGhlCsv(ev.target.result);
-        if (!parsed) { alert('No utm_content column found in CSV.'); return; }
-        const total = Object.values(parsed.byAd).reduce((s, v) => s + v, 0);
-        if (!total) { alert('No leads with utm_content found in CSV.'); return; }
-        const today = new Date().toISOString().slice(0, 10);
-        saveGhlOverride({ date: today, ...parsed, total, importedAt: new Date().toISOString() });
-      };
-      reader.readAsText(file);
-    };
-    input.click();
-  }
-
   // Persistent data
   const [allDailyInsights, setAllDailyInsights] = useState([]);
   const [allAds, setAllAds]                     = useState([]);
@@ -1022,18 +952,6 @@ export default function AdsTracking() {
 
   // Grid uses range-filtered ads when a range is set, otherwise all-time aggregated ads
   const activeAds = rangeAds ?? allAds;
-
-  // When GHL override is active, strip that date's FB rows from daily insights so
-  // the chart and modal detail don't show inflated CAPI-affected lead numbers.
-  const effectiveDailyInsights = useMemo(() => {
-    if (!ghlOverride?.date) return allDailyInsights;
-    return allDailyInsights.filter(r => r.date_start !== ghlOverride.date);
-  }, [allDailyInsights, ghlOverride]);
-
-  const effectiveAdDailyInsights = useMemo(() => {
-    if (!ghlOverride?.date) return allAdDailyInsights;
-    return allAdDailyInsights.filter(r => r.date_start !== ghlOverride.date);
-  }, [allAdDailyInsights, ghlOverride]);
 
   // ── Load from IndexedDB ─────────────────────────────────────────────────────
   async function loadFromDB() {
@@ -1334,29 +1252,9 @@ export default function AdsTracking() {
     const map = {};
     for (const adName of adNames) { map[adName] = {}; for (const st of states) map[adName][st] = 0; }
 
-    // If GHL override is active, use GHL counts keyed by adName|state (one count per unique combo)
-    if (ghlOverride?.byAdState) {
-      const { byAdState, byAd } = ghlOverride;
-      const seen = new Set();
-      for (const a of activeAds) {
-        const rawName = (a.name || '').trim();
-        const state   = extractState(a.campaignName);
-        if (!rawName || !state || deletedAds.has(rawName)) continue;
-        const adName  = memberToCanonical[rawName] || rawName;
-        const combo   = `${adName}|${state}`;
-        if (seen.has(combo)) continue; // same ad+state already counted
-        seen.add(combo);
-        // prefer ad+state exact match, fall back to ad-only total
-        const leads = byAdState[combo] ?? byAdState[`${rawName}|${state}`] ?? byAd?.[adName] ?? byAd?.[rawName] ?? 0;
-        if (map[adName]?.[state] !== undefined)
-          map[adName][state] = leads;
-      }
-      return map;
-    }
-
-    // Normal path: use FB daily insights or stored actions
+    // Use FB daily insights or stored actions
     const adDailyLeads = {};
-    for (const r of effectiveAdDailyInsights) {
+    for (const r of allAdDailyInsights) {
       if (!r.ad_id) continue;
       adDailyLeads[r.ad_id] = (adDailyLeads[r.ad_id] || 0) + extractLeadsFromActions(r.actions);
     }
@@ -1370,7 +1268,7 @@ export default function AdsTracking() {
         map[adName][state] += leads;
     }
     return map;
-  }, [adNames, states, activeAds, deletedAds, memberToCanonical, effectiveAdDailyInsights, ghlOverride]);
+  }, [adNames, states, activeAds, deletedAds, memberToCanonical, allAdDailyInsights]);
 
   // Alias for backward-compat with existing grid render references
   const grid = leadsMap;
@@ -1699,7 +1597,7 @@ export default function AdsTracking() {
       return 0;
     }
     const fbMap = {};
-    for (const row of effectiveDailyInsights) {
+    for (const row of allDailyInsights) {
       const date = row.date_start;
       if (!date) continue;
       if (chartStart && date < chartStart) continue;
@@ -1717,7 +1615,7 @@ export default function AdsTracking() {
       const cpl   = leads > 0 && spend > 0 ? +(spend / leads).toFixed(2) : null;
       return { date: date.slice(5), leads, spend, cpm, cpl };
     });
-  }, [effectiveDailyInsights, chartStart, chartEnd]);
+  }, [allDailyInsights, chartStart, chartEnd]);
 
 
   function saveAccountName(state, name) {
@@ -1810,19 +1708,6 @@ export default function AdsTracking() {
             <button className="btn btn--sm" onClick={resetData} disabled={syncing} title="Clear all stored data and re-sync">
               Reset
             </button>
-            <button className="btn btn--sm" onClick={importGhlCsv} title="Import GHL CSV export to override lead counts">
-              GHL Import
-            </button>
-            {ghlOverride && (
-              <button
-                className="btn btn--sm"
-                onClick={clearGhlOverride}
-                style={{ color: '#dc2626', borderColor: '#dc2626' }}
-                title={`GHL override active: ${ghlOverride.total} leads from ${ghlOverride.date}. Click to clear and use FB data.`}
-              >
-                ✕ GHL Override ({ghlOverride.total})
-              </button>
-            )}
           </div>
           {syncing && syncNote && (
             <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{syncNote}</span>
@@ -2070,7 +1955,7 @@ export default function AdsTracking() {
                         {mergeGroup && (
                           <span className="tracking-merge-badge">{mergeGroup.members.length} ads</span>
                         )}
-                        {effectiveAdDailyInsights.some(r => {
+                        {allAdDailyInsights.some(r => {
                           const effectiveNames = mergeGroup ? mergeGroup.members : [adName];
                           return effectiveNames.some(n => allAds.find(a => a.name?.trim() === n && a.id === r.ad_id));
                         }) && (
@@ -2274,7 +2159,7 @@ export default function AdsTracking() {
           sheetByName={sheetByName}
           accountLabel={accountLabel}
           mergeGroups={mergeGroups}
-          allAdDailyInsights={effectiveAdDailyInsights}
+          allAdDailyInsights={allAdDailyInsights}
           onSyncMax={syncAdMax}
           onUnmerge={unmergeGroup}
           onClose={() => setAdDetail(null)}
