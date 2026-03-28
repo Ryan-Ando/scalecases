@@ -49,6 +49,7 @@ const _stats = {
   callCount: 0,     // total real FB API calls (not cache hits)
   cacheHits: 0,     // served from cache
   errors: 0,        // failed calls
+  accountErrors: {}, // account → last error message
   rateLimits: {},   // account → { call_count, total_time, total_cputime } (percentages 0–100)
   recentCalls: [],  // last 100 calls
   sessionStart: Date.now(),
@@ -218,8 +219,14 @@ async function fetchInsightsForAccount(account, level, datePreset, filters = {},
 async function fetchInsights(level, datePreset, filters = {}, timeRange = null) {
   const accounts = adAccounts();
   const settled = await Promise.allSettled(accounts.map(a => fetchInsightsForAccount(a, level, datePreset, filters, timeRange)));
-  return settled.flatMap(r => {
-    if (r.status === 'rejected') { console.warn('FB insights skipped account:', r.reason?.message); return []; }
+  return settled.flatMap((r, i) => {
+    if (r.status === 'rejected') {
+      const msg = r.reason?.message || 'unknown error';
+      const acct = accounts[i];
+      console.warn('FB insights skipped account:', msg);
+      _stats.accountErrors[acct] = msg;
+      return [];
+    }
     return r.value;
   });
 }
@@ -243,8 +250,14 @@ async function fetchFromAllAccounts(path, queryParams) {
     recordCall(account, path, pages);
     return all;
   }));
-  return settled.flatMap(r => {
-    if (r.status === 'rejected') { console.warn('FB list skipped account:', r.reason?.message); return []; }
+  return settled.flatMap((r, i) => {
+    if (r.status === 'rejected') {
+      const msg = r.reason?.message || 'unknown error';
+      const acct = accounts[i];
+      console.warn('FB list skipped account:', msg);
+      _stats.accountErrors[acct] = msg;
+      return [];
+    }
     return r.value;
   });
 }
@@ -622,11 +635,13 @@ router.get('/stats', (req, res) => {
     expiresIn: Math.round((CACHE_TTL - (Date.now() - v.ts)) / 1000),
   }));
   res.json({
+    configuredAccounts: adAccounts(),
     sessionStart: _stats.sessionStart,
     uptimeSeconds: Math.round((Date.now() - _stats.sessionStart) / 1000),
     callCount: _stats.callCount,
     cacheHits: _stats.cacheHits,
     errors: _stats.errors,
+    accountErrors: _stats.accountErrors || {},
     rateLimits: _stats.rateLimits,
     queueDepth: _fbQueue.length,
     queueRunning: _fbRunning,
