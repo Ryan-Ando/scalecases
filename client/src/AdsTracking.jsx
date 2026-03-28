@@ -1015,6 +1015,18 @@ export default function AdsTracking() {
   // Grid uses range-filtered ads when a range is set, otherwise all-time aggregated ads
   const activeAds = rangeAds ?? allAds;
 
+  // When GHL override is active, strip that date's FB rows from daily insights so
+  // the chart and modal detail don't show inflated CAPI-affected lead numbers.
+  const effectiveDailyInsights = useMemo(() => {
+    if (!ghlOverride?.date) return allDailyInsights;
+    return allDailyInsights.filter(r => r.date_start !== ghlOverride.date);
+  }, [allDailyInsights, ghlOverride]);
+
+  const effectiveAdDailyInsights = useMemo(() => {
+    if (!ghlOverride?.date) return allAdDailyInsights;
+    return allAdDailyInsights.filter(r => r.date_start !== ghlOverride.date);
+  }, [allAdDailyInsights, ghlOverride]);
+
   // ── Load from IndexedDB ─────────────────────────────────────────────────────
   async function loadFromDB() {
     const [insights, ads, adDaily, syncTime, deleted, merges] = await Promise.all([
@@ -1332,7 +1344,7 @@ export default function AdsTracking() {
 
     // Normal path: use FB daily insights or stored actions
     const adDailyLeads = {};
-    for (const r of allAdDailyInsights) {
+    for (const r of effectiveAdDailyInsights) {
       if (!r.ad_id) continue;
       adDailyLeads[r.ad_id] = (adDailyLeads[r.ad_id] || 0) + extractLeadsFromActions(r.actions);
     }
@@ -1346,7 +1358,7 @@ export default function AdsTracking() {
         map[adName][state] += leads;
     }
     return map;
-  }, [adNames, states, activeAds, deletedAds, memberToCanonical, allAdDailyInsights, ghlOverride]);
+  }, [adNames, states, activeAds, deletedAds, memberToCanonical, effectiveAdDailyInsights, ghlOverride]);
 
   // Alias for backward-compat with existing grid render references
   const grid = leadsMap;
@@ -1675,7 +1687,7 @@ export default function AdsTracking() {
       return 0;
     }
     const fbMap = {};
-    for (const row of allDailyInsights) {
+    for (const row of effectiveDailyInsights) {
       const date = row.date_start;
       if (!date) continue;
       if (chartStart && date < chartStart) continue;
@@ -1693,7 +1705,7 @@ export default function AdsTracking() {
       const cpl   = leads > 0 && spend > 0 ? +(spend / leads).toFixed(2) : null;
       return { date: date.slice(5), leads, spend, cpm, cpl };
     });
-  }, [allDailyInsights, chartStart, chartEnd]);
+  }, [effectiveDailyInsights, chartStart, chartEnd]);
 
 
   function saveAccountName(state, name) {
@@ -2046,7 +2058,7 @@ export default function AdsTracking() {
                         {mergeGroup && (
                           <span className="tracking-merge-badge">{mergeGroup.members.length} ads</span>
                         )}
-                        {allAdDailyInsights.some(r => {
+                        {effectiveAdDailyInsights.some(r => {
                           const effectiveNames = mergeGroup ? mergeGroup.members : [adName];
                           return effectiveNames.some(n => allAds.find(a => a.name?.trim() === n && a.id === r.ad_id));
                         }) && (
@@ -2250,7 +2262,7 @@ export default function AdsTracking() {
           sheetByName={sheetByName}
           accountLabel={accountLabel}
           mergeGroups={mergeGroups}
-          allAdDailyInsights={allAdDailyInsights}
+          allAdDailyInsights={effectiveAdDailyInsights}
           onSyncMax={syncAdMax}
           onUnmerge={unmergeGroup}
           onClose={() => setAdDetail(null)}
