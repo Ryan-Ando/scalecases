@@ -573,7 +573,7 @@ router.get('/daily', async (req, res) => {
     const level = (adIdList?.length || date) ? 'ad'
                 : adsetIdList?.length         ? 'adset'
                 : (req.query.level || 'campaign');
-    const cacheKey = `daily:${level}:${date_preset||''}:${ad_ids||''}:${adset_ids||''}:${date||''}:${start||''}:${end||''}`;
+    const cacheKey = `daily:${level}:${date_preset||''}:${ad_ids||''}:${adset_ids||''}:${date||''}:${start||''}:${end||''}:${req.query.full||''}`;
     const cached = cacheGet(cacheKey);
     if (cached) return res.json(cached);
     const fields = level === 'ad'
