@@ -618,8 +618,10 @@ router.get('/daily', async (req, res) => {
     // Deduplicate by entity_id + date in case same campaign/adset appears from multiple accounts
     const idKey = level === 'ad' ? 'ad_id' : level === 'adset' ? 'adset_id' : 'campaign_id';
     const deduped = [...new Map(all.map(r => [`${r[idKey]}:${r.date_start}`, r])).values()];
-    // Filter out blacklisted dates unless full=true (spend tracker bypass)
-    const filtered = req.query.full === 'true' ? deduped : deduped.filter(r => !BLACKLIST_DATES.has(r.date_start));
+    // Spend tracker (campaign-level with explicit start/end) always gets full data.
+    // All other daily requests filter out blacklisted dates.
+    const isSpendTracker = level === 'campaign' && start && end && !adIdList && !adsetIdList;
+    const filtered = (req.query.full === 'true' || isSpendTracker) ? deduped : deduped.filter(r => !BLACKLIST_DATES.has(r.date_start));
     cacheSet(cacheKey, filtered);
     res.json(filtered);
   } catch (err) {
