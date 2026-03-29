@@ -1238,7 +1238,6 @@ export default function AdsTracking() {
       const stale = !ts || (Date.now() - new Date(ts).getTime() > 24 * 3600 * 1000);
       if (stale) sync();
     });
-    syncGhlLeads(); // always refresh GHL leads on mount — it's the lead source of truth
   }, []);
 
   async function resetData() {
@@ -1372,40 +1371,32 @@ export default function AdsTracking() {
 
   const sheetByName = {};
 
-  // Grid: FB leads per ad per state — from aggregated insights in activeAds
-  // If an ad has per-day rows in allAdDailyInsights (from onSyncMax), use those
-  // to sum leads (more reliable than a.results which can be 0 if rate-limited).
+  // Grid: FB all-time leads per ad per state, minus any leads on blacklisted dates.
+  // Blacklisted date deductions come from allAdDailyInsights (populated by Sync Max).
   const leadsMap = useMemo(() => {
     const map = {};
     for (const adName of adNames) { map[adName] = {}; for (const st of states) map[adName][st] = 0; }
 
-    // Build ad_id → {adName, state} lookup for blacklist/override resolution
-    const adIdInfo = {};
-    for (const a of activeAds) {
-      const rawName = (a.name || '').trim();
-      const st = extractState(a.campaignName);
-      if (!rawName || !st || deletedAds.has(rawName)) continue;
-      adIdInfo[a.id] = { adName: memberToCanonical[rawName] || rawName, state: st };
+    // Sum leads on blacklisted dates per ad_id so we can subtract them from the all-time total
+    const blacklistDeduct = {};
+    for (const r of allAdDailyInsights) {
+      if (!r.ad_id || !LEAD_BLACKLIST_DATES.has(r.date_start)) continue;
+      blacklistDeduct[r.ad_id] = (blacklistDeduct[r.ad_id] || 0) + extractLeadsFromActions(r.actions);
     }
 
-    // GHL is the only source of truth for leads — FB lead data is never used
-    if (ghlLeads?.byRawNameState) {
-      const seen = new Set();
-      for (const a of activeAds) {
-        const rawName = (a.name || '').trim();
-        const state   = extractState(a.campaignName);
-        if (!rawName || !state || deletedAds.has(rawName)) continue;
-        const combo = `${rawName}|${state}`;
-        if (seen.has(combo)) continue;
-        seen.add(combo);
-        const adName = memberToCanonical[rawName] || rawName;
-        const leads  = ghlLeads.byRawNameState[combo] || 0;
-        if (map[adName]?.[state] !== undefined)
-          map[adName][state] += leads;
-      }
+    for (const a of activeAds) {
+      const rawName = (a.name || '').trim();
+      const state   = extractState(a.campaignName);
+      if (!rawName || !state || deletedAds.has(rawName)) continue;
+      const adName = memberToCanonical[rawName] || rawName;
+      const total  = extractLeadsFromActions(a.actions);
+      const deduct = blacklistDeduct[a.id] || 0;
+      const leads  = Math.max(0, total - deduct);
+      if (map[adName]?.[state] !== undefined)
+        map[adName][state] += leads;
     }
     return map;
-  }, [adNames, states, activeAds, deletedAds, memberToCanonical, ghlLeads]);
+  }, [adNames, states, activeAds, deletedAds, memberToCanonical, allAdDailyInsights]);
 
   // Alias for backward-compat with existing grid render references
   const grid = leadsMap;
@@ -1734,7 +1725,6 @@ export default function AdsTracking() {
       return 0;
     }
     const fbMap = {};
-    // Spend/CPM from FB campaign-level daily insights
     for (const row of allDailyInsights) {
       const date = row.date_start;
       if (!date) continue;
@@ -1742,16 +1732,8 @@ export default function AdsTracking() {
       if (chartEnd   && date > chartEnd)   continue;
       if (!fbMap[date]) fbMap[date] = { spend: 0, leads: 0, cpm_sum: 0, cpm_count: 0 };
       fbMap[date].spend += parseFloat(row.spend) || 0;
+      if (!LEAD_BLACKLIST_DATES.has(date)) fbMap[date].leads += actionsLeads(row.actions || []);
       if (row.cpm) { fbMap[date].cpm_sum += parseFloat(row.cpm); fbMap[date].cpm_count++; }
-    }
-    // Leads always from GHL only
-    if (ghlLeads?.byDate) {
-      for (const [date, count] of Object.entries(ghlLeads.byDate)) {
-        if (chartStart && date < chartStart) continue;
-        if (chartEnd   && date > chartEnd)   continue;
-        if (!fbMap[date]) fbMap[date] = { spend: 0, leads: 0, cpm_sum: 0, cpm_count: 0 };
-        fbMap[date].leads = count;
-      }
     }
     return Object.keys(fbMap).sort().map(date => {
       const fb    = fbMap[date];
@@ -1761,7 +1743,7 @@ export default function AdsTracking() {
       const cpl   = leads > 0 && spend > 0 ? +(spend / leads).toFixed(2) : null;
       return { date: date.slice(5), leads, spend, cpm, cpl };
     });
-  }, [allDailyInsights, ghlLeads, chartStart, chartEnd]);
+  }, [allDailyInsights, chartStart, chartEnd]);
 
 
   function saveAccountName(state, name) {
