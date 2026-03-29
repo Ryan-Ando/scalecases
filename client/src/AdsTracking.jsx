@@ -1768,8 +1768,17 @@ export default function AdsTracking() {
       if (chartEnd   && date > chartEnd)   continue;
       if (!fbMap[date]) fbMap[date] = { spend: 0, leads: 0, cpm_sum: 0, cpm_count: 0 };
       fbMap[date].spend += parseFloat(row.spend) || 0;
-      if (!LEAD_BLACKLIST_DATES.has(date)) fbMap[date].leads += actionsLeads(row.actions || []);
+      if (!ghlLeads?.byDate && !LEAD_BLACKLIST_DATES.has(date)) fbMap[date].leads += actionsLeads(row.actions || []);
       if (row.cpm) { fbMap[date].cpm_sum += parseFloat(row.cpm); fbMap[date].cpm_count++; }
+    }
+    // When GHL is active, overlay per-day lead counts from GHL contacts
+    if (ghlLeads?.byDate) {
+      for (const [date, count] of Object.entries(ghlLeads.byDate)) {
+        if (chartStart && date < chartStart) continue;
+        if (chartEnd   && date > chartEnd)   continue;
+        if (!fbMap[date]) fbMap[date] = { spend: 0, leads: 0, cpm_sum: 0, cpm_count: 0 };
+        fbMap[date].leads = count;
+      }
     }
     return Object.keys(fbMap).sort().map(date => {
       const fb    = fbMap[date];
@@ -1779,7 +1788,7 @@ export default function AdsTracking() {
       const cpl   = leads > 0 && spend > 0 ? +(spend / leads).toFixed(2) : null;
       return { date: date.slice(5), leads, spend, cpm, cpl };
     });
-  }, [allDailyInsights, chartStart, chartEnd]);
+  }, [allDailyInsights, ghlLeads, chartStart, chartEnd]);
 
 
   function saveAccountName(state, name) {
@@ -1866,8 +1875,8 @@ export default function AdsTracking() {
             <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
               Last synced: {lastSync ? timeAgo(lastSync) : 'never'}
             </span>
-            <button className="btn btn--sm btn--primary" onClick={sync} disabled={syncing}>
-              {syncing ? 'Syncing…' : 'Sync Now'}
+            <button className="btn btn--sm btn--primary" onClick={() => { sync(); if (ghlLeads) syncGhlLeads(); }} disabled={syncing || syncingGhl}>
+              {(syncing || syncingGhl) ? 'Syncing…' : 'Sync Now'}
             </button>
             <button className="btn btn--sm" onClick={resetData} disabled={syncing} title="Clear all stored data and re-sync">
               Reset

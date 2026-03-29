@@ -195,6 +195,7 @@ router.get('/leads', async (req, res) => {
     const contacts = await fetchAllContacts(startMs, endMs);
 
     const byRawNameState = {}; // "adName|STATE" → count
+    const byDate         = {}; // "YYYY-MM-DD"   → count  (for chart)
     let attributed = 0;
 
     for (const c of contacts) {
@@ -204,13 +205,17 @@ router.get('/leads', async (req, res) => {
       const state = extractContactState(c);
       if (!state) continue;
 
+      const date = (c.dateAdded || '').slice(0, 10); // YYYY-MM-DD
+
       const key = `${adName}|${state}`;
       byRawNameState[key] = (byRawNameState[key] || 0) + 1;
+      if (date) byDate[date] = (byDate[date] || 0) + 1;
       attributed++;
     }
 
     res.json({
       byRawNameState,
+      byDate,
       total:      contacts.length,
       attributed,
       dateRange:  { start: start || null, end: end || null },
