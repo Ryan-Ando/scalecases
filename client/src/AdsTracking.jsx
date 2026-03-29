@@ -883,16 +883,17 @@ export default function AdsTracking() {
   const syncingRef = useRef(false);
 
 
-  // Manual lead subtractions per ad — persists in localStorage, survives resets
+  // Manual lead subtractions per cell (adName|state) — persists in localStorage, survives resets
   const [leadSubtractions, setLeadSubtractions] = useState(() => {
     try { return JSON.parse(localStorage.getItem(LEAD_SUBTRACTIONS_LSKEY) || '{}'); } catch { return {}; }
   });
-  const [editingSub, setEditingSub] = useState(null); // adName being edited
+  const [editingSub, setEditingSub] = useState(null); // 'adName|state' key being edited
 
-  function saveLeadSubtraction(adName, value) {
+  function saveLeadSubtraction(adName, state, value) {
+    const key = `${adName}|${state}`;
     const n = Math.max(0, parseInt(value, 10) || 0);
-    const next = { ...leadSubtractions, [adName]: n };
-    if (n === 0) delete next[adName];
+    const next = { ...leadSubtractions, [key]: n };
+    if (n === 0) delete next[key];
     setLeadSubtractions(next);
     localStorage.setItem(LEAD_SUBTRACTIONS_LSKEY, JSON.stringify(next));
     setEditingSub(null);
@@ -1282,7 +1283,7 @@ export default function AdsTracking() {
       if (!rawName || !state || deletedAds.has(rawName)) continue;
       const adName = memberToCanonical[rawName] || rawName;
       const total  = extractLeadsFromActions(a.actions);
-      const deduct = applySubtractions ? (leadSubtractions[adName] || 0) : 0;
+      const deduct = applySubtractions ? (leadSubtractions[`${adName}|${state}`] || 0) : 0;
       const leads  = Math.max(0, total - deduct);
       if (map[adName]?.[state] !== undefined)
         map[adName][state] += leads;
@@ -1983,27 +1984,6 @@ export default function AdsTracking() {
                         )}
                         {!selecting && (
                           <>
-                            {editingSub === adName ? (
-                              <input
-                                autoFocus
-                                type="number"
-                                min="0"
-                                defaultValue={leadSubtractions[adName] || 0}
-                                style={{ width: 48, fontSize: 11, padding: '1px 3px', borderRadius: 4, border: '1px solid var(--border)' }}
-                                onBlur={e => saveLeadSubtraction(adName, e.target.value)}
-                                onKeyDown={e => { if (e.key === 'Enter') saveLeadSubtraction(adName, e.target.value); if (e.key === 'Escape') setEditingSub(null); }}
-                                onClick={e => e.stopPropagation()}
-                              />
-                            ) : (
-                              <button
-                                className="ad-row-sync-btn"
-                                onClick={e => { e.stopPropagation(); setEditingSub(adName); }}
-                                title={`Manual lead subtraction: ${leadSubtractions[adName] || 0}. Click to edit.`}
-                                style={leadSubtractions[adName] ? { color: '#dc2626', fontWeight: 700 } : {}}
-                              >
-                                {leadSubtractions[adName] ? `−${leadSubtractions[adName]}` : '−'}
-                              </button>
-                            )}
                             <button
                               className="ad-row-sync-btn"
                               onClick={e => { e.stopPropagation(); syncAdMax([adName]); }}
@@ -2049,20 +2029,45 @@ export default function AdsTracking() {
                       });
                       const status  = cellStatus[adName]?.[state];
                       const cellBg  = status === 'solo' ? 'rgba(34,197,94,0.12)' : status === 'shared' ? 'rgba(59,130,246,0.12)' : undefined;
+                      const subKey = `${adName}|${state}`;
+                      const subAmt = leadSubtractions[subKey] || 0;
                       return (
                         <td key={state} className="tracking-td-cell" style={cellBg ? { background: cellBg } : undefined}>
                           {everUsed
-                            ? (
-                              <button
-                                className="tracking-cell-btn"
-                                onClick={e => { e.stopPropagation(); setAdDetail({ adName, state }); }}
-                                style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5 }}
-                              >
-                                <span className={`cell-leads${leads === 0 ? ' cell-zero' : ''}`}>{leads}</span>
-                                <span className="cell-sep">|</span>
-                                <span className={`cell-cases${cases === 0 ? ' cell-zero' : ''}`}>{cases}</span>
-                              </button>
-                            )
+                            ? editingSub === subKey
+                              ? (
+                                <input
+                                  autoFocus
+                                  type="number"
+                                  min="0"
+                                  defaultValue={subAmt}
+                                  style={{ width: 52, fontSize: 11, padding: '2px 4px', borderRadius: 4, border: '1px solid var(--border)', textAlign: 'center' }}
+                                  onBlur={e => saveLeadSubtraction(adName, state, e.target.value)}
+                                  onKeyDown={e => { if (e.key === 'Enter') saveLeadSubtraction(adName, state, e.target.value); if (e.key === 'Escape') setEditingSub(null); }}
+                                  onClick={e => e.stopPropagation()}
+                                />
+                              )
+                              : (
+                                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1 }}>
+                                  <button
+                                    className="tracking-cell-btn"
+                                    onClick={e => { e.stopPropagation(); setAdDetail({ adName, state }); }}
+                                    style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5 }}
+                                  >
+                                    <span className={`cell-leads${leads === 0 ? ' cell-zero' : ''}`}>{leads}</span>
+                                    <span className="cell-sep">|</span>
+                                    <span className={`cell-cases${cases === 0 ? ' cell-zero' : ''}`}>{cases}</span>
+                                  </button>
+                                  <button
+                                    className="ad-row-sync-btn"
+                                    onClick={e => { e.stopPropagation(); setEditingSub(subKey); }}
+                                    title={subAmt ? `Subtract ${subAmt} leads. Click to edit.` : 'Set lead subtraction'}
+                                    style={subAmt ? { color: '#dc2626', fontSize: 10 } : { fontSize: 10, opacity: 0.4 }}
+                                  >
+                                    {subAmt ? `−${subAmt}` : '−'}
+                                  </button>
+                                </div>
+                              )
                             : <span className="tracking-cell-empty">—</span>
                           }
                         </td>
