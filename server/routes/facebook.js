@@ -31,57 +31,66 @@ function presetToRange(preset) {
   }
 }
 
-// Splits a date range into sub-ranges that exclude any blacklisted dates.
-// Returns [] if the entire range is blacklisted.
-function splitRangeExcludingBlacklist(since, until) {
-  const ranges = [];
-  let cursor = since;
-  for (const bad of [...BLACKLIST_DATES].sort()) {
-    if (bad < since || bad > until) continue;
-    const dayBefore = isoDateOffset(bad, -1);
-    if (cursor <= dayBefore) ranges.push({ since: cursor, until: dayBefore });
-    cursor = isoDateOffset(bad, +1);
-  }
-  if (cursor <= until) ranges.push({ since: cursor, until });
-  return ranges;
-}
-
-// Merges two arrays of insight rows by summing additive numeric fields and actions arrays.
-// Rate-derived fields (cpm, ctr, frequency) are dropped — recomputed downstream.
+// ── Blacklist deduction cache ────────────────────────────────────────────────
+// Stores per-entity deductions for each blacklisted date. Populated lazily and
+// kept for the lifetime of the server process — blacklisted dates are fixed past
+// dates whose FB data will never change.
 const ADDITIVE_FIELDS = ['spend','impressions','reach','clicks','unique_inline_link_clicks'];
-function mergeInsightRows(arrays) {
-  const map = {};
-  for (const arr of arrays) {
-    for (const row of arr) {
+const _blacklistDeductions = {}; // level:filtersKey → { entityId: { field: num, actions: [...] } }
+
+async function getBlacklistDeductions(level, filters = {}) {
+  const key = `${level}:${JSON.stringify(filters)}`;
+  if (_blacklistDeductions[key]) return _blacklistDeductions[key];
+
+  const deductions = {};
+  for (const date of BLACKLIST_DATES) {
+    const rows = await fetchInsightsRaw(level, null, filters, { since: date, until: date });
+    for (const row of rows) {
       const id = row.campaign_id || row.adset_id || row.ad_id;
       if (!id) continue;
-      if (!map[id]) {
-        map[id] = { ...row };
-        // clear rate fields — will be recomputed
-        delete map[id].cpm; delete map[id].ctr; delete map[id].unique_ctr;
-        delete map[id].frequency; delete map[id].cost_per_unique_inline_link_click;
-        delete map[id].cost_per_result;
-        // clone mutable arrays
-        if (map[id].actions) map[id].actions = map[id].actions.map(a => ({ ...a }));
-        if (map[id].video_play_actions) map[id].video_play_actions = map[id].video_play_actions.map(a => ({ ...a }));
-        if (map[id].video_avg_time_watched_actions) map[id].video_avg_time_watched_actions = map[id].video_avg_time_watched_actions.map(a => ({ ...a }));
-      } else {
-        for (const f of ADDITIVE_FIELDS) {
-          if (row[f] != null) map[id][f] = String(parseFloat(map[id][f] || 0) + parseFloat(row[f] || 0));
-        }
-        for (const arrField of ['actions', 'video_play_actions', 'video_avg_time_watched_actions']) {
-          if (!row[arrField]) continue;
-          if (!map[id][arrField]) { map[id][arrField] = row[arrField].map(a => ({ ...a })); continue; }
-          for (const a of row[arrField]) {
-            const ex = map[id][arrField].find(x => x.action_type === a.action_type);
-            if (ex) ex.value = String(parseFloat(ex.value || 0) + parseFloat(a.value || 0));
-            else map[id][arrField].push({ ...a });
-          }
-        }
+      if (!deductions[id]) deductions[id] = { actions: [] };
+      for (const f of ADDITIVE_FIELDS) {
+        deductions[id][f] = (deductions[id][f] || 0) + (parseFloat(row[f]) || 0);
+      }
+      for (const a of (row.actions || [])) {
+        const ex = deductions[id].actions.find(x => x.action_type === a.action_type);
+        if (ex) ex.value = String(parseFloat(ex.value || 0) + parseFloat(a.value || 0));
+        else deductions[id].actions.push({ ...a });
       }
     }
   }
-  return Object.values(map);
+  _blacklistDeductions[key] = deductions;
+  return deductions;
+}
+
+// Subtracts blacklist deductions from a raw insights array.
+function applyBlacklistDeductions(rows, deductions) {
+  return rows.map(row => {
+    const id  = row.campaign_id || row.adset_id || row.ad_id;
+    const ded = deductions[id];
+    if (!ded) return row;
+    const out = { ...row };
+    // clear rate fields — values will be wrong after subtraction anyway; recomputed downstream
+    delete out.cpm; delete out.ctr; delete out.unique_ctr;
+    delete out.frequency; delete out.cost_per_unique_inline_link_click; delete out.cost_per_result;
+    for (const f of ADDITIVE_FIELDS) {
+      if (out[f] != null) out[f] = String(Math.max(0, parseFloat(out[f] || 0) - (ded[f] || 0)));
+    }
+    if (ded.actions.length && out.actions) {
+      out.actions = out.actions.map(a => {
+        const d = ded.actions.find(x => x.action_type === a.action_type);
+        if (!d) return a;
+        return { ...a, value: String(Math.max(0, parseFloat(a.value || 0) - parseFloat(d.value || 0))) };
+      });
+    }
+    return out;
+  });
+}
+
+// Returns true if the given date range contains any blacklisted date.
+function rangeContainsBlacklist(since, until) {
+  for (const d of BLACKLIST_DATES) if (d >= since && d <= until) return true;
+  return false;
 }
 
 // ── Server-side in-memory cache for FB API responses ────────────────────────
@@ -312,24 +321,23 @@ async function fetchInsightsRaw(level, datePreset, filters = {}, timeRange = nul
 }
 
 // Fetch insights with automatic blacklist date exclusion.
-// Splits the requested range around BLACKLIST_DATES and merges results.
+// Fetches the full range once, then subtracts cached per-entity deductions for blacklisted dates.
 // Pass full=true to bypass blacklist (spend tracker).
 async function fetchInsights(level, datePreset, filters = {}, timeRange = null, full = false) {
   if (full) return fetchInsightsRaw(level, datePreset, filters, timeRange);
 
-  const range = timeRange || presetToRange(datePreset || 'last_30d');
-  const subRanges = splitRangeExcludingBlacklist(range.since, range.until);
-  if (subRanges.length === 0) return [];
-
-  // If range doesn't contain any blacklisted date, fetch normally
-  if (subRanges.length === 1 && subRanges[0].since === range.since && subRanges[0].until === range.until) {
-    return fetchInsightsRaw(level, null, filters, range);
+  // Check if the effective range overlaps any blacklisted date
+  const checkRange = timeRange || presetToRange(datePreset || 'last_30d');
+  if (!rangeContainsBlacklist(checkRange.since, checkRange.until)) {
+    return fetchInsightsRaw(level, datePreset, filters, timeRange);
   }
 
-  // Fetch sub-ranges sequentially (respect rate limit queue) and merge
-  const results = [];
-  for (const r of subRanges) results.push(await fetchInsightsRaw(level, null, filters, r));
-  return mergeInsightRows(results);
+  // Fetch full range + cached deductions in parallel, then subtract
+  const [rows, deductions] = await Promise.all([
+    fetchInsightsRaw(level, datePreset, filters, timeRange),
+    getBlacklistDeductions(level, filters),
+  ]);
+  return applyBlacklistDeductions(rows, deductions);
 }
 
 // Fetch a list endpoint (campaigns/adsets/ads) from all accounts and merge — skips accounts that error
