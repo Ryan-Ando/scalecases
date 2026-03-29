@@ -86,16 +86,51 @@ async function fetchAllContacts(startMs, endMs) {
 
 const US_STATES = new Set(['AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA','HI','ID','IL','IN','IA','KS','KY','LA','ME','MD','MA','MI','MN','MS','MO','MT','NE','NV','NH','NJ','NM','NY','NC','ND','OH','OK','OR','PA','RI','SC','SD','TN','TX','UT','VT','VA','WA','WV','WI','WY','DC']);
 
-// Extract state abbreviation from a GHL contact
+// Read a field from the attributionSource object — GHL uses camelCase keys
+function getAttr(contact, ...keys) {
+  const src = contact.attributionSource || {};
+  for (const k of keys) {
+    const v = (src[k] || '').trim();
+    if (v) return v;
+  }
+  return '';
+}
+
+// Read a GHL custom field value by field ID
+function getCustomField(contact, fieldId) {
+  if (!fieldId) return '';
+  const f = (contact.customFields || []).find(f => f.id === fieldId);
+  return (f?.value || '').trim();
+}
+
+// Extract the FB ad name from a contact.
+// Priority: attributionSource.utmContent → utmMedium → custom field fallback
+function extractAdName(contact) {
+  const fromAttr = getAttr(contact, 'utmContent', 'utm_content', 'utmMedium', 'utm_medium');
+  if (fromAttr) return fromAttr;
+  // Fallback: custom field that was being used before
+  return getCustomField(contact, '2m1yjxI758bRlzTOv7J0');
+}
+
+// Extract state abbreviation from a contact.
+// Priority: env-configured custom field → attribution campaign name → heuristic scan
 function extractContactState(contact) {
-  // Try env-configured field ID first
+  // 1. Env-configured custom field (e.g. "What state was your accident in?")
   const fieldId = process.env.GHL_FIELD_STATE;
   if (fieldId) {
-    const f = (contact.customFields || []).find(f => f.id === fieldId);
-    const v = (f?.value || '').toUpperCase().trim();
-    if (v && US_STATES.has(v)) return v;
+    const v = getCustomField(contact, fieldId).toUpperCase();
+    if (v.length === 2 && US_STATES.has(v)) return v;
   }
-  // Heuristic: scan all custom fields for a 2-letter US state value
+  // 2. Parse state from attributionSource.utmCampaign ("LSS TX", "LSS FL 2")
+  const campaign = getAttr(contact, 'utmCampaign', 'utm_campaign', 'campaign');
+  if (campaign) {
+    const tokens = campaign.trim().split(/[-\s]+/);
+    for (let i = tokens.length - 1; i >= 0; i--) {
+      const t = tokens[i].toUpperCase();
+      if (t.length === 2 && US_STATES.has(t)) return t;
+    }
+  }
+  // 3. Heuristic: scan all custom fields for a 2-letter state value
   for (const f of (contact.customFields || [])) {
     const v = (f.value || '').toUpperCase().trim();
     if (v.length === 2 && US_STATES.has(v)) return v;
@@ -122,22 +157,19 @@ router.get('/contacts', async (req, res) => {
 
     const raw = await fetchAllContacts(startMs, endMs);
 
-    function getCustomField(c, fieldId) {
-      if (!fieldId) return '';
-      const f = (c.customFields || []).find(f => f.id === fieldId);
-      return (f?.value || '').trim();
-    }
-
     const contacts = raw.map(c => ({
       id:          c.id,
       name:        [c.firstName, c.lastName].filter(Boolean).join(' ').trim() || '(No name)',
       phone:       c.phone  || '',
       email:       c.email  || '',
       dateAdded:   c.dateAdded,
-      utmCampaign: getCustomField(c, process.env.GHL_FIELD_UTM_CAMPAIGN),
-      utmAdset:    getCustomField(c, 'DsiFBjELrBDfPKQ2tlH0'), // col H
-      utmContent:  getCustomField(c, '2m1yjxI758bRlzTOv7J0'), // col I — used for matching
-      utmTerm:     getCustomField(c, process.env.GHL_FIELD_UTM_TERM),
+      // Attribution source (automatically captured from URL params — preferred over form fields)
+      utmSource:   getAttr(c, 'utmSource',   'utm_source',   'source'),
+      utmMedium:   getAttr(c, 'utmMedium',   'utm_medium',   'medium'),
+      utmContent:  extractAdName(c),   // ad name — tries attribution first, then custom field
+      utmTerm:     getAttr(c, 'utmTerm',     'utm_term',     'term') || getCustomField(c, process.env.GHL_FIELD_UTM_TERM),
+      utmCampaign: getAttr(c, 'utmCampaign', 'utm_campaign', 'campaign') || getCustomField(c, process.env.GHL_FIELD_UTM_CAMPAIGN),
+      state:       extractContactState(c),
       customFields: c.customFields || [],
     }));
 
@@ -162,15 +194,11 @@ router.get('/leads', async (req, res) => {
 
     const contacts = await fetchAllContacts(startMs, endMs);
 
-    // utm_content field ID — same field used in /contacts route (col I)
-    const UTC_FIELD = '2m1yjxI758bRlzTOv7J0';
-
     const byRawNameState = {}; // "adName|STATE" → count
     let attributed = 0;
 
     for (const c of contacts) {
-      const utmF   = (c.customFields || []).find(f => f.id === UTC_FIELD);
-      const adName = (utmF?.value || '').trim();
+      const adName = extractAdName(c);
       if (!adName) continue;
 
       const state = extractContactState(c);
