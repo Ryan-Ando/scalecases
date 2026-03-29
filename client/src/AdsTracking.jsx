@@ -26,8 +26,8 @@ const US_STATES = new Set([
 
 // Dates permanently blacklisted from lead counting (e.g., CAPI mis-config periods)
 const LEAD_BLACKLIST_DATES = new Set(['2026-03-28']);
-const LEAD_OVERRIDES_LSKEY = 'lead_manual_overrides';
-const GHL_LEADS_LSKEY      = 'ghl_leads_cache';
+const LEAD_OVERRIDES_LSKEY    = 'lead_manual_overrides';
+const LEAD_SUBTRACTIONS_LSKEY = 'lead_subtractions';
 
 // 'lead' excluded — it aggregates CAPI + pixel and inflates when CAPI has duplicates
 const LEAD_ACTION_TYPES = [
@@ -973,33 +973,19 @@ export default function AdsTracking() {
     localStorage.setItem(LEAD_OVERRIDES_LSKEY, JSON.stringify(next));
   }
 
-  // GHL leads — stored in localStorage, survives resets, replaces FB lead counts
-  const [ghlLeads, setGhlLeads] = useState(() => {
-    try { return JSON.parse(localStorage.getItem(GHL_LEADS_LSKEY) || 'null'); } catch { return null; }
+  // Manual lead subtractions per ad — persists in localStorage, survives resets
+  const [leadSubtractions, setLeadSubtractions] = useState(() => {
+    try { return JSON.parse(localStorage.getItem(LEAD_SUBTRACTIONS_LSKEY) || '{}'); } catch { return {}; }
   });
-  const [syncingGhl, setSyncingGhl] = useState(false);
-  const [ghlSyncNote, setGhlSyncNote] = useState('');
+  const [editingSub, setEditingSub] = useState(null); // adName being edited
 
-  async function syncGhlLeads() {
-    setSyncingGhl(true);
-    setGhlSyncNote('Fetching GHL contacts…');
-    try {
-      const data = await apiFetch('/api/ghl/leads');
-      const result = { ...data };
-      setGhlLeads(result);
-      localStorage.setItem(GHL_LEADS_LSKEY, JSON.stringify(result));
-      setGhlSyncNote(`GHL synced — ${data.attributed} attributed leads`);
-    } catch (e) {
-      setGhlSyncNote(`GHL sync failed: ${e.message}`);
-    } finally {
-      setSyncingGhl(false);
-    }
-  }
-
-  function clearGhlLeads() {
-    setGhlLeads(null);
-    localStorage.removeItem(GHL_LEADS_LSKEY);
-    setGhlSyncNote('');
+  function saveLeadSubtraction(adName, value) {
+    const n = Math.max(0, parseInt(value, 10) || 0);
+    const next = { ...leadSubtractions, [adName]: n };
+    if (n === 0) delete next[adName];
+    setLeadSubtractions(next);
+    localStorage.setItem(LEAD_SUBTRACTIONS_LSKEY, JSON.stringify(next));
+    setEditingSub(null);
   }
 
   // UI
@@ -1371,18 +1357,14 @@ export default function AdsTracking() {
 
   const sheetByName = {};
 
-  // Grid: FB all-time leads per ad per state, minus any leads on blacklisted dates.
-  // Blacklisted date deductions come from allAdDailyInsights (populated by Sync Max).
+  // Grid: FB all-time leads per ad per state, minus manual subtractions set by user.
+  // Subtractions apply when viewing all-time (no range) or a range that includes 2026-03-28.
+  const applySubtractions = !rangeStart || !rangeEnd ||
+    (rangeStart <= '2026-03-28' && rangeEnd >= '2026-03-28');
+
   const leadsMap = useMemo(() => {
     const map = {};
     for (const adName of adNames) { map[adName] = {}; for (const st of states) map[adName][st] = 0; }
-
-    // Sum leads on blacklisted dates per ad_id so we can subtract them from the all-time total
-    const blacklistDeduct = {};
-    for (const r of allAdDailyInsights) {
-      if (!r.ad_id || !LEAD_BLACKLIST_DATES.has(r.date_start)) continue;
-      blacklistDeduct[r.ad_id] = (blacklistDeduct[r.ad_id] || 0) + extractLeadsFromActions(r.actions);
-    }
 
     for (const a of activeAds) {
       const rawName = (a.name || '').trim();
@@ -1390,13 +1372,13 @@ export default function AdsTracking() {
       if (!rawName || !state || deletedAds.has(rawName)) continue;
       const adName = memberToCanonical[rawName] || rawName;
       const total  = extractLeadsFromActions(a.actions);
-      const deduct = blacklistDeduct[a.id] || 0;
+      const deduct = applySubtractions ? (leadSubtractions[adName] || 0) : 0;
       const leads  = Math.max(0, total - deduct);
       if (map[adName]?.[state] !== undefined)
         map[adName][state] += leads;
     }
     return map;
-  }, [adNames, states, activeAds, deletedAds, memberToCanonical, allAdDailyInsights]);
+  }, [adNames, states, activeAds, deletedAds, memberToCanonical, leadSubtractions, applySubtractions]);
 
   // Alias for backward-compat with existing grid render references
   const grid = leadsMap;
@@ -1830,30 +1812,12 @@ export default function AdsTracking() {
             <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
               Last synced: {lastSync ? timeAgo(lastSync) : 'never'}
             </span>
-            <button className="btn btn--sm btn--primary" onClick={() => { sync(); if (ghlLeads) syncGhlLeads(); }} disabled={syncing || syncingGhl}>
-              {(syncing || syncingGhl) ? 'Syncing…' : 'Sync Now'}
+            <button className="btn btn--sm btn--primary" onClick={sync} disabled={syncing}>
+              {syncing ? 'Syncing…' : 'Sync Now'}
             </button>
             <button className="btn btn--sm" onClick={resetData} disabled={syncing} title="Clear all stored data and re-sync">
               Reset
             </button>
-            <button
-              className={`btn btn--sm${ghlLeads ? ' btn--primary' : ''}`}
-              onClick={syncGhlLeads}
-              disabled={syncingGhl}
-              title={ghlLeads ? `GHL leads active — ${ghlLeads.attributed} attributed. Click to refresh.` : 'Use GHL contact data as lead source instead of FB'}
-            >
-              {syncingGhl ? 'Syncing GHL…' : ghlLeads ? 'GHL Leads ✓' : 'Sync GHL Leads'}
-            </button>
-            {ghlLeads && (
-              <button
-                className="btn btn--sm"
-                onClick={clearGhlLeads}
-                style={{ color: '#dc2626', borderColor: '#dc2626' }}
-                title="Clear GHL leads data and revert to FB lead counts"
-              >
-                Clear GHL
-              </button>
-            )}
           </div>
           {syncing && syncNote && (
             <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{syncNote}</span>
@@ -1864,16 +1828,6 @@ export default function AdsTracking() {
           {syncError && (
             <span style={{ fontSize: 11, color: '#dc2626' }}>
               Sync failed — {syncError}
-            </span>
-          )}
-          {ghlSyncNote && (
-            <span style={{ fontSize: 11, color: ghlSyncNote.includes('failed') ? '#dc2626' : 'var(--green-dark)' }}>
-              {ghlSyncNote}
-            </span>
-          )}
-          {ghlLeads && (
-            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-              GHL: {ghlLeads.attributed} leads · synced {new Date(ghlLeads.fetchedAt).toLocaleString()}
             </span>
           )}
         </div>
@@ -2119,6 +2073,27 @@ export default function AdsTracking() {
                         )}
                         {!selecting && (
                           <>
+                            {editingSub === adName ? (
+                              <input
+                                autoFocus
+                                type="number"
+                                min="0"
+                                defaultValue={leadSubtractions[adName] || 0}
+                                style={{ width: 48, fontSize: 11, padding: '1px 3px', borderRadius: 4, border: '1px solid var(--border)' }}
+                                onBlur={e => saveLeadSubtraction(adName, e.target.value)}
+                                onKeyDown={e => { if (e.key === 'Enter') saveLeadSubtraction(adName, e.target.value); if (e.key === 'Escape') setEditingSub(null); }}
+                                onClick={e => e.stopPropagation()}
+                              />
+                            ) : (
+                              <button
+                                className="ad-row-sync-btn"
+                                onClick={e => { e.stopPropagation(); setEditingSub(adName); }}
+                                title={`Manual lead subtraction: ${leadSubtractions[adName] || 0}. Click to edit.`}
+                                style={leadSubtractions[adName] ? { color: '#dc2626', fontWeight: 700 } : {}}
+                              >
+                                {leadSubtractions[adName] ? `−${leadSubtractions[adName]}` : '−'}
+                              </button>
+                            )}
                             <button
                               className="ad-row-sync-btn"
                               onClick={e => { e.stopPropagation(); syncAdMax([adName]); }}
