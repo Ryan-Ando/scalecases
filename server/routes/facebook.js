@@ -83,6 +83,15 @@ function applyBlacklistDeductions(rows, deductions) {
         return { ...a, value: String(Math.max(0, parseFloat(a.value || 0) - parseFloat(d.value || 0))) };
       });
     }
+    // Recompute ratio metrics from the adjusted additive fields
+    const spend   = parseFloat(out.spend)   || 0;
+    const impr    = parseFloat(out.impressions) || 0;
+    const reach   = parseFloat(out.reach)   || 0;
+    const uclicks = parseFloat(out.unique_inline_link_clicks) || 0;
+    if (impr  > 0) out.cpm       = String(((spend / impr)  * 1000).toFixed(4));
+    if (impr  > 0 && reach > 0) out.frequency  = String((impr / reach).toFixed(4));
+    if (reach > 0) out.unique_ctr = String(((uclicks / reach) * 100).toFixed(4));
+    if (uclicks > 0) out.cost_per_unique_inline_link_click = String((spend / uclicks).toFixed(4));
     return out;
   });
 }
