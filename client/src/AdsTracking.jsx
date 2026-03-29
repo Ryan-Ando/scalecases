@@ -1238,6 +1238,7 @@ export default function AdsTracking() {
       const stale = !ts || (Date.now() - new Date(ts).getTime() > 24 * 3600 * 1000);
       if (stale) sync();
     });
+    syncGhlLeads(); // always refresh GHL leads on mount — it's the lead source of truth
   }, []);
 
   async function resetData() {
@@ -1387,10 +1388,8 @@ export default function AdsTracking() {
       adIdInfo[a.id] = { adName: memberToCanonical[rawName] || rawName, state: st };
     }
 
-    // ── GHL mode: use GHL contacts as source of truth ────────────────────────
+    // GHL is the only source of truth for leads — FB lead data is never used
     if (ghlLeads?.byRawNameState) {
-      // Use a seen-set to prevent double-counting when multiple FB instances share
-      // the same raw ad name + state (different ad_ids but same utm_content in GHL)
       const seen = new Set();
       for (const a of activeAds) {
         const rawName = (a.name || '').trim();
@@ -1404,35 +1403,9 @@ export default function AdsTracking() {
         if (map[adName]?.[state] !== undefined)
           map[adName][state] += leads;
       }
-      return map;
-    }
-
-    // ── FB mode: use per-day insights with blacklist/overrides, fall back to aggregated actions ──
-    const adDailyLeads = {};
-    for (const r of allAdDailyInsights) {
-      if (!r.ad_id) continue;
-      if (LEAD_BLACKLIST_DATES.has(r.date_start)) continue;  // permanently blacklisted date
-      const info = adIdInfo[r.ad_id];
-      let leads;
-      if (info) {
-        const okey = `${info.adName}|${info.state}|${r.date_start}`;
-        leads = okey in manualOverrides ? manualOverrides[okey] : extractLeadsFromActions(r.actions);
-      } else {
-        leads = extractLeadsFromActions(r.actions);
-      }
-      adDailyLeads[r.ad_id] = (adDailyLeads[r.ad_id] || 0) + leads;
-    }
-    for (const a of activeAds) {
-      const rawName = (a.name || '').trim();
-      const state   = extractState(a.campaignName);
-      if (!rawName || !state || deletedAds.has(rawName)) continue;
-      const adName  = memberToCanonical[rawName] || rawName;
-      const leads   = a.id in adDailyLeads ? adDailyLeads[a.id] : extractLeadsFromActions(a.actions);
-      if (map[adName]?.[state] !== undefined)
-        map[adName][state] += leads;
     }
     return map;
-  }, [adNames, states, activeAds, deletedAds, memberToCanonical, allAdDailyInsights, manualOverrides, ghlLeads]);
+  }, [adNames, states, activeAds, deletedAds, memberToCanonical, ghlLeads]);
 
   // Alias for backward-compat with existing grid render references
   const grid = leadsMap;
@@ -1761,6 +1734,7 @@ export default function AdsTracking() {
       return 0;
     }
     const fbMap = {};
+    // Spend/CPM from FB campaign-level daily insights
     for (const row of allDailyInsights) {
       const date = row.date_start;
       if (!date) continue;
@@ -1768,10 +1742,9 @@ export default function AdsTracking() {
       if (chartEnd   && date > chartEnd)   continue;
       if (!fbMap[date]) fbMap[date] = { spend: 0, leads: 0, cpm_sum: 0, cpm_count: 0 };
       fbMap[date].spend += parseFloat(row.spend) || 0;
-      if (!ghlLeads?.byDate && !LEAD_BLACKLIST_DATES.has(date)) fbMap[date].leads += actionsLeads(row.actions || []);
       if (row.cpm) { fbMap[date].cpm_sum += parseFloat(row.cpm); fbMap[date].cpm_count++; }
     }
-    // When GHL is active, overlay per-day lead counts from GHL contacts
+    // Leads always from GHL only
     if (ghlLeads?.byDate) {
       for (const [date, count] of Object.entries(ghlLeads.byDate)) {
         if (chartStart && date < chartStart) continue;
