@@ -245,7 +245,7 @@ export default function SpendSheet() {
       const since = `${y}-${String(m).padStart(2,'0')}-01`;
       const lastDay = new Date(y, m, 0).getDate();
       const until   = `${y}-${String(m).padStart(2,'0')}-${String(lastDay).padStart(2,'0')}`;
-      const res  = await fetch(`${BASE}/api/facebook/daily?start=${since}&end=${until}`);
+      const res  = await fetch(`${BASE}/api/facebook/daily?start=${since}&end=${until}&full=true`);
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || res.statusText);
       const records = data.map(r => ({

@@ -24,8 +24,7 @@ const US_STATES = new Set([
   'VA','WA','WV','WI','WY','DC',
 ]);
 
-// Dates permanently blacklisted from lead counting (e.g., CAPI mis-config periods)
-const LEAD_BLACKLIST_DATES = new Set(['2026-03-28']);
+// Server now auto-excludes blacklisted dates (2026-03-28) from all FB data
 const LEAD_SUBTRACTIONS_LSKEY = 'lead_subtractions';
 
 // 'lead' excluded — it aggregates CAPI + pixel and inflates when CAPI has duplicates
@@ -1268,11 +1267,8 @@ export default function AdsTracking() {
 
   const sheetByName = {};
 
-  // Grid: FB all-time leads per ad per state, minus manual subtractions set by user.
-  // Subtractions apply when viewing all-time (no range) or a range that includes 2026-03-28.
-  const applySubtractions = !rangeStart || !rangeEnd ||
-    (rangeStart <= '2026-03-28' && rangeEnd >= '2026-03-28');
-
+  // Grid: FB all-time leads per ad per state, minus any manual subtractions set by user.
+  // The 28th is already excluded by the server — subtractions are for any remaining corrections.
   const leadsMap = useMemo(() => {
     const map = {};
     for (const adName of adNames) { map[adName] = {}; for (const st of states) map[adName][st] = 0; }
@@ -1283,13 +1279,13 @@ export default function AdsTracking() {
       if (!rawName || !state || deletedAds.has(rawName)) continue;
       const adName = memberToCanonical[rawName] || rawName;
       const total  = extractLeadsFromActions(a.actions);
-      const deduct = applySubtractions ? (leadSubtractions[`${adName}|${state}`] || 0) : 0;
+      const deduct = leadSubtractions[`${adName}|${state}`] || 0;
       const leads  = Math.max(0, total - deduct);
       if (map[adName]?.[state] !== undefined)
         map[adName][state] += leads;
     }
     return map;
-  }, [adNames, states, activeAds, deletedAds, memberToCanonical, leadSubtractions, applySubtractions]);
+  }, [adNames, states, activeAds, deletedAds, memberToCanonical, leadSubtractions]);
 
   // Alias for backward-compat with existing grid render references
   const grid = leadsMap;
@@ -1625,7 +1621,7 @@ export default function AdsTracking() {
       if (chartEnd   && date > chartEnd)   continue;
       if (!fbMap[date]) fbMap[date] = { spend: 0, leads: 0, cpm_sum: 0, cpm_count: 0 };
       fbMap[date].spend += parseFloat(row.spend) || 0;
-      if (!LEAD_BLACKLIST_DATES.has(date)) fbMap[date].leads += actionsLeads(row.actions || []);
+      fbMap[date].leads += actionsLeads(row.actions || []);
       if (row.cpm) { fbMap[date].cpm_sum += parseFloat(row.cpm); fbMap[date].cpm_count++; }
     }
     return Object.keys(fbMap).sort().map(date => {

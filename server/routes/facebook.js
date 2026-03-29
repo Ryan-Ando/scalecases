@@ -4,6 +4,86 @@ import fetch from 'node-fetch';
 const router = Router();
 const FB_API = 'https://graph.facebook.com/v19.0';
 
+// ── Date blacklist — these dates are excluded from all insights except the spend tracker ──
+const BLACKLIST_DATES = new Set(['2026-03-28']);
+
+function isoDateOffset(dateStr, days) {
+  const d = new Date(dateStr + 'T12:00:00Z');
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+function presetToRange(preset) {
+  const today = new Date().toISOString().slice(0, 10);
+  const ago = n => isoDateOffset(today, -n);
+  switch (preset) {
+    case 'today':      return { since: today, until: today };
+    case 'yesterday':  return { since: ago(1), until: ago(1) };
+    case 'last_7d':    return { since: ago(6), until: today };
+    case 'last_14d':   return { since: ago(13), until: today };
+    case 'last_30d':   return { since: ago(29), until: today };
+    case 'this_month': {
+      const d = new Date();
+      return { since: `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}-01`, until: today };
+    }
+    case 'maximum':    return { since: '2010-01-01', until: today };
+    default:           return { since: ago(29), until: today };
+  }
+}
+
+// Splits a date range into sub-ranges that exclude any blacklisted dates.
+// Returns [] if the entire range is blacklisted.
+function splitRangeExcludingBlacklist(since, until) {
+  const ranges = [];
+  let cursor = since;
+  for (const bad of [...BLACKLIST_DATES].sort()) {
+    if (bad < since || bad > until) continue;
+    const dayBefore = isoDateOffset(bad, -1);
+    if (cursor <= dayBefore) ranges.push({ since: cursor, until: dayBefore });
+    cursor = isoDateOffset(bad, +1);
+  }
+  if (cursor <= until) ranges.push({ since: cursor, until });
+  return ranges;
+}
+
+// Merges two arrays of insight rows by summing additive numeric fields and actions arrays.
+// Rate-derived fields (cpm, ctr, frequency) are dropped — recomputed downstream.
+const ADDITIVE_FIELDS = ['spend','impressions','reach','clicks','unique_inline_link_clicks'];
+function mergeInsightRows(arrays) {
+  const map = {};
+  for (const arr of arrays) {
+    for (const row of arr) {
+      const id = row.campaign_id || row.adset_id || row.ad_id;
+      if (!id) continue;
+      if (!map[id]) {
+        map[id] = { ...row };
+        // clear rate fields — will be recomputed
+        delete map[id].cpm; delete map[id].ctr; delete map[id].unique_ctr;
+        delete map[id].frequency; delete map[id].cost_per_unique_inline_link_click;
+        delete map[id].cost_per_result;
+        // clone mutable arrays
+        if (map[id].actions) map[id].actions = map[id].actions.map(a => ({ ...a }));
+        if (map[id].video_play_actions) map[id].video_play_actions = map[id].video_play_actions.map(a => ({ ...a }));
+        if (map[id].video_avg_time_watched_actions) map[id].video_avg_time_watched_actions = map[id].video_avg_time_watched_actions.map(a => ({ ...a }));
+      } else {
+        for (const f of ADDITIVE_FIELDS) {
+          if (row[f] != null) map[id][f] = String(parseFloat(map[id][f] || 0) + parseFloat(row[f] || 0));
+        }
+        for (const arrField of ['actions', 'video_play_actions', 'video_avg_time_watched_actions']) {
+          if (!row[arrField]) continue;
+          if (!map[id][arrField]) { map[id][arrField] = row[arrField].map(a => ({ ...a })); continue; }
+          for (const a of row[arrField]) {
+            const ex = map[id][arrField].find(x => x.action_type === a.action_type);
+            if (ex) ex.value = String(parseFloat(ex.value || 0) + parseFloat(a.value || 0));
+            else map[id][arrField].push({ ...a });
+          }
+        }
+      }
+    }
+  }
+  return Object.values(map);
+}
+
 // ── Server-side in-memory cache for FB API responses ────────────────────────
 // Keyed by request path+params. TTL: 2 hours. Survives across client reloads.
 const _cache = new Map();
@@ -215,8 +295,8 @@ async function fetchInsightsForAccount(account, level, datePreset, filters = {},
   return all;
 }
 
-// Fetch insights from all accounts and merge — skips accounts that error
-async function fetchInsights(level, datePreset, filters = {}, timeRange = null) {
+// Fetch insights from all accounts and merge — skips accounts that error (raw, no blacklist)
+async function fetchInsightsRaw(level, datePreset, filters = {}, timeRange = null) {
   const accounts = adAccounts();
   const settled = await Promise.allSettled(accounts.map(a => fetchInsightsForAccount(a, level, datePreset, filters, timeRange)));
   return settled.flatMap((r, i) => {
@@ -229,6 +309,27 @@ async function fetchInsights(level, datePreset, filters = {}, timeRange = null) 
     }
     return r.value;
   });
+}
+
+// Fetch insights with automatic blacklist date exclusion.
+// Splits the requested range around BLACKLIST_DATES and merges results.
+// Pass full=true to bypass blacklist (spend tracker).
+async function fetchInsights(level, datePreset, filters = {}, timeRange = null, full = false) {
+  if (full) return fetchInsightsRaw(level, datePreset, filters, timeRange);
+
+  const range = timeRange || presetToRange(datePreset || 'last_30d');
+  const subRanges = splitRangeExcludingBlacklist(range.since, range.until);
+  if (subRanges.length === 0) return [];
+
+  // If range doesn't contain any blacklisted date, fetch normally
+  if (subRanges.length === 1 && subRanges[0].since === range.since && subRanges[0].until === range.until) {
+    return fetchInsightsRaw(level, null, filters, range);
+  }
+
+  // Fetch sub-ranges sequentially (respect rate limit queue) and merge
+  const results = [];
+  for (const r of subRanges) results.push(await fetchInsightsRaw(level, null, filters, r));
+  return mergeInsightRows(results);
 }
 
 // Fetch a list endpoint (campaigns/adsets/ads) from all accounts and merge — skips accounts that error
@@ -517,8 +618,10 @@ router.get('/daily', async (req, res) => {
     // Deduplicate by entity_id + date in case same campaign/adset appears from multiple accounts
     const idKey = level === 'ad' ? 'ad_id' : level === 'adset' ? 'adset_id' : 'campaign_id';
     const deduped = [...new Map(all.map(r => [`${r[idKey]}:${r.date_start}`, r])).values()];
-    cacheSet(cacheKey, deduped);
-    res.json(deduped);
+    // Filter out blacklisted dates unless full=true (spend tracker bypass)
+    const filtered = req.query.full === 'true' ? deduped : deduped.filter(r => !BLACKLIST_DATES.has(r.date_start));
+    cacheSet(cacheKey, filtered);
+    res.json(filtered);
   } catch (err) {
     console.error('FB daily error:', err.message);
     res.status(500).json({ error: err.message });
@@ -611,7 +714,8 @@ router.get('/campaign-spend', async (req, res) => {
     const cached = req.query.force ? null : cacheGet(cacheKey);
     if (cached) return res.json(cached);
 
-    const insights = await fetchInsights('campaign', null, {}, { since, until });
+    // Spend tracker always gets full accurate data — blacklist bypass intentional
+    const insights = await fetchInsights('campaign', null, {}, { since, until }, true);
     const result = insights.map(i => ({
       campaign_id: i.campaign_id,
       campaign_name: i.campaign_name,
