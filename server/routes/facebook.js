@@ -26,7 +26,7 @@ function presetToRange(preset) {
       const d = new Date();
       return { since: `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}-01`, until: today };
     }
-    case 'maximum':    return { since: '2010-01-01', until: today };
+    case 'maximum':    return { since: isoDateOffset(today, -(36 * 30)), until: today };
     default:           return { since: ago(29), until: today };
   }
 }
