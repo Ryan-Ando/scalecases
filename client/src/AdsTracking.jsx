@@ -27,6 +27,7 @@ const US_STATES = new Set([
 // Dates permanently blacklisted from lead counting (e.g., CAPI mis-config periods)
 const LEAD_BLACKLIST_DATES = new Set(['2026-03-28']);
 const LEAD_OVERRIDES_LSKEY = 'lead_manual_overrides';
+const GHL_LEADS_LSKEY      = 'ghl_leads_cache';
 
 // 'lead' excluded — it aggregates CAPI + pixel and inflates when CAPI has duplicates
 const LEAD_ACTION_TYPES = [
@@ -972,6 +973,35 @@ export default function AdsTracking() {
     localStorage.setItem(LEAD_OVERRIDES_LSKEY, JSON.stringify(next));
   }
 
+  // GHL leads — stored in localStorage, survives resets, replaces FB lead counts
+  const [ghlLeads, setGhlLeads] = useState(() => {
+    try { return JSON.parse(localStorage.getItem(GHL_LEADS_LSKEY) || 'null'); } catch { return null; }
+  });
+  const [syncingGhl, setSyncingGhl] = useState(false);
+  const [ghlSyncNote, setGhlSyncNote] = useState('');
+
+  async function syncGhlLeads() {
+    setSyncingGhl(true);
+    setGhlSyncNote('Fetching GHL contacts…');
+    try {
+      const data = await apiFetch('/api/ghl/leads');
+      const result = { ...data };
+      setGhlLeads(result);
+      localStorage.setItem(GHL_LEADS_LSKEY, JSON.stringify(result));
+      setGhlSyncNote(`GHL synced — ${data.attributed} attributed leads`);
+    } catch (e) {
+      setGhlSyncNote(`GHL sync failed: ${e.message}`);
+    } finally {
+      setSyncingGhl(false);
+    }
+  }
+
+  function clearGhlLeads() {
+    setGhlLeads(null);
+    localStorage.removeItem(GHL_LEADS_LSKEY);
+    setGhlSyncNote('');
+  }
+
   // UI
   const [accountNames, setAccountNames] = useState(() => {
     try { return JSON.parse(localStorage.getItem('trackingAccountNames') || '{}'); }
@@ -1357,7 +1387,27 @@ export default function AdsTracking() {
       adIdInfo[a.id] = { adName: memberToCanonical[rawName] || rawName, state: st };
     }
 
-    // Use FB daily insights or stored actions
+    // ── GHL mode: use GHL contacts as source of truth ────────────────────────
+    if (ghlLeads?.byRawNameState) {
+      // Use a seen-set to prevent double-counting when multiple FB instances share
+      // the same raw ad name + state (different ad_ids but same utm_content in GHL)
+      const seen = new Set();
+      for (const a of activeAds) {
+        const rawName = (a.name || '').trim();
+        const state   = extractState(a.campaignName);
+        if (!rawName || !state || deletedAds.has(rawName)) continue;
+        const combo = `${rawName}|${state}`;
+        if (seen.has(combo)) continue;
+        seen.add(combo);
+        const adName = memberToCanonical[rawName] || rawName;
+        const leads  = ghlLeads.byRawNameState[combo] || 0;
+        if (map[adName]?.[state] !== undefined)
+          map[adName][state] += leads;
+      }
+      return map;
+    }
+
+    // ── FB mode: use per-day insights with blacklist/overrides, fall back to aggregated actions ──
     const adDailyLeads = {};
     for (const r of allAdDailyInsights) {
       if (!r.ad_id) continue;
@@ -1382,7 +1432,7 @@ export default function AdsTracking() {
         map[adName][state] += leads;
     }
     return map;
-  }, [adNames, states, activeAds, deletedAds, memberToCanonical, allAdDailyInsights, manualOverrides]);
+  }, [adNames, states, activeAds, deletedAds, memberToCanonical, allAdDailyInsights, manualOverrides, ghlLeads]);
 
   // Alias for backward-compat with existing grid render references
   const grid = leadsMap;
@@ -1822,6 +1872,24 @@ export default function AdsTracking() {
             <button className="btn btn--sm" onClick={resetData} disabled={syncing} title="Clear all stored data and re-sync">
               Reset
             </button>
+            <button
+              className={`btn btn--sm${ghlLeads ? ' btn--primary' : ''}`}
+              onClick={syncGhlLeads}
+              disabled={syncingGhl}
+              title={ghlLeads ? `GHL leads active — ${ghlLeads.attributed} attributed. Click to refresh.` : 'Use GHL contact data as lead source instead of FB'}
+            >
+              {syncingGhl ? 'Syncing GHL…' : ghlLeads ? 'GHL Leads ✓' : 'Sync GHL Leads'}
+            </button>
+            {ghlLeads && (
+              <button
+                className="btn btn--sm"
+                onClick={clearGhlLeads}
+                style={{ color: '#dc2626', borderColor: '#dc2626' }}
+                title="Clear GHL leads data and revert to FB lead counts"
+              >
+                Clear GHL
+              </button>
+            )}
           </div>
           {syncing && syncNote && (
             <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{syncNote}</span>
@@ -1832,6 +1900,16 @@ export default function AdsTracking() {
           {syncError && (
             <span style={{ fontSize: 11, color: '#dc2626' }}>
               Sync failed — {syncError}
+            </span>
+          )}
+          {ghlSyncNote && (
+            <span style={{ fontSize: 11, color: ghlSyncNote.includes('failed') ? '#dc2626' : 'var(--green-dark)' }}>
+              {ghlSyncNote}
+            </span>
+          )}
+          {ghlLeads && (
+            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+              GHL: {ghlLeads.attributed} leads · synced {new Date(ghlLeads.fetchedAt).toLocaleString()}
             </span>
           )}
         </div>

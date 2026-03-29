@@ -84,6 +84,25 @@ async function fetchAllContacts(startMs, endMs) {
   return all;
 }
 
+const US_STATES = new Set(['AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA','HI','ID','IL','IN','IA','KS','KY','LA','ME','MD','MA','MI','MN','MS','MO','MT','NE','NV','NH','NJ','NM','NY','NC','ND','OH','OK','OR','PA','RI','SC','SD','TN','TX','UT','VT','VA','WA','WV','WI','WY','DC']);
+
+// Extract state abbreviation from a GHL contact
+function extractContactState(contact) {
+  // Try env-configured field ID first
+  const fieldId = process.env.GHL_FIELD_STATE;
+  if (fieldId) {
+    const f = (contact.customFields || []).find(f => f.id === fieldId);
+    const v = (f?.value || '').toUpperCase().trim();
+    if (v && US_STATES.has(v)) return v;
+  }
+  // Heuristic: scan all custom fields for a 2-letter US state value
+  for (const f of (contact.customFields || [])) {
+    const v = (f.value || '').toUpperCase().trim();
+    if (v.length === 2 && US_STATES.has(v)) return v;
+  }
+  return '';
+}
+
 // Returns { startMs, endMs } for "this month" by default
 function thisMonthRange() {
   const now = new Date();
@@ -125,6 +144,52 @@ router.get('/contacts', async (req, res) => {
     res.json(contacts);
   } catch (err) {
     console.error('GHL contacts error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+// GET /api/ghl/leads?start=YYYY-MM-DD&end=YYYY-MM-DD
+// Aggregates GHL contacts by utm_content (FB ad name) + state.
+// Used as the source-of-truth lead count in the ads tracker instead of FB data.
+router.get('/leads', async (req, res) => {
+  try {
+    if (!token() || !locationId()) return res.status(503).json({ error: 'GHL not configured' });
+
+    const { start, end } = req.query;
+    const startMs = start ? new Date(start).getTime()                   : null;
+    const endMs   = end   ? new Date(end + 'T23:59:59.999Z').getTime()  : null;
+
+    const contacts = await fetchAllContacts(startMs, endMs);
+
+    // utm_content field ID — same field used in /contacts route (col I)
+    const UTC_FIELD = '2m1yjxI758bRlzTOv7J0';
+
+    const byRawNameState = {}; // "adName|STATE" → count
+    let attributed = 0;
+
+    for (const c of contacts) {
+      const utmF   = (c.customFields || []).find(f => f.id === UTC_FIELD);
+      const adName = (utmF?.value || '').trim();
+      if (!adName) continue;
+
+      const state = extractContactState(c);
+      if (!state) continue;
+
+      const key = `${adName}|${state}`;
+      byRawNameState[key] = (byRawNameState[key] || 0) + 1;
+      attributed++;
+    }
+
+    res.json({
+      byRawNameState,
+      total:      contacts.length,
+      attributed,
+      dateRange:  { start: start || null, end: end || null },
+      fetchedAt:  new Date().toISOString(),
+    });
+  } catch (err) {
+    console.error('GHL leads error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
