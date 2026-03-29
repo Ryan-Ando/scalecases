@@ -2059,10 +2059,9 @@ export default function AdsTracking() {
                                     <span className={`cell-cases${cases === 0 ? ' cell-zero' : ''}`}>{cases}</span>
                                   </button>
                                   <button
-                                    className="ad-row-sync-btn"
                                     onClick={e => { e.stopPropagation(); setEditingSub(subKey); }}
                                     title={subAmt ? `Subtract ${subAmt} leads. Click to edit.` : 'Set lead subtraction'}
-                                    style={subAmt ? { color: '#dc2626', fontSize: 10 } : { fontSize: 10, opacity: 0.4 }}
+                                    style={{ border: 'none', background: 'none', cursor: 'pointer', fontSize: 10, padding: '0 2px', borderRadius: 3, color: subAmt ? '#dc2626' : '#94a3b8', fontWeight: subAmt ? 700 : 400 }}
                                   >
                                     {subAmt ? `−${subAmt}` : '−'}
                                   </button>
