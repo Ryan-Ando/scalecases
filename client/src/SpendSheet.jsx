@@ -40,8 +40,8 @@ function daysLeft(endDate) {
   if (!endDate) return null;
   const today = new Date(); today.setHours(0, 0, 0, 0);
   const end = new Date(endDate + 'T00:00:00');
-  const d = Math.floor((end - today) / 86400000);
-  return d >= 0 ? d : 0;
+  const d = Math.floor((end - today) / 86400000) + 1; // +1 to include today
+  return d >= 1 ? d : 0;
 }
 function monthsBetween(startDate, endDate) {
   if (!startDate || !endDate) return [];
