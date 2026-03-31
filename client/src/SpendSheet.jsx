@@ -74,6 +74,8 @@ export default function SpendSheet() {
   // Pacing state
   const [pacing, setPacing]             = useState(() => loadPacing());
   const [pacingSpend, setPacingSpend]   = useState({});
+  const [pacingSpendDetail, setPacingSpendDetail] = useState({}); // state → [{campaign_name, spend}]
+  const [spendDetailModal, setSpendDetailModal]   = useState(null); // state key or null
   const [pacingLoading, setPacingLoading] = useState(false);
   const [pacingError, setPacingError]   = useState('');
   const [expandedRows, setExpandedRows] = useState(new Set());
@@ -166,6 +168,7 @@ export default function SpendSheet() {
       }
 
       const spendMap = {};
+      const detailMap = {};
       await Promise.all(Object.values(byStart).map(async ({ since, until }) => {
         const r = await fetch(`${BASE}/api/facebook/campaign-spend?since=${since}&until=${until}`);
         const data = await r.json();
@@ -174,9 +177,16 @@ export default function SpendSheet() {
           const st = extractState(c.campaign_name);
           if (!st) continue;
           spendMap[st] = (spendMap[st] || 0) + c.spend;
+          if (!detailMap[st]) detailMap[st] = [];
+          detailMap[st].push({ name: c.campaign_name, spend: c.spend });
         }
       }));
+      // Sort each state's campaigns by spend descending
+      for (const st of Object.keys(detailMap)) {
+        detailMap[st].sort((a, b) => b.spend - a.spend);
+      }
       setPacingSpend(spendMap);
+      setPacingSpendDetail(detailMap);
     } catch (e) {
       setPacingError(e.message);
     } finally {
@@ -510,7 +520,17 @@ export default function SpendSheet() {
 
                         {/* Spent to Date */}
                         <td style={pTd}>
-                          {pacingLoading ? <span style={{ color: 'var(--text-muted)' }}>…</span> : fmtOrDash(r.spentToDate)}
+                          {pacingLoading ? (
+                            <span style={{ color: 'var(--text-muted)' }}>…</span>
+                          ) : r.spentToDate != null ? (
+                            <span
+                              onClick={() => setSpendDetailModal(r.st)}
+                              style={{ cursor: 'pointer', textDecoration: 'underline dotted', textUnderlineOffset: 3 }}
+                              title="Click to see breakdown"
+                            >
+                              {fmt(r.spentToDate)}
+                            </span>
+                          ) : '—'}
                         </td>
 
                         {/* Remaining */}
@@ -643,6 +663,62 @@ export default function SpendSheet() {
           </div>
         </>
       )}
+      {/* ── Spend detail modal ───────────────────────────────────────────── */}
+      {spendDetailModal && (() => {
+        const st       = spendDetailModal;
+        const rows     = pacingSpendDetail[st] || [];
+        const total    = rows.reduce((s, c) => s + c.spend, 0);
+        return (
+          <div
+            onClick={() => setSpendDetailModal(null)}
+            style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+          >
+            <div
+              onClick={e => e.stopPropagation()}
+              style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: 24, minWidth: 400, maxWidth: 600, maxHeight: '80vh', display: 'flex', flexDirection: 'column', gap: 16 }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text)' }}>
+                  Spend breakdown — {st}
+                </div>
+                <button onClick={() => setSpendDetailModal(null)} style={{ background: 'none', border: 'none', fontSize: 18, cursor: 'pointer', color: 'var(--text-muted)', lineHeight: 1 }}>×</button>
+              </div>
+              <div style={{ overflowY: 'auto', flex: 1 }}>
+                <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: 12 }}>
+                  <thead>
+                    <tr>
+                      <th style={{ textAlign: 'left', padding: '6px 8px', borderBottom: '2px solid var(--border)', color: 'var(--text-muted)', fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Campaign</th>
+                      <th style={{ textAlign: 'right', padding: '6px 8px', borderBottom: '2px solid var(--border)', color: 'var(--text-muted)', fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Spend</th>
+                      <th style={{ textAlign: 'right', padding: '6px 8px', borderBottom: '2px solid var(--border)', color: 'var(--text-muted)', fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.05em' }}>%</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rows.map((c, i) => (
+                      <tr key={i} style={{ background: i % 2 === 0 ? 'transparent' : 'var(--bg)' }}>
+                        <td style={{ padding: '7px 8px', borderBottom: '1px solid var(--border)', color: 'var(--text)' }}>{c.name}</td>
+                        <td style={{ padding: '7px 8px', borderBottom: '1px solid var(--border)', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{fmt(c.spend)}</td>
+                        <td style={{ padding: '7px 8px', borderBottom: '1px solid var(--border)', textAlign: 'right', color: 'var(--text-muted)' }}>
+                          {total > 0 ? `${((c.spend / total) * 100).toFixed(1)}%` : '—'}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                  <tfoot>
+                    <tr>
+                      <td style={{ padding: '8px 8px', borderTop: '2px solid var(--border)', fontWeight: 700, color: 'var(--text)' }}>Total</td>
+                      <td style={{ padding: '8px 8px', borderTop: '2px solid var(--border)', textAlign: 'right', fontWeight: 700, color: 'var(--text)', fontVariantNumeric: 'tabular-nums' }}>{fmt(total)}</td>
+                      <td style={{ padding: '8px 8px', borderTop: '2px solid var(--border)', textAlign: 'right', color: 'var(--text-muted)' }}>100%</td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                {rows.length} campaign{rows.length !== 1 ? 's' : ''} · Click outside to close
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }
