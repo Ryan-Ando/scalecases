@@ -143,6 +143,71 @@ router.get('/config', (_req, res) => {
   res.json({ tabName, stateCol });
 });
 
+// GET /api/sheets/lead-audit
+// Reads the lead audit sheet (LEAD_AUDIT_SHEET_ID + LEAD_AUDIT_GID env vars).
+// Auto-detects state and utm_content columns from headers.
+// Returns actual lead counts grouped by { state, utmContent, actualLeads }
+// plus unmatched count (rows with no utm_content).
+router.get('/lead-audit', async (req, res) => {
+  try {
+    const sheetId = process.env.LEAD_AUDIT_SHEET_ID;
+    const gid     = process.env.LEAD_AUDIT_GID ? parseInt(process.env.LEAD_AUDIT_GID) : null;
+    if (!sheetId) return res.status(503).json({ error: 'LEAD_AUDIT_SHEET_ID not set in env vars' });
+
+    const auth   = await getAuthClient();
+    const sheets = google.sheets({ version: 'v4', auth });
+
+    // Resolve tab name from gid
+    const meta      = await sheets.spreadsheets.get({ spreadsheetId: sheetId });
+    const sheetMeta = gid != null
+      ? meta.data.sheets.find(s => s.properties.sheetId === gid)
+      : meta.data.sheets[0];
+    if (!sheetMeta) return res.status(404).json({ error: `Tab gid=${gid} not found in spreadsheet` });
+    const tabName = sheetMeta.properties.title;
+
+    const response = await sheets.spreadsheets.values.get({
+      spreadsheetId: sheetId,
+      range: `${tabName}!A1:Z`,
+    });
+
+    const rows = response.data.values || [];
+    if (rows.length < 2) return res.json({ leads: [], unmatched: 0 });
+
+    // Find columns by header name
+    const header   = rows[0].map(h => (h || '').toLowerCase().trim());
+    const iState   = header.findIndex(h => h.includes('state') || h.includes('accident'));
+    const iContent = header.findIndex(h => h === 'utm_content' || h.includes('utm_content'));
+
+    if (iState < 0)   return res.status(400).json({ error: `No state column found. Headers: ${rows[0].join(', ')}` });
+    if (iContent < 0) return res.status(400).json({ error: `No utm_content column found. Headers: ${rows[0].join(', ')}` });
+
+    // Count rows grouped by (state, utm_content)
+    const counts    = {};
+    let   unmatched = 0;
+    for (let i = 1; i < rows.length; i++) {
+      const row     = rows[i];
+      const state   = (row[iState]   || '').trim().toUpperCase();
+      const content = (row[iContent] || '').trim();
+      if (!state) continue;
+      if (!content) { unmatched++; continue; }
+      const key = `${state}\x00${content}`;
+      counts[key] = (counts[key] || 0) + 1;
+    }
+
+    const leads = Object.entries(counts).map(([key, actualLeads]) => {
+      const sep   = key.indexOf('\x00');
+      const state = key.slice(0, sep);
+      const utmContent = key.slice(sep + 1);
+      return { state, utmContent, actualLeads };
+    });
+
+    res.json({ leads, unmatched, tab: tabName, totalRows: rows.length - 1 });
+  } catch (err) {
+    console.error('Lead audit sheet error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // GET /api/sheets/tracking-import
 // Reads the manual tracking sheet (TRACKING_SHEET_ID env var).
 // Row 1 = headers: date, ad name, SC, GA, ...

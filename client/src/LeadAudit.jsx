@@ -39,12 +39,20 @@ function loadSubtractions() {
   try { return JSON.parse(localStorage.getItem(LEAD_SUBTRACTIONS_LSKEY) || '{}'); } catch { return {}; }
 }
 
+// Normalize ad name for fuzzy matching (lowercase, collapse spaces)
+function norm(s) {
+  return (s || '').toLowerCase().trim().replace(/\s+/g, ' ');
+}
+
 export default function LeadAudit() {
-  const [rows, setRows]       = useState([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError]     = useState('');
-  const [trueLeads, setTrueLeads] = useState({});  // key → string input value
-  const [saved, setSaved]     = useState(false);
+  const [rows, setRows]             = useState([]);
+  const [loading, setLoading]       = useState(false);
+  const [error, setError]           = useState('');
+  const [trueLeads, setTrueLeads]   = useState({});  // key → string input value
+  const [saved, setSaved]           = useState(false);
+  const [sheetLoading, setSheetLoading] = useState(false);
+  const [sheetError, setSheetError]     = useState('');
+  const [sheetMeta, setSheetMeta]       = useState(null); // { matched, unmatched, totalRows, tab }
 
   async function fetchAuditData() {
     setLoading(true);
@@ -79,6 +87,42 @@ export default function LeadAudit() {
       setError(e.message);
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function loadFromSheet() {
+    if (!rows.length) { setSheetError('Fetch FB data first.'); return; }
+    setSheetLoading(true);
+    setSheetError('');
+    setSheetMeta(null);
+    try {
+      const res  = await fetch(`${BASE}/api/sheets/lead-audit`);
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || res.statusText);
+
+      const { leads, unmatched, tab, totalRows } = json;
+      const next = { ...trueLeads };
+      let matched = 0;
+
+      for (const { state, utmContent, actualLeads } of leads) {
+        // Find the FB row whose adName matches utm_content (exact then case-insensitive)
+        const fbRow = rows.find(r =>
+          r.state === state && (r.adName === utmContent || norm(r.adName) === norm(utmContent))
+        );
+        if (!fbRow) continue;
+        const key = `${fbRow.adName}|${fbRow.state}`;
+        // Sum in case multiple utm_content values map to the same fb ad
+        const existing = parseInt(next[key] || '0', 10) || 0;
+        next[key] = String(existing + actualLeads);
+        matched++;
+      }
+
+      setTrueLeads(next);
+      setSheetMeta({ matched, unmatched, totalRows, tab, sheetTotal: leads.length });
+    } catch (e) {
+      setSheetError(e.message);
+    } finally {
+      setSheetLoading(false);
     }
   }
 
@@ -145,9 +189,21 @@ export default function LeadAudit() {
         </div>
         <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
           <button className="btn" onClick={fetchAuditData} disabled={loading}>
-            {loading ? 'Fetching…' : rows.length ? 'Re-fetch' : 'Fetch March 28th Leads'}
+            {loading ? 'Fetching…' : rows.length ? 'Re-fetch FB' : 'Fetch March 28th Leads'}
           </button>
-          {error && <span style={{ fontSize: 12, color: '#dc2626' }}>{error}</span>}
+          {rows.length > 0 && (
+            <button className="btn" onClick={loadFromSheet} disabled={sheetLoading}>
+              {sheetLoading ? 'Matching…' : 'Auto-match from Sheet'}
+            </button>
+          )}
+          {error      && <span style={{ fontSize: 12, color: '#dc2626' }}>{error}</span>}
+          {sheetError && <span style={{ fontSize: 12, color: '#dc2626' }}>{sheetError}</span>}
+          {sheetMeta  && (
+            <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+              Sheet: <strong>{sheetMeta.totalRows}</strong> leads · matched <strong style={{ color: '#16a34a' }}>{sheetMeta.matched}</strong> ads
+              {sheetMeta.unmatched > 0 && <> · <strong style={{ color: '#f59e0b' }}>{sheetMeta.unmatched}</strong> no UTM</>}
+            </span>
+          )}
         </div>
       </div>
 
