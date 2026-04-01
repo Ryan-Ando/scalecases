@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import './App.css';
+import LoginGate from './LoginGate.jsx';
 import AdsTracking from './AdsTracking.jsx';
 import SpendSheet from './SpendSheet.jsx';
 import CampaignReports from './CampaignReports.jsx';
@@ -25,6 +26,7 @@ export default function App() {
   const show = t => ({ display: tab === t ? 'block' : 'none' });
 
   return (
+    <LoginGate>
     <div className="app">
       <header className="header">
         <div className="header-brand"><Logo /> Scale Cases</div>
@@ -47,5 +49,6 @@ export default function App() {
         </a>
       </footer>
     </div>
+    </LoginGate>
   );
 }
