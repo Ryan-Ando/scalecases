@@ -4,14 +4,18 @@ import LoginGate from './LoginGate.jsx';
 import AdsTracking from './AdsTracking.jsx';
 import SpendSheet from './SpendSheet.jsx';
 import CampaignReports from './CampaignReports.jsx';
-import AdsLauncher from './AdsLauncher.jsx';
 import StateVariations from './StateVariations.jsx';
 
 function Logo() {
   return <img src="/logo.png" width="32" height="32" style={{ borderRadius: 8, display: 'block' }} alt="Scale Cases" />;
 }
 
-const TABS = ['Ads Tracking', 'Spend Sheet', 'Campaign Reports', 'Ads Launcher', 'State Variations'];
+const TABS = ['Ads Tracking', 'Spend Sheet', 'Campaign Reports', 'State Variations'];
+
+function logout() {
+  localStorage.removeItem('sc_auth_token');
+  window.location.reload();
+}
 
 // Lazy-mount: components mount on first visit and stay mounted (preserves state + ongoing work)
 export default function App() {
@@ -35,12 +39,17 @@ export default function App() {
             <button key={t} className={`nav-tab${tab === t ? ' nav-tab--active' : ''}`} onClick={() => switchTab(t)}>{t}</button>
           ))}
         </nav>
+        <button
+          onClick={logout}
+          style={{ marginLeft: 16, fontSize: 12, padding: '5px 12px', background: 'none', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text-muted)', cursor: 'pointer', whiteSpace: 'nowrap' }}
+        >
+          Log out
+        </button>
       </header>
       <main className="content" style={{ padding: 0, boxSizing: 'border-box', minWidth: 0, overflow: 'clip' }}>
         {mounted.has('Ads Tracking')     && <div style={show('Ads Tracking')}><AdsTracking /></div>}
         {mounted.has('Spend Sheet')      && <div style={show('Spend Sheet')}><SpendSheet /></div>}
         {mounted.has('Campaign Reports') && <div style={show('Campaign Reports')}><CampaignReports /></div>}
-        {mounted.has('Ads Launcher')     && <div style={show('Ads Launcher')}><AdsLauncher /></div>}
         {mounted.has('State Variations') && <div style={show('State Variations')}><StateVariations /></div>}
       </main>
       <footer style={{ textAlign: 'center', padding: '12px 0', fontSize: 11, color: 'var(--text-muted)', borderTop: '1px solid var(--border)' }}>
