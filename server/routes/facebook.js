@@ -578,10 +578,46 @@ router.get('/ads', async (req, res) => {
   }
 });
 
+// ── Shared daily-insights fetcher (used by /daily endpoint + prefetch) ───────
+async function fetchDailyInsights({ level, datePreset, start, end, date, adIdList, adsetIdList, full }) {
+  const fields = level === 'ad'
+    ? `ad_id,ad_name,campaign_name,spend,impressions,unique_inline_link_clicks,cpm,actions,date_start,date_stop`
+    : level === 'adset'
+    ? `adset_id,adset_name,campaign_name,spend,impressions,unique_inline_link_clicks,cpm,actions,date_start,date_stop`
+    : `campaign_id,campaign_name,spend,impressions,cpm,actions,date_start,date_stop`;
+
+  const accounts = adAccounts();
+  const all = [];
+  const settled = await Promise.allSettled(accounts.map(async account => {
+    const params = new URLSearchParams({ level, fields, time_increment: 1, access_token: token(), limit: 500 });
+    if (start && end)   params.set('time_range', JSON.stringify({ since: start, until: end }));
+    else if (date)      params.set('time_range', JSON.stringify({ since: date, until: date }));
+    else                params.set('date_preset', datePreset || 'last_30d');
+    if (adIdList?.length)    params.set('filtering', JSON.stringify([{ field: 'ad.id',    operator: 'IN', value: adIdList }]));
+    else if (adsetIdList?.length) params.set('filtering', JSON.stringify([{ field: 'adset.id', operator: 'IN', value: adsetIdList }]));
+
+    let url = `${FB_API}/${account}/insights?${params}`;
+    let pages = 0;
+    while (url) {
+      const r = await fbFetch(url);
+      pages++;
+      captureRateLimit(account, r.headers);
+      const json = await r.json();
+      if (json.error) { _stats.errors++; throw new Error(`[${account}] ${json.error.message}`); }
+      all.push(...(json.data || []));
+      url = json.paging?.next || null;
+    }
+    recordCall(account, `daily/${level}`, pages);
+  }));
+  settled.forEach(r => { if (r.status === 'rejected') console.warn('FB daily skipped account:', r.reason?.message); });
+
+  const idKey = level === 'ad' ? 'ad_id' : level === 'adset' ? 'adset_id' : 'campaign_id';
+  const deduped = [...new Map(all.map(r => [`${r[idKey]}:${r.date_start}`, r])).values()];
+  const isSpendTracker = level === 'campaign' && start && end && !adIdList && !adsetIdList;
+  return (full || isSpendTracker) ? deduped : deduped.filter(r => !BLACKLIST_DATES.has(r.date_start));
+}
+
 // GET /api/facebook/daily?date_preset=&level=campaign&ad_ids=id1,id2&date=YYYY-MM-DD
-// Returns per-day spend/impressions/CPM/leads — paginates through all cursor pages.
-// When ad_ids is provided, filters to those ad IDs (level=ad implied).
-// When date=YYYY-MM-DD is provided, fetches a single day (level=ad with actions).
 router.get('/daily', async (req, res) => {
   try {
     const { date_preset, ad_ids, adset_ids, date, start, end } = req.query;
@@ -590,57 +626,14 @@ router.get('/daily', async (req, res) => {
     const level = (adIdList?.length || date) ? 'ad'
                 : adsetIdList?.length         ? 'adset'
                 : (req.query.level || 'campaign');
-    const cacheKey = `daily:${level}:${date_preset||''}:${ad_ids||''}:${adset_ids||''}:${date||''}:${start||''}:${end||''}:${req.query.full||''}`;
+    const full = req.query.full === 'true';
+    const cacheKey = `daily:${level}:${date_preset||''}:${ad_ids||''}:${adset_ids||''}:${date||''}:${start||''}:${end||''}:${full}`;
     const cached = cacheGet(cacheKey);
     if (cached) return res.json(cached);
-    const fields = level === 'ad'
-      ? `ad_id,ad_name,campaign_name,spend,impressions,unique_inline_link_clicks,cpm,actions,date_start,date_stop`
-      : level === 'adset'
-      ? `adset_id,adset_name,campaign_name,spend,impressions,unique_inline_link_clicks,cpm,actions,date_start,date_stop`
-      : `campaign_id,campaign_name,spend,impressions,cpm,actions,date_start,date_stop`;
 
-    const accounts = adAccounts();
-    const all = [];
-    await Promise.allSettled(accounts.map(async account => {
-      const params = new URLSearchParams({
-        level,
-        fields,
-        time_increment: 1,
-        access_token: token(),
-        limit: 500,
-      });
-      if (start && end) {
-        params.set('time_range', JSON.stringify({ since: start, until: end }));
-      } else if (date) {
-        params.set('time_range', JSON.stringify({ since: date, until: date }));
-      } else {
-        params.set('date_preset', date_preset || 'last_30d');
-      }
-      if (adIdList?.length) {
-        params.set('filtering', JSON.stringify([{ field: 'ad.id', operator: 'IN', value: adIdList }]));
-      } else if (adsetIdList?.length) {
-        params.set('filtering', JSON.stringify([{ field: 'adset.id', operator: 'IN', value: adsetIdList }]));
-      }
-      let url = `${FB_API}/${account}/insights?${params}`;
-      while (url) {
-        const r = await fetch(url);
-        const json = await r.json();
-        if (json.error) throw new Error(`[${account}] ${json.error.message}`);
-        all.push(...(json.data || []));
-        url = json.paging?.next || null;
-      }
-    })).then(results => results.forEach(r => {
-      if (r.status === 'rejected') console.warn('FB daily skipped account:', r.reason?.message);
-    }));
-    // Deduplicate by entity_id + date in case same campaign/adset appears from multiple accounts
-    const idKey = level === 'ad' ? 'ad_id' : level === 'adset' ? 'adset_id' : 'campaign_id';
-    const deduped = [...new Map(all.map(r => [`${r[idKey]}:${r.date_start}`, r])).values()];
-    // Spend tracker (campaign-level with explicit start/end) always gets full data.
-    // All other daily requests filter out blacklisted dates.
-    const isSpendTracker = level === 'campaign' && start && end && !adIdList && !adsetIdList;
-    const filtered = (req.query.full === 'true' || isSpendTracker) ? deduped : deduped.filter(r => !BLACKLIST_DATES.has(r.date_start));
-    cacheSet(cacheKey, filtered);
-    res.json(filtered);
+    const result = await fetchDailyInsights({ level, datePreset: date_preset, start, end, date, adIdList, adsetIdList, full });
+    cacheSet(cacheKey, result);
+    res.json(result);
   } catch (err) {
     console.error('FB daily error:', err.message);
     res.status(500).json({ error: err.message });
@@ -749,6 +742,188 @@ router.get('/campaign-spend', async (req, res) => {
   }
 });
 
+// ── Hourly pre-fetch ─────────────────────────────────────────────────────────
+// Populates the cache for all common queries once per hour so that every
+// client request is served instantly without hitting the Meta API.
+const PREFETCH_PRESETS = ['today', 'last_7d', 'last_30d', 'this_month', 'maximum'];
+
+const _prefetch = { running: false, lastRun: null, lastSuccess: null, lastError: null, durationMs: null };
+
+async function runPrefetch() {
+  if (_prefetch.running) { console.log('[prefetch] already running, skipping'); return; }
+  _prefetch.running = true;
+  _prefetch.lastRun = Date.now();
+  const t0 = Date.now();
+  console.log('[prefetch] starting…');
+
+  try {
+    const today = new Date().toISOString().slice(0, 10);
+    const now   = new Date();
+    const curY  = now.getFullYear();
+    const curM  = now.getMonth() + 1;
+    const curMonthStart = `${curY}-${String(curM).padStart(2,'0')}-01`;
+    const curMonthEnd   = `${curY}-${String(curM).padStart(2,'0')}-${String(new Date(curY, curM, 0).getDate()).padStart(2,'0')}`;
+    const prevDate = new Date(curY, curM - 2, 1);
+    const prevY = prevDate.getFullYear(), prevM = prevDate.getMonth() + 1;
+    const prevMonthStart = `${prevY}-${String(prevM).padStart(2,'0')}-01`;
+    const prevMonthEnd   = `${prevY}-${String(prevM).padStart(2,'0')}-${String(new Date(prevY, prevM, 0).getDate()).padStart(2,'0')}`;
+
+    // ── 1. Fetch entity lists once (shared across all preset insight calls) ──
+    const [campaignList, adsetList, adList] = await Promise.all([
+      fetchFromAllAccounts('campaigns', {
+        fields: 'id,name,status,effective_status,objective,created_time,daily_budget,lifetime_budget',
+      }),
+      fetchFromAllAccounts('adsets', {
+        fields: 'id,name,status,effective_status,campaign_id,campaign{name,daily_budget,lifetime_budget},created_time,daily_budget,lifetime_budget,optimization_goal',
+      }),
+      fetchFromAllAccounts('ads', {
+        fields: 'id,name,status,effective_status,adset_id,adset{name,status,effective_status},campaign_id,campaign{name},creative{id,name,thumbnail_url},created_time,daily_budget,lifetime_budget',
+      }),
+    ]);
+
+    // Deduplicate entity lists
+    const dedup = (list, key = 'id') => [...new Map(list.map(x => [x[key], x])).values()];
+    const campaigns = dedup(campaignList);
+    const adsets    = dedup(adsetList);
+    const ads       = dedup(adList);
+
+    // Cache ad metadata immediately (no insights needed)
+    {
+      const mapped = ads.map(a => ({
+        id: a.id, name: a.name, status: a.status, effectiveStatus: a.effective_status,
+        adsetId: a.adset_id, adsetName: a.adset?.name || '',
+        adsetStatus: a.adset?.effective_status || a.adset?.status || '',
+        campaignId: a.campaign_id, campaignName: a.campaign?.name || '',
+        creative: a.creative, createdTime: a.created_time,
+        daily_budget: a.daily_budget, lifetime_budget: a.lifetime_budget,
+      }));
+      cacheSet('ads:metadata', mapped);
+    }
+
+    // ── 2. Campaign + adset + ad insights for each preset (sequential) ──────
+    for (const preset of PREFETCH_PRESETS) {
+      // Campaigns
+      const campInsights = await fetchInsights('campaign', preset, {}, null);
+      const campMap = Object.fromEntries(campInsights.map(i => [i.campaign_id, i]));
+      const campMerged = campaigns.map(c => {
+        const ins = campMap[c.id] || {};
+        const ext = extractResults(ins);
+        return {
+          id: c.id, name: c.name, status: c.status, effectiveStatus: c.effective_status,
+          objective: c.objective, createdTime: c.created_time,
+          dailyBudget: c.daily_budget, lifetimeBudget: c.lifetime_budget,
+          ...ins, ...ext,
+          cost_per_result: computedCpl(ins, ext),
+          unique_clicks: ins.unique_inline_link_clicks,
+          cost_per_unique_click: computedCpc(ins),
+        };
+      });
+      cacheSet(`campaigns:${preset}::`, campMerged);
+
+      // Adsets
+      const adsetInsights = await fetchInsights('adset', preset, {}, null);
+      const adsetMap = Object.fromEntries(adsetInsights.map(i => [i.adset_id, i]));
+      const adsetMerged = adsets.map(a => {
+        const ins = adsetMap[a.id] || {};
+        const ext = extractResults(ins);
+        return {
+          id: a.id, name: a.name, status: a.status, campaignId: a.campaign_id,
+          campaignName: a.campaign?.name || '', createdTime: a.created_time,
+          dailyBudget: a.daily_budget, lifetimeBudget: a.lifetime_budget,
+          campaignDailyBudget: a.campaign?.daily_budget, campaignLifetimeBudget: a.campaign?.lifetime_budget,
+          optimizationGoal: a.optimization_goal, effectiveStatus: a.effective_status,
+          ...ins, ...ext,
+          cost_per_result: computedCpl(ins, ext),
+          unique_clicks: ins.unique_inline_link_clicks,
+          cost_per_unique_click: computedCpc(ins),
+        };
+      });
+      cacheSet(`adsets::${preset}::`, adsetMerged);
+
+      // Ads with insights
+      const adInsights = await fetchInsights('ad', preset, {}, null);
+      const adMap = Object.fromEntries(adInsights.map(i => [i.ad_id, i]));
+      const adMerged = ads.map(a => {
+        const ins = adMap[a.id] || {};
+        const ext = extractResults(ins);
+        return {
+          id: a.id, name: a.name, status: a.status, effectiveStatus: a.effective_status,
+          adsetId: a.adset_id, adsetName: a.adset?.name || '',
+          adsetStatus: a.adset?.effective_status || a.adset?.status || '',
+          campaignId: a.campaign_id, campaignName: a.campaign?.name || '',
+          creative: a.creative, createdTime: a.created_time,
+          ...ins, ...ext,
+          cost_per_result: computedCpl(ins, ext),
+          unique_clicks: ins.unique_inline_link_clicks,
+          cost_per_unique_click: computedCpc(ins),
+        };
+      });
+      cacheSet(`ads:${preset}:::`, adMerged);
+
+      console.log(`[prefetch] preset ${preset} done`);
+    }
+
+    // ── 3. Adsets with no preset (base query used by SpendSheet live budget) ─
+    {
+      const adsetInsights = await fetchInsights('adset', 'last_30d', {}, null);
+      const adsetMap = Object.fromEntries(adsetInsights.map(i => [i.adset_id, i]));
+      const merged = adsets.map(a => {
+        const ins = adsetMap[a.id] || {};
+        const ext = extractResults(ins);
+        return {
+          id: a.id, name: a.name, status: a.status, campaignId: a.campaign_id,
+          campaignName: a.campaign?.name || '', createdTime: a.created_time,
+          dailyBudget: a.daily_budget, lifetimeBudget: a.lifetime_budget,
+          campaignDailyBudget: a.campaign?.daily_budget, campaignLifetimeBudget: a.campaign?.lifetime_budget,
+          optimizationGoal: a.optimization_goal, effectiveStatus: a.effective_status,
+          ...ins, ...ext,
+          cost_per_result: computedCpl(ins, ext),
+          unique_clicks: ins.unique_inline_link_clicks,
+          cost_per_unique_click: computedCpc(ins),
+        };
+      });
+      cacheSet('adsets::::',  merged);
+    }
+
+    // ── 4. Daily campaign data for SpendSheet (current + previous month) ─────
+    const curDaily  = await fetchDailyInsights({ level: 'campaign', start: curMonthStart,  end: curMonthEnd,  full: true });
+    cacheSet(`daily:campaign:::::${curMonthStart}:${curMonthEnd}:true`, curDaily);
+
+    const prevDaily = await fetchDailyInsights({ level: 'campaign', start: prevMonthStart, end: prevMonthEnd, full: true });
+    cacheSet(`daily:campaign:::::${prevMonthStart}:${prevMonthEnd}:true`, prevDaily);
+
+    // ── 5. Campaign-level spend for current month (pacing) ───────────────────
+    const spendInsights = await fetchInsights('campaign', null, {}, { since: curMonthStart, until: today }, true);
+    const spendResult = spendInsights.map(i => ({
+      campaign_id: i.campaign_id,
+      campaign_name: i.campaign_name,
+      spend: parseFloat(i.spend) || 0,
+    }));
+    cacheSet(`campaign-spend:${curMonthStart}:${today}`, spendResult);
+
+    _prefetch.lastSuccess = Date.now();
+    _prefetch.lastError   = null;
+    _prefetch.durationMs  = Date.now() - t0;
+    console.log(`[prefetch] complete in ${(_prefetch.durationMs / 1000).toFixed(1)}s`);
+  } catch (err) {
+    _prefetch.lastError = err.message;
+    console.error('[prefetch] failed:', err.message);
+  } finally {
+    _prefetch.running = false;
+  }
+}
+
+// Run 60s after startup (let server warm up), then every hour
+setTimeout(runPrefetch, 60_000);
+setInterval(runPrefetch, 60 * 60 * 1000);
+
+// POST /api/facebook/prefetch — trigger a manual prefetch immediately
+router.post('/prefetch', async (req, res) => {
+  if (_prefetch.running) return res.json({ ok: false, message: 'already running' });
+  runPrefetch(); // fire-and-forget
+  res.json({ ok: true, message: 'prefetch started' });
+});
+
 // GET /api/facebook/stats — API usage metrics for this server session
 router.get('/stats', (req, res) => {
   const cacheSize = _cache.size;
@@ -772,6 +947,16 @@ router.get('/stats', (req, res) => {
     cacheSize,
     cacheKeys,
     recentCalls: _stats.recentCalls,
+    prefetch: {
+      running:     _prefetch.running,
+      lastRun:     _prefetch.lastRun,
+      lastSuccess: _prefetch.lastSuccess,
+      lastError:   _prefetch.lastError,
+      durationMs:  _prefetch.durationMs,
+      nextRunIn:   _prefetch.lastRun
+        ? Math.max(0, Math.round(((_prefetch.lastRun + 60 * 60 * 1000) - Date.now()) / 1000))
+        : null,
+    },
   });
 });
 
