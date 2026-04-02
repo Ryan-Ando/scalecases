@@ -944,6 +944,11 @@ export default function AdsTracking() {
   const [selectedRows, setSelectedRows] = useState(new Set());
   const [mergeDialog, setMergeDialog]   = useState(null); // { names, canonical }
 
+  // CPL comparison (prev calendar month vs last 7 days)
+  const [cplRows, setCplRows]     = useState([]);
+  const [cplLoading, setCplLoading] = useState(false);
+  const [cplError, setCplError]   = useState('');
+
   // ── Derived merge maps ──────────────────────────────────────────────────────
   const memberToCanonical = useMemo(() => {
     const map = {};
@@ -1222,6 +1227,53 @@ export default function AdsTracking() {
       setAdMaxNote(`Sync failed: ${err.message.slice(0, 80)}`);
     } finally {
       setSyncingAdMax(false);
+    }
+  }
+
+  async function fetchCplComparison() {
+    setCplLoading(true);
+    setCplError('');
+    try {
+      const now   = new Date();
+      const prevEnd   = new Date(now.getFullYear(), now.getMonth(), 0);
+      const prevStart = new Date(prevEnd.getFullYear(), prevEnd.getMonth(), 1);
+      const fmtDate   = d => d.toISOString().slice(0, 10);
+
+      const [prevRes, last7Res] = await Promise.all([
+        fetch(`${BASE}/api/facebook/campaigns?start=${fmtDate(prevStart)}&end=${fmtDate(prevEnd)}`),
+        fetch(`${BASE}/api/facebook/campaigns?date_preset=last_7d`),
+      ]);
+      if (!prevRes.ok || !last7Res.ok) throw new Error('Failed to fetch campaign data');
+      const [prevCampaigns, last7Campaigns] = await Promise.all([prevRes.json(), last7Res.json()]);
+
+      const cpl = c => {
+        const spend = parseFloat(c.spend) || 0;
+        const leads = c.results || 0;
+        return leads > 0 ? spend / leads : null;
+      };
+
+      // Build map keyed by campaign name
+      const prevMap  = Object.fromEntries(prevCampaigns.map(c => [c.name, c]));
+      const last7Map = Object.fromEntries(last7Campaigns.map(c => [c.name, c]));
+      const names    = [...new Set([...Object.keys(prevMap), ...Object.keys(last7Map)])].sort();
+
+      const rows = names
+        .map(name => ({
+          name,
+          prevCpl:  cpl(prevMap[name]  || {}),
+          last7Cpl: cpl(last7Map[name] || {}),
+          prevSpend:  parseFloat(prevMap[name]?.spend)  || 0,
+          last7Spend: parseFloat(last7Map[name]?.spend) || 0,
+          prevLeads:  prevMap[name]?.results  || 0,
+          last7Leads: last7Map[name]?.results || 0,
+        }))
+        .filter(r => r.prevCpl != null || r.last7Cpl != null);
+
+      setCplRows(rows);
+    } catch (e) {
+      setCplError(e.message);
+    } finally {
+      setCplLoading(false);
     }
   }
 
@@ -2152,6 +2204,85 @@ export default function AdsTracking() {
           )}
         </div>
       )}
+
+      {/* ── CPL Comparison ──────────────────────────────────────────────────── */}
+      {(() => {
+        const now      = new Date();
+        const prevMonthName = now.toLocaleString('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC',
+          ...(new Date(now.getFullYear(), now.getMonth(), 0).getMonth() !== now.getMonth() - 1
+            ? {} : {}) });
+        const prevLabel = new Date(now.getFullYear(), now.getMonth() - 1, 1)
+          .toLocaleString('en-US', { month: 'long', year: 'numeric' });
+        const fmt$ = v => v != null ? `$${v.toFixed(2)}` : '—';
+        const th = { padding: '8px 14px', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)', borderBottom: '2px solid var(--border)', whiteSpace: 'nowrap', textAlign: 'right', background: 'var(--surface)' };
+        const thL = { ...th, textAlign: 'left' };
+        const td = { padding: '8px 14px', fontSize: 13, borderBottom: '1px solid var(--border)', textAlign: 'right', fontVariantNumeric: 'tabular-nums' };
+        const tdL = { ...td, textAlign: 'left', color: 'var(--text)', maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' };
+
+        return (
+          <div style={{ padding: '32px 24px 24px', borderTop: '2px solid var(--border)', marginTop: 8 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 16, flexWrap: 'wrap' }}>
+              <div>
+                <span style={{ fontSize: 15, fontWeight: 700, color: 'var(--text)' }}>CPL Comparison</span>
+                <span style={{ fontSize: 12, color: 'var(--text-muted)', marginLeft: 10 }}>
+                  {prevLabel} vs last 7 days — per campaign
+                </span>
+              </div>
+              <button className="btn btn--sm" onClick={fetchCplComparison} disabled={cplLoading} style={{ marginLeft: 'auto' }}>
+                {cplLoading ? 'Loading…' : cplRows.length ? 'Refresh' : 'Load'}
+              </button>
+              {cplError && <span style={{ fontSize: 12, color: '#dc2626' }}>{cplError}</span>}
+            </div>
+
+            {cplRows.length > 0 && (
+              <div style={{ overflowX: 'auto', border: '1px solid var(--border)', borderRadius: 10 }}>
+                <table style={{ borderCollapse: 'collapse', width: '100%' }}>
+                  <thead>
+                    <tr>
+                      <th style={thL}>Campaign</th>
+                      <th style={th}>{prevLabel} CPL</th>
+                      <th style={th}>{prevLabel} Leads</th>
+                      <th style={th}>Last 7D CPL</th>
+                      <th style={th}>Last 7D Leads</th>
+                      <th style={{ ...th, borderLeft: '2px solid var(--border)' }}>Change</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {cplRows.map((r, i) => {
+                      const change = r.prevCpl != null && r.last7Cpl != null
+                        ? ((r.last7Cpl - r.prevCpl) / r.prevCpl) * 100
+                        : null;
+                      const changeColor = change == null ? 'var(--text-muted)'
+                        : change > 10  ? '#dc2626'
+                        : change < -10 ? '#16a34a'
+                        : 'var(--text-muted)';
+                      return (
+                        <tr key={r.name} style={{ background: i % 2 === 0 ? 'transparent' : 'var(--bg)' }}>
+                          <td style={tdL} title={r.name}>{r.name}</td>
+                          <td style={td}>{fmt$(r.prevCpl)}</td>
+                          <td style={{ ...td, color: 'var(--text-muted)' }}>{r.prevLeads || '—'}</td>
+                          <td style={td}>{fmt$(r.last7Cpl)}</td>
+                          <td style={{ ...td, color: 'var(--text-muted)' }}>{r.last7Leads || '—'}</td>
+                          <td style={{ ...td, borderLeft: '2px solid var(--border)', fontWeight: 700, color: changeColor }}>
+                            {change == null ? '—'
+                              : `${change >= 0 ? '+' : ''}${change.toFixed(1)}%`}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {!cplLoading && cplRows.length === 0 && !cplError && (
+              <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>
+                Click <strong>Load</strong> to fetch CPL comparison data.
+              </div>
+            )}
+          </div>
+        );
+      })()}
 
       {/* Merge dialog */}
       {mergeDialog && (
