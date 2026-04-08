@@ -867,6 +867,16 @@ export default function CampaignReports() {
   const [loading, setLoading]     = useState(true);
   const [error, setError]         = useState('');
 
+  // GHL leads — fetched for the current date range
+  const [ghlLeads, setGhlLeads] = useState({ byAdId: {}, byDate: {}, byCampaign: {}, ready: false });
+  useEffect(() => {
+    if (!start || !end) return;
+    fetch(`${BASE}/api/ghl/leads-by-adid?start=${start}&end=${end}`)
+      .then(r => r.json())
+      .then(d => setGhlLeads(d))
+      .catch(() => {});
+  }, [start, end]);
+
   // Accordion data
   const [allAdsets, setAllAdsets] = useState({});     // campaignId → adsets[]
   const [allAds, setAllAds]       = useState({});     // adsetId → ads[]
@@ -1388,10 +1398,16 @@ export default function CampaignReports() {
           return fmtBudget(c);
         case 'spend':
           return fmt$(c.spend);
-        case 'results':
-          return c.results ?? '—';
-        case 'cost_per_result':
-          return fmt$(clientCpl(c));
+        case 'results': {
+          const ghlCount = ghlLeads.byCampaign[c.name];
+          return ghlCount != null ? ghlCount : (c.results ?? '—');
+        }
+        case 'cost_per_result': {
+          const ghlCount = ghlLeads.byCampaign[c.name];
+          const spend = parseFloat(c.spend) || 0;
+          if (ghlCount > 0 && spend > 0) return fmt$(spend / ghlCount);
+          return ghlCount === 0 ? '—' : fmt$(clientCpl(c));
+        }
         case 'unique_clicks':
           return fmtN(c.unique_clicks);
         case 'cost_per_unique_click':
@@ -1508,17 +1524,28 @@ export default function CampaignReports() {
             }}>
             {isExpanded ? '▾' : '▸'}
           </td>
-          {COLS.map(col => (
-            <td key={col.key} style={{
-              ...tdBase, textAlign: col.align || 'right',
-              ...(col.sticky ? { position: 'sticky', left: 36, zIndex: 1 } : {}),
-            }}>
-              {col.key === 'aiStatus' ? renderAiCell(a, 'adset', campaignId)
-                : col.key === 'status' ? renderStatusCell(a, 'adset')
-                : col.key === 'name' ? <span style={{ fontWeight: 600, paddingLeft: 4 }} title={a.name}>{a.name}</span>
-                : cellVal(a, col.key)}
-            </td>
-          ))}
+          {COLS.map(col => {
+            let content;
+            if (col.key === 'aiStatus') content = renderAiCell(a, 'adset', campaignId);
+            else if (col.key === 'status') content = renderStatusCell(a, 'adset');
+            else if (col.key === 'name') content = <span style={{ fontWeight: 600, paddingLeft: 4 }} title={a.name}>{a.name}</span>;
+            else if (col.key === 'results') {
+              const ghlCount = ghlLeads.byAdId[a.id]?.total;
+              content = ghlCount != null ? ghlCount : (a.results ?? '—');
+            } else if (col.key === 'cost_per_result') {
+              const ghlCount = ghlLeads.byAdId[a.id]?.total;
+              const spend = parseFloat(a.spend) || 0;
+              content = (ghlCount > 0 && spend > 0) ? fmt$(spend / ghlCount) : (ghlCount === 0 ? '—' : fmt$(clientCpl(a)));
+            } else content = cellVal(a, col.key);
+            return (
+              <td key={col.key} style={{
+                ...tdBase, textAlign: col.align || 'right',
+                ...(col.sticky ? { position: 'sticky', left: 36, zIndex: 1 } : {}),
+              }}>
+                {content}
+              </td>
+            );
+          })}
         </tr>
 
         {/* Ad rows when adset expanded */}
@@ -1557,24 +1584,36 @@ export default function CampaignReports() {
         onMouseLeave={e => { e.currentTarget.style.background = ''; }}>
         {/* No chevron for ads */}
         <td style={{ ...adTdBase, paddingLeft: 36, width: 36, position: 'sticky', left: 0, zIndex: 2 }} />
-        {COLS.map(col => (
-          <td key={col.key} style={{
-            ...adTdBase, textAlign: col.align || 'right',
-            ...(col.sticky ? { position: 'sticky', left: 36, zIndex: 1, background: '#f8fafc' } : {}),
-          }}>
-            {col.key === 'aiStatus' ? renderAiCell(ad, 'ad', campaignId)
-              : col.key === 'status' ? renderStatusCell(ad, 'ad')
-              : col.key === 'name'
-                ? <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <span title={ad.name} style={{ overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 180 }}>{ad.name}</span>
-                    <button className="btn btn--sm"
-                      onClick={e => { e.stopPropagation(); window.open(`${BASE}/api/facebook/ad/${ad.id}/preview`, '_blank'); }}
-                      title="Preview ad creative"
-                      style={{ fontSize: 10, padding: '1px 6px', flexShrink: 0 }}>👁 Preview</button>
-                  </div>
-              : cellVal(ad, col.key)}
-          </td>
-        ))}
+        {COLS.map(col => {
+          let content;
+          if (col.key === 'aiStatus') content = renderAiCell(ad, 'ad', campaignId);
+          else if (col.key === 'status') content = renderStatusCell(ad, 'ad');
+          else if (col.key === 'name') content = (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span title={ad.name} style={{ overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 180 }}>{ad.name}</span>
+              <button className="btn btn--sm"
+                onClick={e => { e.stopPropagation(); window.open(`${BASE}/api/facebook/ad/${ad.id}/preview`, '_blank'); }}
+                title="Preview ad creative"
+                style={{ fontSize: 10, padding: '1px 6px', flexShrink: 0 }}>👁 Preview</button>
+            </div>
+          );
+          else if (col.key === 'results') {
+            const ghlCount = ghlLeads.byAdId[ad.adsetId]?.total;
+            content = ghlCount != null ? ghlCount : (ad.results ?? '—');
+          } else if (col.key === 'cost_per_result') {
+            const ghlCount = ghlLeads.byAdId[ad.adsetId]?.total;
+            const spend = parseFloat(ad.spend) || 0;
+            content = (ghlCount > 0 && spend > 0) ? fmt$(spend / ghlCount) : (ghlCount === 0 ? '—' : fmt$(clientCpl(ad)));
+          } else content = cellVal(ad, col.key);
+          return (
+            <td key={col.key} style={{
+              ...adTdBase, textAlign: col.align || 'right',
+              ...(col.sticky ? { position: 'sticky', left: 36, zIndex: 1, background: '#f8fafc' } : {}),
+            }}>
+              {content}
+            </td>
+          );
+        })}
       </tr>
     );
   }
