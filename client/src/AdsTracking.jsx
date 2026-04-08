@@ -497,8 +497,8 @@ function AdDetailModal({ adName, state, allAds, sheetByName, accountLabel, merge
                     : a.lifetime_budget ? `$${(a.lifetime_budget/100).toFixed(0)} lifetime` : '—',
         adset:        a.adsetName    || '—',
         spend,
-        fbLeads:      ghlLeads.byAdId[a.id]?.total || 0,
-        cpl:          (ghlLeads.byAdId[a.id]?.total > 0) && spend > 0 ? spend / ghlLeads.byAdId[a.id].total : null,
+        fbLeads:      ghlLeads.byAdId[a.adsetId]?.total || 0,
+        cpl:          (ghlLeads.byAdId[a.adsetId]?.total > 0) && spend > 0 ? spend / ghlLeads.byAdId[a.adsetId].total : null,
         uniqueClicks: uclicks,
         costPerClick: uclicks > 0 && spend > 0 ? spend / uclicks : null,
         cpm:          impr > 0 ? spend / impr * 1000 : null,
@@ -1314,7 +1314,7 @@ export default function AdsTracking() {
       const state   = extractState(a.campaignName);
       if (!rawName || !state || deletedAds.has(rawName)) continue;
       const adName = memberToCanonical[rawName] || rawName;
-      const leads  = ghlLeads.byAdId[a.id]?.byState[state] || 0;
+      const leads  = ghlLeads.byAdId[a.adsetId]?.byState[state] || 0;
       if (map[adName]?.[state] !== undefined)
         map[adName][state] += leads;
     }
