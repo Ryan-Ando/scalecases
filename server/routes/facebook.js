@@ -640,44 +640,6 @@ router.get('/daily', async (req, res) => {
   }
 });
 
-// POST /api/facebook/ad/:id/status  body: { status: 'ACTIVE'|'PAUSED' }
-router.post('/ad/:id/status', async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { status } = req.body;
-    if (!['ACTIVE', 'PAUSED'].includes(status)) return res.status(400).json({ error: 'Invalid status' });
-    const r = await fetch(`${FB_API}/${id}?access_token=${token()}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status }),
-    });
-    const json = await r.json();
-    if (json.error) throw new Error(json.error.message);
-    res.json({ ok: true });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// POST /api/facebook/adset/:id/status  body: { status: 'ACTIVE'|'PAUSED' }
-router.post('/adset/:id/status', async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { status } = req.body;
-    if (!['ACTIVE', 'PAUSED'].includes(status)) return res.status(400).json({ error: 'Invalid status' });
-    const r = await fetch(`${FB_API}/${id}?access_token=${token()}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status }),
-    });
-    const json = await r.json();
-    if (json.error) throw new Error(json.error.message);
-    res.json({ ok: true });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
 // GET /api/facebook/ad/:id/preview — opens an HTML page with the FB ad preview iframe
 router.get('/ad/:id/preview', async (req, res) => {
   try {
@@ -694,25 +656,6 @@ router.get('/ad/:id/preview', async (req, res) => {
 </style></head><body>${iframeBody}</body></html>`);
   } catch (err) {
     res.status(500).send(`<h3 style="font-family:sans-serif;color:#dc2626;padding:32px">Preview unavailable: ${err.message}</h3>`);
-  }
-});
-
-// POST /api/facebook/campaign/:id/status  body: { status: 'ACTIVE'|'PAUSED' }
-router.post('/campaign/:id/status', async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { status } = req.body;
-    if (!['ACTIVE', 'PAUSED'].includes(status)) return res.status(400).json({ error: 'Invalid status' });
-    const r = await fetch(`${FB_API}/${id}?access_token=${token()}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status }),
-    });
-    const json = await r.json();
-    if (json.error) throw new Error(json.error.message);
-    res.json({ ok: true });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
   }
 });
 

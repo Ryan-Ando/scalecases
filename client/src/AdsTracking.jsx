@@ -25,7 +25,6 @@ const US_STATES = new Set([
 ]);
 
 // Server now auto-excludes blacklisted dates (2026-03-28) from all FB data
-const LEAD_SUBTRACTIONS_LSKEY = 'lead_subtractions';
 
 // 'lead' excluded — it aggregates CAPI + pixel and inflates when CAPI has duplicates
 const LEAD_ACTION_TYPES = [
@@ -264,7 +263,6 @@ function DateRangePicker({ start, end, onChange }) {
 }
 
 const AD_DETAIL_TABLE_COLS = [
-  { key: 'toggle',         label: ''                          },
   { key: 'adName',         label: 'Ad'                        },
   { key: 'delivery',       label: 'Delivery'                  },
   { key: 'budget',         label: 'Budget'                    },
@@ -298,7 +296,20 @@ function AdDetailModal({ adName, state, allAds, sheetByName, accountLabel, merge
   const [caseSortDir, setCaseSortDir] = useState('desc');
   const [tableStart, setTableStart]   = useState('');
   const [tableEnd, setTableEnd]       = useState('');
-  const [togglingId, setTogglingId]   = useState(null);
+
+  // GHL leads cache — fetched from server, filtered by date range
+  const [ghlLeads, setGhlLeads] = useState({ byAdId: {}, byDate: {}, byCampaign: {}, ready: false, loading: true });
+
+  useEffect(() => {
+    let cancelled = false;
+    setGhlLeads(g => ({ ...g, loading: true }));
+    const params = tableStart && tableEnd ? `?start=${tableStart}&end=${tableEnd}` : '';
+    fetch(`${BASE}/api/ghl/leads-by-adid${params}`)
+      .then(r => r.json())
+      .then(d => { if (!cancelled) setGhlLeads({ ...d, loading: false }); })
+      .catch(() => { if (!cancelled) setGhlLeads(g => ({ ...g, loading: false })); });
+    return () => { cancelled = true; };
+  }, [tableStart, tableEnd]);
 
   // GHL contacts + sheet cases — fetched on-demand when modal opens
   const [ghlContacts, setGhlContacts] = useState([]);
@@ -471,46 +482,23 @@ function AdDetailModal({ adName, state, allAds, sheetByName, accountLabel, merge
   }, [cases, adDailyInsights, cutoff]);
 
   // Table rows: one per FB ad instance
-  const [adStatuses, setAdStatuses] = useState({});
-
-  async function toggleStatus(id, currentStatus) {
-    const next = currentStatus === 'ACTIVE' ? 'PAUSED' : 'ACTIVE';
-    setTogglingId(id);
-    try {
-      const res = await fetch(`${BASE}/api/facebook/ad/${id}/status`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status: next }),
-      });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.error);
-      setAdStatuses(p => ({ ...p, [id]: next }));
-    } catch (e) {
-      console.error('Toggle failed:', e.message);
-    } finally {
-      setTogglingId(null);
-    }
-  }
 
   const tableRows = useMemo(() =>
     fbInstances.map(a => {
       const rows    = modalDailyInsights.filter(r => r.ad_id === a.id);
       const spend   = rows.reduce((s, r) => s + (parseFloat(r.spend)         || 0), 0);
-      const results = rows.reduce((s, r) => s + extractLeadsFromActions(r.actions), 0);
       const impr    = rows.reduce((s, r) => s + (parseFloat(r.impressions)   || 0), 0);
       const uclicks = rows.reduce((s, r) => s + (parseFloat(r.unique_inline_link_clicks ?? r.unique_clicks) || 0), 0);
       return {
         id:           a.id,
         adName:       (a.name || '').trim(),
         delivery:     a.effectiveStatus || a.status || '—',
-        adsetActive:  a.adsetStatus === 'ACTIVE',
-        status:       adStatuses[a.id] ?? (a.adsetStatus !== 'ACTIVE' ? 'PAUSED' : (a.status || 'PAUSED')),
         budget:       a.daily_budget ? `$${(a.daily_budget/100).toFixed(0)}/day`
                     : a.lifetime_budget ? `$${(a.lifetime_budget/100).toFixed(0)} lifetime` : '—',
         adset:        a.adsetName    || '—',
         spend,
-        fbLeads:      results,
-        cpl:          results > 0 && spend > 0 ? spend / results : null,
+        fbLeads:      ghlLeads.byAdId[a.id]?.total || 0,
+        cpl:          (ghlLeads.byAdId[a.id]?.total > 0) && spend > 0 ? spend / ghlLeads.byAdId[a.id].total : null,
         uniqueClicks: uclicks,
         costPerClick: uclicks > 0 && spend > 0 ? spend / uclicks : null,
         cpm:          impr > 0 ? spend / impr * 1000 : null,
@@ -520,12 +508,12 @@ function AdDetailModal({ adName, state, allAds, sheetByName, accountLabel, merge
         created:      a.createdTime || '',
       };
     }),
-    [fbInstances, modalDailyInsights, adStatuses]
+    [fbInstances, modalDailyInsights, ghlLeads]
   );
 
   const sortedRows = useMemo(() => {
     return [...tableRows].sort((a, b) => {
-      if (sortKey === 'toggle' || sortKey === 'adName') {
+      if (sortKey === 'adName') {
         const av = a.adName, bv = b.adName;
         if (av < bv) return sortDir === 'asc' ? -1 : 1;
         if (av > bv) return sortDir === 'asc' ?  1 : -1;
@@ -551,29 +539,6 @@ function AdDetailModal({ adName, state, allAds, sheetByName, accountLabel, merge
 
   function fmtCell(row, key) {
     const val = row[key];
-    if (key === 'toggle') {
-      const isActive = row.status === 'ACTIVE';
-      const adsetOff = !row.adsetActive;
-      return (
-        <button
-          onClick={e => { e.stopPropagation(); toggleStatus(row.id, row.status); }}
-          disabled={togglingId === row.id || adsetOff}
-          title={adsetOff ? 'Ad set is off — turn on the ad set first' : isActive ? 'Active' : 'Paused'}
-          style={{
-            width: 36, height: 20, borderRadius: 10, border: 'none',
-            cursor: adsetOff ? 'not-allowed' : 'pointer',
-            background: isActive && !adsetOff ? '#22c55e' : '#cbd5e1',
-            position: 'relative', transition: 'background 0.2s', opacity: adsetOff ? 0.5 : 1,
-          }}
-        >
-          <span style={{
-            position: 'absolute', top: 2, left: isActive && !adsetOff ? 18 : 2,
-            width: 16, height: 16, borderRadius: '50%', background: '#fff',
-            transition: 'left 0.2s', display: 'block',
-          }} />
-        </button>
-      );
-    }
     if (key === 'delivery') {
       const color = val === 'ACTIVE' ? '#22c55e' : val === 'PAUSED' ? '#f59e0b' : '#94a3b8';
       return <span style={{ color, fontSize: 11, fontWeight: 600 }}>{val}</span>;
@@ -725,6 +690,8 @@ function AdDetailModal({ adName, state, allAds, sheetByName, accountLabel, merge
               <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
                 <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)' }}>
                   Ads ({fbInstances.length}){tableStart && tableEnd ? ` · ${tableStart} – ${tableEnd}` : ' · all time'}
+                  {ghlLeads.loading && <span style={{ fontWeight: 400, color: '#94a3b8', marginLeft: 6 }}>· loading leads…</span>}
+                  {!ghlLeads.loading && !ghlLeads.ready && <span style={{ fontWeight: 400, color: '#f59e0b', marginLeft: 6 }}>· leads not ready</span>}
                 </div>
                 <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 6 }}>
                   <DateRangePicker
@@ -741,9 +708,9 @@ function AdDetailModal({ adName, state, allAds, sheetByName, accountLabel, merge
                       {AD_DETAIL_TABLE_COLS.map(col => (
                         <th
                           key={col.key}
-                          className={`tracking-th-state${col.key !== 'toggle' ? ' tracking-th-sortable' : ''}`}
-                          onClick={() => col.key !== 'toggle' && handleSort(col.key)}
-                          style={{ whiteSpace: 'nowrap', cursor: col.key !== 'toggle' ? 'pointer' : 'default' }}
+                          className="tracking-th-state tracking-th-sortable"
+                          onClick={() => handleSort(col.key)}
+                          style={{ whiteSpace: 'nowrap', cursor: 'pointer' }}
                         >
                           {col.label}
                           {sortKey === col.key && <SortArrow dir={sortDir} />}
@@ -882,21 +849,6 @@ export default function AdsTracking() {
   const syncingRef = useRef(false);
 
 
-  // Manual lead subtractions per cell (adName|state) — persists in localStorage, survives resets
-  const [leadSubtractions, setLeadSubtractions] = useState(() => {
-    try { return JSON.parse(localStorage.getItem(LEAD_SUBTRACTIONS_LSKEY) || '{}'); } catch { return {}; }
-  });
-  const [editingSub, setEditingSub] = useState(null); // 'adName|state' key being edited
-
-  function saveLeadSubtraction(adName, state, value) {
-    const key = `${adName}|${state}`;
-    const n = Math.max(0, parseInt(value, 10) || 0);
-    const next = { ...leadSubtractions, [key]: n };
-    if (n === 0) delete next[key];
-    setLeadSubtractions(next);
-    localStorage.setItem(LEAD_SUBTRACTIONS_LSKEY, JSON.stringify(next));
-    setEditingSub(null);
-  }
 
   // UI
   const [accountNames, setAccountNames] = useState(() => {
@@ -1234,38 +1186,43 @@ export default function AdsTracking() {
     setCplLoading(true);
     setCplError('');
     try {
-      const now   = new Date();
+      const now       = new Date();
       const prevEnd   = new Date(now.getFullYear(), now.getMonth(), 0);
       const prevStart = new Date(prevEnd.getFullYear(), prevEnd.getMonth(), 1);
+      const last7End  = new Date();
+      const last7Start = new Date(Date.now() - 6 * 864e5);
       const fmtDate   = d => d.toISOString().slice(0, 10);
 
-      const [prevRes, last7Res] = await Promise.all([
+      const [prevFbRes, last7FbRes, prevGhlRes, last7GhlRes] = await Promise.all([
         fetch(`${BASE}/api/facebook/campaigns?start=${fmtDate(prevStart)}&end=${fmtDate(prevEnd)}`),
         fetch(`${BASE}/api/facebook/campaigns?date_preset=last_7d`),
+        fetch(`${BASE}/api/ghl/leads-by-adid?start=${fmtDate(prevStart)}&end=${fmtDate(prevEnd)}`),
+        fetch(`${BASE}/api/ghl/leads-by-adid?start=${fmtDate(last7Start)}&end=${fmtDate(last7End)}`),
       ]);
-      if (!prevRes.ok || !last7Res.ok) throw new Error('Failed to fetch campaign data');
-      const [prevCampaigns, last7Campaigns] = await Promise.all([prevRes.json(), last7Res.json()]);
+      if (!prevFbRes.ok || !last7FbRes.ok) throw new Error('Failed to fetch campaign data');
+      const [prevCampaigns, last7Campaigns, prevGhl, last7Ghl] = await Promise.all([
+        prevFbRes.json(), last7FbRes.json(), prevGhlRes.json(), last7GhlRes.json(),
+      ]);
 
-      const cpl = c => {
-        const spend = parseFloat(c.spend) || 0;
-        const leads = c.results || 0;
-        return leads > 0 ? spend / leads : null;
-      };
-
-      // Build map keyed by campaign name
+      // FB gives us spend; GHL gives us accurate lead counts by campaign name
       const prevMap  = Object.fromEntries(prevCampaigns.map(c => [c.name, c]));
       const last7Map = Object.fromEntries(last7Campaigns.map(c => [c.name, c]));
       const names    = [...new Set([...Object.keys(prevMap), ...Object.keys(last7Map)])].sort();
 
+      const cpl = (fbCampaign, ghlLeadCount) => {
+        const spend = parseFloat(fbCampaign?.spend) || 0;
+        return ghlLeadCount > 0 ? spend / ghlLeadCount : null;
+      };
+
       const rows = names
         .map(name => ({
           name,
-          prevCpl:  cpl(prevMap[name]  || {}),
-          last7Cpl: cpl(last7Map[name] || {}),
+          prevCpl:    cpl(prevMap[name],   prevGhl.byCampaign?.[name]  || 0),
+          last7Cpl:   cpl(last7Map[name],  last7Ghl.byCampaign?.[name] || 0),
           prevSpend:  parseFloat(prevMap[name]?.spend)  || 0,
           last7Spend: parseFloat(last7Map[name]?.spend) || 0,
-          prevLeads:  prevMap[name]?.results  || 0,
-          last7Leads: last7Map[name]?.results || 0,
+          prevLeads:  prevGhl.byCampaign?.[name]  || 0,
+          last7Leads: last7Ghl.byCampaign?.[name] || 0,
         }))
         .filter(r => r.prevCpl != null || r.last7Cpl != null);
 
@@ -1319,8 +1276,7 @@ export default function AdsTracking() {
 
   const sheetByName = {};
 
-  // Grid: FB all-time leads per ad per state, minus any manual subtractions set by user.
-  // The 28th is already excluded by the server — subtractions are for any remaining corrections.
+  // Grid: GHL "new lead" contacts per ad per state, matched by FB ad ID (utm_term).
   const leadsMap = useMemo(() => {
     const map = {};
     for (const adName of adNames) { map[adName] = {}; for (const st of states) map[adName][st] = 0; }
@@ -1330,14 +1286,12 @@ export default function AdsTracking() {
       const state   = extractState(a.campaignName);
       if (!rawName || !state || deletedAds.has(rawName)) continue;
       const adName = memberToCanonical[rawName] || rawName;
-      const total  = extractLeadsFromActions(a.actions);
-      const deduct = leadSubtractions[`${adName}|${state}`] || 0;
-      const leads  = Math.max(0, total - deduct);
+      const leads  = ghlLeads.byAdId[a.id]?.byState[state] || 0;
       if (map[adName]?.[state] !== undefined)
         map[adName][state] += leads;
     }
     return map;
-  }, [adNames, states, activeAds, deletedAds, memberToCanonical, leadSubtractions]);
+  }, [adNames, states, activeAds, deletedAds, memberToCanonical, ghlLeads]);
 
   // Alias for backward-compat with existing grid render references
   const grid = leadsMap;
@@ -2077,43 +2031,19 @@ export default function AdsTracking() {
                       });
                       const status  = cellStatus[adName]?.[state];
                       const cellBg  = status === 'solo' ? 'rgba(34,197,94,0.12)' : status === 'shared' ? 'rgba(59,130,246,0.12)' : undefined;
-                      const subKey = `${adName}|${state}`;
-                      const subAmt = leadSubtractions[subKey] || 0;
                       return (
                         <td key={state} className="tracking-td-cell" style={cellBg ? { background: cellBg } : undefined}>
                           {everUsed
-                            ? editingSub === subKey
-                              ? (
-                                <input
-                                  autoFocus
-                                  type="number"
-                                  min="0"
-                                  defaultValue={subAmt}
-                                  style={{ width: 52, fontSize: 11, padding: '2px 4px', borderRadius: 4, border: '1px solid var(--border)', textAlign: 'center' }}
-                                  onBlur={e => saveLeadSubtraction(adName, state, e.target.value)}
-                                  onKeyDown={e => { if (e.key === 'Enter') saveLeadSubtraction(adName, state, e.target.value); if (e.key === 'Escape') setEditingSub(null); }}
-                                  onClick={e => e.stopPropagation()}
-                                />
-                              )
-                              : (
-                                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1 }}>
-                                  <button
-                                    className="tracking-cell-btn"
-                                    onClick={e => { e.stopPropagation(); setAdDetail({ adName, state }); }}
-                                    style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5 }}
-                                  >
-                                    <span className={`cell-leads${leads === 0 ? ' cell-zero' : ''}`}>{leads}</span>
-                                    <span className="cell-sep">|</span>
-                                    <span className={`cell-cases${cases === 0 ? ' cell-zero' : ''}`}>{cases}</span>
-                                  </button>
-                                  <button
-                                    onClick={e => { e.stopPropagation(); setEditingSub(subKey); }}
-                                    title={subAmt ? `Subtract ${subAmt} leads. Click to edit.` : 'Set lead subtraction'}
-                                    style={{ border: 'none', background: 'none', cursor: 'pointer', fontSize: 10, padding: '0 2px', borderRadius: 3, color: subAmt ? '#dc2626' : '#94a3b8', fontWeight: subAmt ? 700 : 400 }}
-                                  >
-                                    {subAmt ? `−${subAmt}` : '−'}
-                                  </button>
-                                </div>
+                            ? (
+                                <button
+                                  className="tracking-cell-btn"
+                                  onClick={e => { e.stopPropagation(); setAdDetail({ adName, state }); }}
+                                  style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5 }}
+                                >
+                                  <span className={`cell-leads${leads === 0 ? ' cell-zero' : ''}`}>{leads}</span>
+                                  <span className="cell-sep">|</span>
+                                  <span className={`cell-cases${cases === 0 ? ' cell-zero' : ''}`}>{cases}</span>
+                                </button>
                               )
                             : <span className="tracking-cell-empty">—</span>
                           }

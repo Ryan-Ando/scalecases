@@ -138,6 +138,81 @@ function extractContactState(contact) {
   return '';
 }
 
+// ── GHL leads cache ──────────────────────────────────────────────────────────
+// Fetches all "new lead" tagged contacts once, stores minimal records, refreshes hourly.
+// Each record: { adId, state, campaign, dateMs }
+const _ghlCache = { leads: null, fetchedAt: null, running: false, error: null };
+
+async function refreshGhlCache() {
+  if (_ghlCache.running) return;
+  _ghlCache.running = true;
+  console.log('[GHL] cache refresh started');
+  try {
+    const all = await fetchAllContacts(null, null);
+    _ghlCache.leads = all
+      .filter(c => (c.tags || []).some(t => (t || '').toLowerCase().trim() === 'new lead'))
+      .map(c => ({
+        adId:     getAttr(c, 'utmTerm', 'utm_term', 'term') || getCustomField(c, process.env.GHL_FIELD_UTM_TERM),
+        state:    extractContactState(c),
+        campaign: getAttr(c, 'utmCampaign', 'utm_campaign', 'campaign'),
+        dateMs:   c.dateAdded ? new Date(c.dateAdded).getTime() : null,
+      }))
+      .filter(c => c.adId);
+    _ghlCache.fetchedAt = new Date().toISOString();
+    _ghlCache.error = null;
+    console.log(`[GHL] cache refreshed — ${_ghlCache.leads.length} attributed new leads`);
+  } catch (err) {
+    _ghlCache.error = err.message;
+    console.error('[GHL] cache refresh error:', err.message);
+  } finally {
+    _ghlCache.running = false;
+  }
+}
+
+setTimeout(refreshGhlCache, 10_000);
+setInterval(refreshGhlCache, 60 * 60 * 1000);
+
+// GET /api/ghl/leads-by-adid?start=YYYY-MM-DD&end=YYYY-MM-DD
+// Returns GHL "new lead" contacts aggregated by FB ad ID, state, campaign, and date.
+router.get('/leads-by-adid', (req, res) => {
+  if (!_ghlCache.leads) {
+    return res.json({ ready: false, byAdId: {}, byDate: {}, byCampaign: {}, fetchedAt: null });
+  }
+
+  const { start, end } = req.query;
+  const startMs = start ? new Date(start).getTime() : null;
+  const endMs   = end   ? new Date(end + 'T23:59:59.999Z').getTime() : null;
+
+  const byAdId     = {};
+  const byDate     = {};
+  const byCampaign = {};
+
+  for (const c of _ghlCache.leads) {
+    if (startMs && c.dateMs && c.dateMs < startMs) continue;
+    if (endMs   && c.dateMs && c.dateMs > endMs)   continue;
+
+    if (!byAdId[c.adId]) byAdId[c.adId] = { total: 0, byState: {} };
+    byAdId[c.adId].total++;
+    if (c.state) byAdId[c.adId].byState[c.state] = (byAdId[c.adId].byState[c.state] || 0) + 1;
+
+    if (c.dateMs) {
+      const day = new Date(c.dateMs).toISOString().slice(0, 10);
+      byDate[day] = (byDate[day] || 0) + 1;
+    }
+
+    if (c.campaign) byCampaign[c.campaign] = (byCampaign[c.campaign] || 0) + 1;
+  }
+
+  res.json({ ready: true, byAdId, byDate, byCampaign, fetchedAt: _ghlCache.fetchedAt, cacheSize: _ghlCache.leads.length });
+});
+
+// POST /api/ghl/refresh — trigger a manual cache refresh
+router.post('/refresh', (req, res) => {
+  if (_ghlCache.running) return res.json({ ok: false, message: 'already running' });
+  refreshGhlCache();
+  res.json({ ok: true, message: 'GHL cache refresh started' });
+});
+
 // Returns { startMs, endMs } for "this month" by default
 function thisMonthRange() {
   const now = new Date();
