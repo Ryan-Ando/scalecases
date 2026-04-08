@@ -901,6 +901,20 @@ export default function AdsTracking() {
   const [cplLoading, setCplLoading] = useState(false);
   const [cplError, setCplError]   = useState('');
 
+  // GHL leads cache — fetched by main grid date range (rangeStart/rangeEnd)
+  const [ghlLeads, setGhlLeads] = useState({ byAdId: {}, byDate: {}, byCampaign: {}, ready: false, loading: true });
+
+  useEffect(() => {
+    let cancelled = false;
+    setGhlLeads(g => ({ ...g, loading: true }));
+    const params = rangeStart && rangeEnd ? `?start=${rangeStart}&end=${rangeEnd}` : '';
+    fetch(`${BASE}/api/ghl/leads-by-adid${params}`)
+      .then(r => r.json())
+      .then(d => { if (!cancelled) setGhlLeads({ ...d, loading: false }); })
+      .catch(() => { if (!cancelled) setGhlLeads(g => ({ ...g, loading: false })); });
+    return () => { cancelled = true; };
+  }, [rangeStart, rangeEnd]);
+
   // ── Derived merge maps ──────────────────────────────────────────────────────
   const memberToCanonical = useMemo(() => {
     const map = {};
@@ -1808,6 +1822,8 @@ export default function AdsTracking() {
           {(rangeStart && rangeEnd) && ` · ${rangeStart} – ${rangeEnd}`}
         </span>
         {loadingCases && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Loading cases…</span>}
+        {ghlLeads.loading && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Loading leads…</span>}
+        {!ghlLeads.loading && !ghlLeads.ready && <span style={{ fontSize: 11, color: '#f59e0b' }}>Leads not ready — server cache still building</span>}
         {casesError && <span style={{ fontSize: 11, color: '#dc2626' }}>{casesError}</span>}
         {importing && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Importing monthly cases…</span>}
         {!importing && importResult && (
