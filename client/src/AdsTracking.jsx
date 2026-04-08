@@ -902,18 +902,32 @@ export default function AdsTracking() {
   const [cplError, setCplError]   = useState('');
 
   // GHL leads cache — fetched by main grid date range (rangeStart/rangeEnd)
+  // Retries every 20s until the server cache is ready (cache build can take 1-2 min on cold start)
   const [ghlLeads, setGhlLeads] = useState({ byAdId: {}, byDate: {}, byCampaign: {}, ready: false, loading: true });
+  const [ghlLeadsKey, setGhlLeadsKey] = useState(0); // increment to force a manual refresh
 
   useEffect(() => {
     let cancelled = false;
-    setGhlLeads(g => ({ ...g, loading: true }));
-    const params = rangeStart && rangeEnd ? `?start=${rangeStart}&end=${rangeEnd}` : '';
-    fetch(`${BASE}/api/ghl/leads-by-adid${params}`)
-      .then(r => r.json())
-      .then(d => { if (!cancelled) setGhlLeads({ ...d, loading: false }); })
-      .catch(() => { if (!cancelled) setGhlLeads(g => ({ ...g, loading: false })); });
-    return () => { cancelled = true; };
-  }, [rangeStart, rangeEnd]);
+    let retryTimer = null;
+
+    function doFetch() {
+      setGhlLeads(g => ({ ...g, loading: true }));
+      const params = rangeStart && rangeEnd ? `?start=${rangeStart}&end=${rangeEnd}` : '';
+      fetch(`${BASE}/api/ghl/leads-by-adid${params}`)
+        .then(r => r.json())
+        .then(d => {
+          if (cancelled) return;
+          setGhlLeads({ ...d, loading: false });
+          if (!d.ready) retryTimer = setTimeout(doFetch, 20000);
+        })
+        .catch(() => {
+          if (!cancelled) setGhlLeads(g => ({ ...g, loading: false }));
+        });
+    }
+
+    doFetch();
+    return () => { cancelled = true; if (retryTimer) clearTimeout(retryTimer); };
+  }, [rangeStart, rangeEnd, ghlLeadsKey]);
 
   // ── Derived merge maps ──────────────────────────────────────────────────────
   const memberToCanonical = useMemo(() => {
@@ -1824,6 +1838,7 @@ export default function AdsTracking() {
         {loadingCases && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Loading cases…</span>}
         {ghlLeads.loading && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Loading leads…</span>}
         {!ghlLeads.loading && !ghlLeads.ready && <span style={{ fontSize: 11, color: '#f59e0b' }}>Leads not ready — server cache still building</span>}
+        {!ghlLeads.loading && <button onClick={() => setGhlLeadsKey(k => k + 1)} style={{ fontSize: 11, padding: '2px 8px', borderRadius: 4, border: '1px solid var(--border)', background: 'none', cursor: 'pointer', color: 'var(--text-muted)' }}>↻ Refresh leads</button>}
         {casesError && <span style={{ fontSize: 11, color: '#dc2626' }}>{casesError}</span>}
         {importing && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Importing monthly cases…</span>}
         {!importing && importResult && (
