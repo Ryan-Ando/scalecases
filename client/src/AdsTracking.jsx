@@ -1639,34 +1639,32 @@ export default function AdsTracking() {
   }, [chartPeriod, rangeStart, rangeEnd]);
 
   const chartData = useMemo(() => {
-    const LEAD_TYPES = ['offsite_conversion.fb_pixel_lead','onsite_conversion.lead_grouped','contact','schedule','submit_application'];
-    function actionsLeads(actions = []) {
-      for (const type of LEAD_TYPES) {
-        const a = actions.find(x => x.action_type === type);
-        if (a) return parseInt(a.value, 10) || 0;
-      }
-      return 0;
-    }
     const fbMap = {};
     for (const row of allDailyInsights) {
       const date = row.date_start;
       if (!date) continue;
       if (chartStart && date < chartStart) continue;
       if (chartEnd   && date > chartEnd)   continue;
-      if (!fbMap[date]) fbMap[date] = { spend: 0, leads: 0, cpm_sum: 0, cpm_count: 0 };
+      if (!fbMap[date]) fbMap[date] = { spend: 0, cpm_sum: 0, cpm_count: 0 };
       fbMap[date].spend += parseFloat(row.spend) || 0;
-      fbMap[date].leads += actionsLeads(row.actions || []);
       if (row.cpm) { fbMap[date].cpm_sum += parseFloat(row.cpm); fbMap[date].cpm_count++; }
     }
-    return Object.keys(fbMap).sort().map(date => {
-      const fb    = fbMap[date];
-      const leads = fb.leads;
-      const spend = +(fb.spend).toFixed(2);
-      const cpm   = fb.cpm_count > 0 ? +(fb.cpm_sum / fb.cpm_count).toFixed(2) : null;
-      const cpl   = leads > 0 && spend > 0 ? +(spend / leads).toFixed(2) : null;
+    // Merge in GHL lead counts by date
+    const ghlByDate = ghlLeads.byDate || {};
+    const allDates = new Set([...Object.keys(fbMap), ...Object.keys(ghlByDate).filter(d => {
+      if (chartStart && d < chartStart) return false;
+      if (chartEnd   && d > chartEnd)   return false;
+      return true;
+    })]);
+    return [...allDates].sort().map(date => {
+      const fb     = fbMap[date] || { spend: 0, cpm_sum: 0, cpm_count: 0 };
+      const leads  = ghlByDate[date] || 0;
+      const spend  = +(fb.spend).toFixed(2);
+      const cpm    = fb.cpm_count > 0 ? +(fb.cpm_sum / fb.cpm_count).toFixed(2) : null;
+      const cpl    = leads > 0 && spend > 0 ? +(spend / leads).toFixed(2) : null;
       return { date: date.slice(5), leads, spend, cpm, cpl };
     });
-  }, [allDailyInsights, chartStart, chartEnd]);
+  }, [allDailyInsights, ghlLeads.byDate, chartStart, chartEnd]);
 
 
   function saveAccountName(state, name) {
