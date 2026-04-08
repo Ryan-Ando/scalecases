@@ -213,6 +213,43 @@ router.post('/refresh', (req, res) => {
   res.json({ ok: true, message: 'GHL cache refresh started' });
 });
 
+// GET /api/ghl/debug — inspect cache state and sample records
+router.get('/debug', async (req, res) => {
+  const leads = _ghlCache.leads;
+  if (!leads) {
+    return res.json({ ready: false, running: _ghlCache.running, error: _ghlCache.error });
+  }
+
+  // Count how many have adId vs missing
+  const withAdId    = leads.filter(l => l.adId).length;
+  const withState   = leads.filter(l => l.state).length;
+  const withCampaign = leads.filter(l => l.campaign).length;
+  const missingAdId = leads.filter(l => !l.adId).length;
+
+  // Sample raw contact to see attributionSource structure
+  const rawSample = await (async () => {
+    try {
+      const params = new URLSearchParams({ locationId: locationId(), limit: 1 });
+      const json = await fetchPage(`${GHL_API}/contacts/?${params}`);
+      const c = (json.contacts || [])[0];
+      if (!c) return null;
+      return { tags: c.tags, attributionSource: c.attributionSource, customFields: (c.customFields || []).slice(0, 5) };
+    } catch { return null; }
+  })();
+
+  res.json({
+    ready: true,
+    fetchedAt: _ghlCache.fetchedAt,
+    total: leads.length,
+    withAdId,
+    withState,
+    withCampaign,
+    missingAdId,
+    sampleLeads: leads.slice(0, 5),
+    rawContactSample: rawSample,
+  });
+});
+
 // Returns { startMs, endMs } for "this month" by default
 function thisMonthRange() {
   const now = new Date();
