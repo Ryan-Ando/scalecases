@@ -1512,7 +1512,7 @@ export default function AdsTracking() {
           return canonical === adName && extractState(a.campaignName) === st;
         });
         const active = instances.filter(a =>
-          (a.effectiveStatus || a.status) === 'ACTIVE' && a.adsetStatus === 'ACTIVE'
+          (a.effectiveStatus || a.status) === 'ACTIVE'
         );
         if (!active.length) { map[adName][st] = 'off'; continue; }
         const hasSolo = active.some(a => (adsetSizes[a.adsetId] || 1) === 1);

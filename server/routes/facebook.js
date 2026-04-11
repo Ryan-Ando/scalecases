@@ -120,7 +120,7 @@ function cacheSet(key, data) { _cache.set(key, { data, ts: Date.now() }); }
 // All FB API page fetches run through this queue one at a time with a gap
 // between calls. This prevents simultaneous multi-account bursts from tripping
 // the per-user rate limit.
-const FB_CALL_GAP_MS = 250; // ms between consecutive FB API calls
+const FB_CALL_GAP_MS = 750; // ms between consecutive FB API calls
 const _fbQueue = [];
 let   _fbRunning = false;
 
@@ -692,8 +692,14 @@ const PREFETCH_PRESETS = ['maximum'];
 
 const _prefetch = { running: false, lastRun: null, lastSuccess: null, lastError: null, durationMs: null };
 
+const PREFETCH_MIN_INTERVAL_MS = 20 * 60 * 1000; // don't re-run within 20 min of last success
+
 async function runPrefetch() {
   if (_prefetch.running) { console.log('[prefetch] already running, skipping'); return; }
+  if (_prefetch.lastSuccess && (Date.now() - _prefetch.lastSuccess) < PREFETCH_MIN_INTERVAL_MS) {
+    console.log('[prefetch] skipping — last success was recent');
+    return;
+  }
   _prefetch.running = true;
   _prefetch.lastRun = Date.now();
   const t0 = Date.now();
