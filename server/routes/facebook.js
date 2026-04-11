@@ -688,7 +688,7 @@ router.get('/campaign-spend', async (req, res) => {
 // ── Hourly pre-fetch ─────────────────────────────────────────────────────────
 // Populates the cache for all common queries once per hour so that every
 // client request is served instantly without hitting the Meta API.
-const PREFETCH_PRESETS = ['today', 'last_7d', 'last_30d', 'this_month', 'maximum'];
+const PREFETCH_PRESETS = ['maximum'];
 
 const _prefetch = { running: false, lastRun: null, lastSuccess: null, lastError: null, durationMs: null };
 
