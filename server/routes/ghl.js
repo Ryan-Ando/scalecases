@@ -156,11 +156,14 @@ async function refreshGhlCache() {
         state:    extractContactState(c),
         campaign: getAttr(c, 'utmCampaign', 'utm_campaign', 'campaign'),
         dateMs:   c.dateAdded ? new Date(c.dateAdded).getTime() : null,
-      }))
-      .filter(c => c.adId);
+      }));
+    // Keep ALL new leads in cache (not just those with adId) so that byCampaign
+    // and byDate totals are complete. byAdId is only populated for leads that have
+    // a utm_term (adset ID) — handled in the endpoint loop below.
+    const withAdId = _ghlCache.leads.filter(c => c.adId).length;
     _ghlCache.fetchedAt = new Date().toISOString();
     _ghlCache.error = null;
-    console.log(`[GHL] cache refreshed — ${_ghlCache.leads.length} attributed new leads`);
+    console.log(`[GHL] cache refreshed — ${_ghlCache.leads.length} new leads total, ${withAdId} with adset ID`);
   } catch (err) {
     _ghlCache.error = err.message;
     console.error('[GHL] cache refresh error:', err.message);
@@ -191,9 +194,11 @@ router.get('/leads-by-adid', (req, res) => {
     if (startMs && c.dateMs && c.dateMs < startMs) continue;
     if (endMs   && c.dateMs && c.dateMs > endMs)   continue;
 
-    if (!byAdId[c.adId]) byAdId[c.adId] = { total: 0, byState: {} };
-    byAdId[c.adId].total++;
-    if (c.state) byAdId[c.adId].byState[c.state] = (byAdId[c.adId].byState[c.state] || 0) + 1;
+    if (c.adId) {
+      if (!byAdId[c.adId]) byAdId[c.adId] = { total: 0, byState: {} };
+      byAdId[c.adId].total++;
+      if (c.state) byAdId[c.adId].byState[c.state] = (byAdId[c.adId].byState[c.state] || 0) + 1;
+    }
 
     if (c.dateMs) {
       const day = new Date(c.dateMs).toISOString().slice(0, 10);
