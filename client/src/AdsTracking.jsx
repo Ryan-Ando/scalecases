@@ -1311,12 +1311,16 @@ export default function AdsTracking() {
 
   const sheetByName = {};
 
-  // Grid: GHL "new lead" contacts per ad per state, matched by FB ad ID (utm_term).
+  // Grid: GHL "new lead" contacts per ad per state, matched by FB adset ID (utm_term).
+  // Always uses allAds for structure (adsetId → campaignName → state) regardless of
+  // date range — GHL data is already date-filtered server-side via the leads fetch params.
+  // Using activeAds here was wrong: rate-limited range fetches produced partial adset ID
+  // lists, causing whole accounts' leads to disappear.
   const leadsMap = useMemo(() => {
     const map = {};
     for (const adName of adNames) { map[adName] = {}; for (const st of states) map[adName][st] = 0; }
 
-    for (const a of activeAds) {
+    for (const a of allAds) {
       const rawName = (a.name || '').trim();
       const state   = extractState(a.campaignName);
       if (!rawName || !state || deletedAds.has(rawName)) continue;
@@ -1326,7 +1330,7 @@ export default function AdsTracking() {
         map[adName][state] += leads;
     }
     return map;
-  }, [adNames, states, activeAds, deletedAds, memberToCanonical, ghlLeads]);
+  }, [adNames, states, allAds, deletedAds, memberToCanonical, ghlLeads]);
 
   // Alias for backward-compat with existing grid render references
   const grid = leadsMap;
