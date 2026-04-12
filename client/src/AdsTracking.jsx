@@ -848,6 +848,9 @@ export default function AdsTracking() {
   const [syncError, setSyncError] = useState('');
   const syncingRef = useRef(false);
 
+  // Structure sync — fetches ad metadata only (no insights), minimal FB API usage
+  const [structureSync, setStructureSync] = useState({ running: false, accountStatus: {}, error: null, lastRun: null });
+
 
 
   // UI
@@ -1136,6 +1139,33 @@ export default function AdsTracking() {
     sync();
     loadCases();
   }
+
+  // ── Structure sync — ad metadata only, no insights, minimal API usage ──────
+  const syncStructure = useCallback(async () => {
+    if (structureSync.running) return;
+    setStructureSync(s => ({ ...s, running: true, error: null, accountStatus: {} }));
+    try {
+      const data = await apiFetch('/api/facebook/structure');
+      // Merge into fbAds — preserves existing spend/results for ads that come back,
+      // while keeping stale data for any accounts that failed
+      if (data.ads?.length) {
+        await dbUpsert('fbAds', data.ads);
+        // Reload allAds from DB so the grid updates immediately
+        const fresh = await dbGetAll('fbAds');
+        setAllAds(fresh);
+      }
+      setStructureSync({ running: false, accountStatus: data.accountStatus || {}, error: null, lastRun: Date.now() });
+    } catch (err) {
+      setStructureSync(s => ({ ...s, running: false, error: err.message }));
+    }
+  }, [structureSync.running]);
+
+  // Auto-trigger structure sync on load if we have no ad structure at all
+  useEffect(() => {
+    if (allAds.length === 0 && !structureSync.running && !structureSync.lastRun) {
+      syncStructure();
+    }
+  }, [allAds.length, structureSync.running, structureSync.lastRun]);
 
   // ── Delete an ad permanently ────────────────────────────────────────────────
   async function deleteAd(adName) {
@@ -1769,6 +1799,49 @@ export default function AdsTracking() {
               Reset
             </button>
           </div>
+          {/* Ad structure status row */}
+          {(() => {
+            const statuses = structureSync.accountStatus;
+            const accounts = Object.keys(statuses);
+            const okCount  = accounts.filter(a => statuses[a] === 'ok').length;
+            const failed   = accounts.filter(a => statuses[a] !== 'ok');
+            return (
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                {structureSync.running ? (
+                  <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                    Syncing ad structure… (no insights, minimal API usage)
+                  </span>
+                ) : accounts.length > 0 ? (
+                  <>
+                    <span style={{ fontSize: 11, color: okCount === accounts.length ? 'var(--green-dark)' : '#d97706' }}>
+                      Ad structure: {allAds.length} ads · {okCount}/{accounts.length} accounts loaded
+                    </span>
+                    {failed.length > 0 && (
+                      <span style={{ fontSize: 11, color: '#dc2626' }}>
+                        ({failed.length} failed — rate limited)
+                      </span>
+                    )}
+                  </>
+                ) : allAds.length > 0 ? (
+                  <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                    {allAds.length} ads loaded from cache
+                  </span>
+                ) : null}
+                {structureSync.error && (
+                  <span style={{ fontSize: 11, color: '#dc2626' }}>Structure sync failed: {structureSync.error}</span>
+                )}
+                <button
+                  className="btn btn--sm"
+                  onClick={syncStructure}
+                  disabled={structureSync.running || syncing}
+                  title="Fetch ad names, IDs and campaign structure only — no insights, minimal API usage"
+                  style={{ fontSize: 11 }}
+                >
+                  {structureSync.running ? 'Syncing structure…' : '↻ Sync Structure'}
+                </button>
+              </div>
+            );
+          })()}
           {syncing && syncNote && (
             <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{syncNote}</span>
           )}

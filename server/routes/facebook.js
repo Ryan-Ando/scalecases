@@ -873,6 +873,68 @@ router.post('/prefetch', async (req, res) => {
   res.json({ ok: true, message: 'prefetch started' });
 });
 
+// GET /api/facebook/structure
+// Fetches ONLY ad structure (no insights) from all accounts sequentially.
+// Retries rate-limited accounts up to 2 more times with increasing delays.
+// Returns { ads, accountStatus } — ads have no spend/results fields.
+// Costs 1 API call per page per account (typically 1 page = 1 call per account).
+router.get('/structure', async (req, res) => {
+  const accounts = adAccounts();
+  const accountStatus = {};
+  const allAds = [];
+
+  const FIELDS = 'id,name,status,effective_status,adset_id,adset{name,status,effective_status},campaign_id,campaign{name},created_time';
+
+  for (const account of accounts) {
+    let succeeded = false;
+    for (let attempt = 1; attempt <= 3 && !succeeded; attempt++) {
+      try {
+        const ads = [];
+        let url = `${FB_API}/${account}/ads?${new URLSearchParams({
+          fields: FIELDS, limit: 500, access_token: token(),
+        })}`;
+        while (url) {
+          const r = await fbFetch(url);
+          captureRateLimit(account, r.headers);
+          const json = await r.json();
+          if (json.error) throw new Error(json.error.message);
+          ads.push(...(json.data || []));
+          url = json.paging?.next || null;
+        }
+        allAds.push(...ads);
+        accountStatus[account] = 'ok';
+        succeeded = true;
+      } catch (err) {
+        const isLimit = /rate.?limit|Application request limit|reduce the amount/i.test(err.message);
+        if (isLimit && attempt < 3) {
+          const wait = attempt * 15_000; // 15s, 30s
+          console.warn(`[structure] ${account} rate limited, waiting ${wait / 1000}s (attempt ${attempt}/3)`);
+          accountStatus[account] = `retrying (${attempt}/3)`;
+          await new Promise(r => setTimeout(r, wait));
+        } else {
+          console.warn(`[structure] ${account} failed: ${err.message}`);
+          accountStatus[account] = isLimit ? 'rate_limited' : `error: ${err.message.slice(0, 80)}`;
+        }
+      }
+    }
+    if (!accountStatus[account]) accountStatus[account] = 'error: unknown';
+  }
+
+  // Deduplicate by id
+  const seen = new Set();
+  const mapped = allAds
+    .filter(a => { if (seen.has(a.id)) return false; seen.add(a.id); return true; })
+    .map(a => ({
+      id: a.id, name: a.name, status: a.status, effectiveStatus: a.effective_status,
+      adsetId: a.adset_id, adsetName: a.adset?.name || '',
+      adsetStatus: a.adset?.effective_status || a.adset?.status || '',
+      campaignId: a.campaign_id, campaignName: a.campaign?.name || '',
+      createdTime: a.created_time,
+    }));
+
+  res.json({ ads: mapped, accountStatus });
+});
+
 // GET /api/facebook/stats — API usage metrics for this server session
 router.get('/stats', (req, res) => {
   const cacheSize = _cache.size;
