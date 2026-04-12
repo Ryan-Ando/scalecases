@@ -1124,8 +1124,9 @@ export default function AdsTracking() {
   async function resetData() {
     if (!window.confirm('Clear all stored tracking data and re-sync from scratch?')) return;
     await dbClearAll();
+    // Don't clear allAds — ad structure (adset IDs, campaign names) is needed for
+    // GHL lead matching. It gets refreshed by the upcoming sync() call anyway.
     setAllDailyInsights([]);
-    setAllAds([]);
     setGhlContacts([]);
     setSheetCases([]);
     setLastSync(null);
@@ -1274,12 +1275,18 @@ export default function AdsTracking() {
   // ── Derived data ────────────────────────────────────────────────────────────
   const states = useMemo(() => {
     const set = new Set();
+    // From FB ad campaign names (primary source)
     for (const a of allAds) {
       const s = extractState(a.campaignName);
       if (s) set.add(s);
     }
+    // From GHL utm_campaign keys — ensures state columns appear even when FB is unavailable
+    for (const campaignName of Object.keys(ghlLeads.byCampaign || {})) {
+      const s = extractState(campaignName);
+      if (s) set.add(s);
+    }
     return [...set].sort();
-  }, [allAds]);
+  }, [allAds, ghlLeads.byCampaign]);
 
   const orderedStates = useMemo(() => {
     if (!colOrder) return states;

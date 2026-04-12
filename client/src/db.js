@@ -107,7 +107,10 @@ export async function dbClearStore(storeName) {
   });
 }
 
-// Clears sync data (GHL contacts, FB data, meta) but preserves sheet import.
+// Clears sync data but preserves fbAds (ad structure) and sheet import.
+// fbAds is kept because it maps adset IDs → ad names → campaign states, which
+// GHL lead matching depends on. Losing it after a rate-limited re-sync causes
+// state columns and lead counts to disappear. Only insights/metrics need wiping.
 // Pass clearImport=true to also wipe the sheet import.
 export async function dbClearAll(clearImport = false) {
   _db = null;
@@ -115,8 +118,9 @@ export async function dbClearAll(clearImport = false) {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
     req.onsuccess = e => {
       const db = e.target.result;
-      // 'meta' intentionally excluded — it holds user-authored AI rules and analyses that should survive syncs
-      const stores = ['ghlContacts', 'fbDailyInsights', 'fbAds', 'adDailyInsights'];
+      // 'meta' and 'fbAds' intentionally excluded — meta holds user-authored AI rules,
+      // fbAds holds ad structure needed for GHL lead mapping.
+      const stores = ['ghlContacts', 'fbDailyInsights', 'adDailyInsights'];
       if (clearImport) stores.push('sheetImport');
       const tx = db.transaction(stores, 'readwrite');
       for (const s of stores) tx.objectStore(s).clear();
