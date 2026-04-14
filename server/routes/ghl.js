@@ -153,6 +153,7 @@ async function refreshGhlCache() {
       .filter(c => (c.tags || []).some(t => (t || '').toLowerCase().trim() === 'new lead'))
       .map(c => ({
         adId:     getAttr(c, 'utmTerm', 'utm_term', 'term') || getCustomField(c, process.env.GHL_FIELD_UTM_TERM),
+        content:  getAttr(c, 'utmContent', 'utm_content', 'content'), // ad name
         state:    extractContactState(c),
         campaign: getAttr(c, 'utmCampaign', 'utm_campaign', 'campaign'),
         dateMs:   c.dateAdded ? new Date(c.dateAdded).getTime() : null,
@@ -195,9 +196,16 @@ router.get('/leads-by-adid', (req, res) => {
     if (endMs   && c.dateMs && c.dateMs > endMs)   continue;
 
     if (c.adId) {
-      if (!byAdId[c.adId]) byAdId[c.adId] = { total: 0, byState: {} };
+      if (!byAdId[c.adId]) byAdId[c.adId] = { total: 0, byState: {}, byContent: {} };
       byAdId[c.adId].total++;
       if (c.state) byAdId[c.adId].byState[c.state] = (byAdId[c.adId].byState[c.state] || 0) + 1;
+
+      // Per-ad breakdown via utm_content (ad name) — distinguishes ads within the same adset
+      if (c.content) {
+        if (!byAdId[c.adId].byContent[c.content]) byAdId[c.adId].byContent[c.content] = { total: 0, byState: {} };
+        byAdId[c.adId].byContent[c.content].total++;
+        if (c.state) byAdId[c.adId].byContent[c.content].byState[c.state] = (byAdId[c.adId].byContent[c.content].byState[c.state] || 0) + 1;
+      }
     }
 
     if (c.dateMs) {

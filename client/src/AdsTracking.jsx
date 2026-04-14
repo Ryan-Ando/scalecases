@@ -1374,8 +1374,20 @@ export default function AdsTracking() {
       const rawName = (a.name || '').trim();
       const state   = extractState(a.campaignName);
       if (!rawName || !state || deletedAds.has(rawName)) continue;
-      const adName = memberToCanonical[rawName] || rawName;
-      const leads  = ghlLeads.byAdId[a.adsetId]?.byState[state] || 0;
+      const adName  = memberToCanonical[rawName] || rawName;
+      const adsetBucket = ghlLeads.byAdId[a.adsetId];
+      // Use utm_content (ad name) for exact per-ad match within the adset.
+      // Falls back to adset-level byState only when no byContent exists at all
+      // (i.e. none of the leads in this adset had utm_content set).
+      let leads = 0;
+      if (adsetBucket) {
+        const contentBucket = adsetBucket.byContent?.[rawName];
+        if (contentBucket) {
+          leads = contentBucket.byState[state] || 0;
+        } else if (!adsetBucket.byContent || Object.keys(adsetBucket.byContent).length === 0) {
+          leads = adsetBucket.byState[state] || 0;
+        }
+      }
       if (map[adName]?.[state] !== undefined)
         map[adName][state] += leads;
     }
