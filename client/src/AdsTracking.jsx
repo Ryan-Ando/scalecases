@@ -865,6 +865,8 @@ export default function AdsTracking() {
   const [chartPeriod, setChartPeriod]   = useState('all');
   const [sortKey, setSortKey]           = useState('date');
   const [sortDir, setSortDir]           = useState('desc');
+  const [cutoffEnabled, setCutoffEnabled] = useState(true);
+  const [cutoffDate, setCutoffDate]       = useState('2026-03-08');
   // Custom date range for the grid
   const [rangeStart, setRangeStart]     = useState('');
   const [rangeEnd, setRangeEnd]         = useState('');
@@ -1325,19 +1327,37 @@ export default function AdsTracking() {
     return [...existing, ...newOnes];
   }, [states, colOrder]);
 
-  // Ad names: from FB ads only, excluding deleted and absorbed members
+  // Earliest createdTime per canonical ad name (from FB createdTime field)
+  const firstCreated = useMemo(() => {
+    const map = {};
+    for (const a of allAds) {
+      const raw = (a.name || '').trim();
+      if (!raw || !a.createdTime) continue;
+      const canonical = memberToCanonical[raw] || raw;
+      const d = a.createdTime.slice(0, 10); // 'YYYY-MM-DD'
+      if (!map[canonical] || d < map[canonical]) map[canonical] = d;
+    }
+    return map;
+  }, [allAds, memberToCanonical]);
+
+  // Ad names: from FB ads only, excluding deleted, absorbed members, and cutoff-filtered ads
   const adNames = useMemo(() => {
     const seen  = new Set();
     const names = [];
     for (const a of allAds) {
       const name = (a.name || '').trim();
-      if (name && !seen.has(name) && !deletedAds.has(name) && !absorbedMembers.has(name)) {
-        seen.add(name);
-        names.push(name);
+      if (!name || seen.has(name) || deletedAds.has(name) || absorbedMembers.has(name)) continue;
+      const canonical = memberToCanonical[name] || name;
+      // Cutoff filter: hide ads whose earliest creation date is before the cutoff
+      if (cutoffEnabled && cutoffDate) {
+        const created = firstCreated[canonical];
+        if (created && created < cutoffDate) continue;
       }
+      seen.add(name);
+      names.push(name);
     }
     return names;
-  }, [allAds, deletedAds, absorbedMembers]);
+  }, [allAds, deletedAds, absorbedMembers, memberToCanonical, firstCreated, cutoffEnabled, cutoffDate]);
 
   const sheetByName = {};
 
@@ -1917,6 +1937,28 @@ export default function AdsTracking() {
           {deletedAds.size > 0 && ` · ${deletedAds.size} hidden`}
           {(rangeStart && rangeEnd) && ` · ${rangeStart} – ${rangeEnd}`}
         </span>
+        {/* Ad creation cutoff filter */}
+        <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, color: 'var(--text-muted)', userSelect: 'none' }}>
+          <input
+            type="checkbox"
+            checked={cutoffEnabled}
+            onChange={e => setCutoffEnabled(e.target.checked)}
+            style={{ accentColor: 'var(--green)', width: 13, height: 13 }}
+          />
+          Created after
+          <input
+            type="date"
+            value={cutoffDate}
+            onChange={e => setCutoffDate(e.target.value)}
+            disabled={!cutoffEnabled}
+            style={{
+              fontSize: 11, padding: '1px 4px', borderRadius: 4,
+              border: '1px solid var(--border)', background: 'var(--bg)',
+              color: cutoffEnabled ? 'var(--text)' : 'var(--text-muted)',
+              opacity: cutoffEnabled ? 1 : 0.5,
+            }}
+          />
+        </label>
         {loadingCases && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Loading cases…</span>}
         {ghlLeads.loading && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Loading leads…</span>}
         {!ghlLeads.loading && !ghlLeads.ready && <span style={{ fontSize: 11, color: '#f59e0b' }}>Leads not ready — server cache still building</span>}
