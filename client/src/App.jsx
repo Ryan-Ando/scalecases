@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import './App.css';
 import LoginGate from './LoginGate.jsx';
 import AdsTracking from './AdsTracking.jsx';
@@ -10,6 +10,7 @@ function Logo() {
   return <img src="/logo.png" width="32" height="32" style={{ borderRadius: 8, display: 'block' }} alt="Scale Cases" />;
 }
 
+const BASE = import.meta.env.VITE_API_URL || 'http://localhost:3001';
 const TABS = ['Ads Tracking', 'Spend Sheet', 'Campaign Reports', 'State Variations'];
 
 function logout() {
@@ -17,10 +18,30 @@ function logout() {
   window.location.reload();
 }
 
+function useFbConnection() {
+  const [connected, setConnected] = useState(() => localStorage.getItem('fb_connected') === '1');
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('fb_connected') === '1') {
+      localStorage.setItem('fb_connected', '1');
+      setConnected(true);
+      // Clean the query param from the URL without reloading
+      window.history.replaceState({}, '', window.location.pathname);
+    }
+    if (params.get('fb_error') === '1') {
+      window.history.replaceState({}, '', window.location.pathname);
+    }
+  }, []);
+
+  return connected;
+}
+
 // Lazy-mount: components mount on first visit and stay mounted (preserves state + ongoing work)
 export default function App() {
   const [tab, setTab] = useState('Ads Tracking');
   const [mounted, setMounted] = useState(new Set(['Ads Tracking']));
+  const fbConnected = useFbConnection();
 
   function switchTab(t) {
     setMounted(m => new Set([...m, t]));
@@ -39,9 +60,21 @@ export default function App() {
             <button key={t} className={`nav-tab${tab === t ? ' nav-tab--active' : ''}`} onClick={() => switchTab(t)}>{t}</button>
           ))}
         </nav>
+        {fbConnected ? (
+          <span style={{ marginLeft: 16, fontSize: 12, padding: '5px 12px', background: 'none', border: '1px solid #16a34a', borderRadius: 6, color: '#16a34a', whiteSpace: 'nowrap' }}>
+            Facebook Connected
+          </span>
+        ) : (
+          <a
+            href={`${BASE}/api/auth/facebook`}
+            style={{ marginLeft: 16, fontSize: 12, padding: '5px 12px', background: '#1877f2', border: 'none', borderRadius: 6, color: '#fff', cursor: 'pointer', whiteSpace: 'nowrap', textDecoration: 'none', display: 'inline-block' }}
+          >
+            Connect with Facebook
+          </a>
+        )}
         <button
           onClick={logout}
-          style={{ marginLeft: 16, fontSize: 12, padding: '5px 12px', background: 'none', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text-muted)', cursor: 'pointer', whiteSpace: 'nowrap' }}
+          style={{ marginLeft: 8, fontSize: 12, padding: '5px 12px', background: 'none', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text-muted)', cursor: 'pointer', whiteSpace: 'nowrap' }}
         >
           Log out
         </button>
