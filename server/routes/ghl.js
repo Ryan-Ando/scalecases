@@ -226,6 +226,17 @@ router.post('/refresh', (req, res) => {
   res.json({ ok: true, message: 'GHL cache refresh started' });
 });
 
+// POST /api/ghl/reset — wipe cache and fetch all leads from scratch
+router.post('/reset', (req, res) => {
+  if (_ghlCache.running) return res.json({ ok: false, message: 'already running' });
+  _ghlCache.leads    = null;
+  _ghlCache.fetchedAt = null;
+  _ghlCache.error    = null;
+  console.log('[GHL] cache reset — rebuilding from scratch');
+  refreshGhlCache();
+  res.json({ ok: true, message: 'GHL cache cleared and rebuild started' });
+});
+
 // GET /api/ghl/debug — inspect cache state and sample records
 router.get('/debug', async (req, res) => {
   const leads = _ghlCache.leads;

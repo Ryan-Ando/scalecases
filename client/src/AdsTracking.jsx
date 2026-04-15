@@ -1975,6 +1975,21 @@ export default function AdsTracking() {
         {ghlLeads.loading && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Loading leads…</span>}
         {!ghlLeads.loading && !ghlLeads.ready && <span style={{ fontSize: 11, color: '#f59e0b' }}>Leads not ready — server cache still building</span>}
         {!ghlLeads.loading && <button onClick={() => setGhlLeadsKey(k => k + 1)} style={{ fontSize: 11, padding: '2px 8px', borderRadius: 4, border: '1px solid var(--border)', background: 'none', cursor: 'pointer', color: 'var(--text-muted)' }}>↻ Refresh leads</button>}
+        {!ghlLeads.loading && (
+          <button
+            onClick={async () => {
+              if (!window.confirm('Clear all GHL lead data and re-fetch from scratch? This will take 1–2 minutes.')) return;
+              await fetch(`${BASE}/api/ghl/reset`, { method: 'POST' });
+              // Mark as not ready so the retry loop kicks in
+              setGhlLeads(g => ({ ...g, ready: false, loading: true }));
+              setGhlLeadsKey(k => k + 1);
+            }}
+            style={{ fontSize: 11, padding: '2px 8px', borderRadius: 4, border: '1px solid #fca5a5', background: 'none', cursor: 'pointer', color: '#dc2626' }}
+            title="Wipe all GHL lead data and re-fetch everything from scratch"
+          >
+            ⚠ Reset GHL Data
+          </button>
+        )}
         {casesError && <span style={{ fontSize: 11, color: '#dc2626' }}>{casesError}</span>}
         {importing && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Importing monthly cases…</span>}
         {!importing && importResult && (
