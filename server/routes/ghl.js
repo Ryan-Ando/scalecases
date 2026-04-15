@@ -141,7 +141,7 @@ function extractContactState(contact) {
 // ── GHL leads cache ──────────────────────────────────────────────────────────
 // Fetches all "new lead" tagged contacts once, stores minimal records, refreshes hourly.
 // Each record: { adId, state, campaign, dateMs }
-const _ghlCache = { leads: null, fetchedAt: null, running: false, error: null };
+const _ghlCache = { leads: null, fetchedAt: null, running: false, error: null, _rawSample: null };
 
 async function refreshGhlCache() {
   if (_ghlCache.running) return;
@@ -149,11 +149,12 @@ async function refreshGhlCache() {
   console.log('[GHL] cache refresh started');
   try {
     const all = await fetchAllContacts(null, null);
-    _ghlCache.leads = all
-      .filter(c => (c.tags || []).some(t => (t || '').toLowerCase().trim() === 'new lead'))
+    const newLeads = all.filter(c => (c.tags || []).some(t => (t || '').toLowerCase().trim() === 'new lead'));
+    _ghlCache._rawSample = newLeads[0] || null; // store first new-lead contact for debug
+    _ghlCache.leads = newLeads
       .map(c => ({
         adId:     getAttr(c, 'utmTerm', 'utm_term', 'term') || getCustomField(c, process.env.GHL_FIELD_UTM_TERM),
-        content:  getAttr(c, 'utmContent', 'utm_content', 'content'), // ad name
+        content:  getAttr(c, 'utmContent', 'utm_content', 'content') || getCustomField(c, process.env.GHL_FIELD_UTM_CONTENT), // ad name
         state:    extractContactState(c),
         campaign: getAttr(c, 'utmCampaign', 'utm_campaign', 'campaign'),
         dateMs:   c.dateAdded ? new Date(c.dateAdded).getTime() : null,
@@ -250,15 +251,15 @@ router.get('/debug', async (req, res) => {
   const withCampaign = leads.filter(l => l.campaign).length;
   const missingAdId = leads.filter(l => !l.adId).length;
 
-  // Sample raw contact to see attributionSource structure
-  const rawSample = await (async () => {
-    try {
-      const params = new URLSearchParams({ locationId: locationId(), limit: 1 });
-      const json = await fetchPage(`${GHL_API}/contacts/?${params}`);
-      const c = (json.contacts || [])[0];
-      if (!c) return null;
-      return { tags: c.tags, attributionSource: c.attributionSource, customFields: (c.customFields || []).slice(0, 5) };
-    } catch { return null; }
+  // Sample a real new-lead contact to show all custom fields + attributionSource
+  const rawSample = (() => {
+    const c = _ghlCache._rawSample;
+    if (!c) return null;
+    return {
+      attributionSource: c.attributionSource,
+      customFields: c.customFields || [],  // ALL fields so we can identify utm_content
+      tags: c.tags,
+    };
   })();
 
   const withContent  = leads.filter(l => l.content).length;
