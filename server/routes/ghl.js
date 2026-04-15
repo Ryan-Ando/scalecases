@@ -250,15 +250,26 @@ router.get('/debug', async (req, res) => {
     } catch { return null; }
   })();
 
+  const withContent  = leads.filter(l => l.content).length;
+  // Sample byContent keys from a known adset to verify utm_content matches FB ad names
+  const sampleAdsetId = leads.find(l => l.adId && l.content)?.adId;
+  const sampleContentKeys = sampleAdsetId
+    ? [...new Set(leads.filter(l => l.adId === sampleAdsetId && l.content).map(l => l.content))].slice(0, 10)
+    : [];
+
   res.json({
     ready: true,
     fetchedAt: _ghlCache.fetchedAt,
     total: leads.length,
     withAdId,
+    withContent,
     withState,
     withCampaign,
     missingAdId,
+    missingContent: leads.filter(l => l.adId && !l.content).length,
     sampleLeads: leads.slice(0, 5),
+    sampleAdsetId,
+    sampleContentKeys,
     rawContactSample: rawSample,
   });
 });
