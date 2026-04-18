@@ -2133,9 +2133,9 @@ export default function AdsTracking() {
                   <div className="col-resize-handle" onMouseDown={e => startColResize('totalCases', 65, e)} />
                 </th>
                 {orderedStates.map((state, i) => {
-                  const colSpend = adNames.reduce((s, a) => s + (spendGrid[a]?.[state] || 0), 0);
-                  const colLeads = adNames.reduce((s, a) => s + (grid[a]?.[state]      || 0), 0);
-                  const colCases = adNames.reduce((s, a) => s + (caseGrid[a]?.[state]  || 0), 0);
+                  const colSpend = visibleAdNames.reduce((s, a) => s + (spendGrid[a]?.[state] || 0), 0);
+                  const colLeads = visibleAdNames.reduce((s, a) => s + (grid[a]?.[state]      || 0), 0);
+                  const colCases = visibleAdNames.reduce((s, a) => s + (caseGrid[a]?.[state]  || 0), 0);
                   return (
                   <th
                     key={state}
@@ -2302,9 +2302,9 @@ export default function AdsTracking() {
                 <td className="tracking-td-ad tracking-tfoot-label">Total</td>
                 <td className="tracking-td-date tracking-tfoot-label" />
                 {(() => {
-                  const totSpend = adNames.reduce((s, a) => s + orderedStates.reduce((s2, st) => s2 + (spendGrid[a]?.[st] || 0), 0), 0);
-                  const totLeads = adNames.reduce((s, a) => s + orderedStates.reduce((s2, st) => s2 + (grid[a]?.[st]      || 0), 0), 0);
-                  const totCases = adNames.reduce((s, a) => s + orderedStates.reduce((s2, st) => s2 + (caseGrid[a]?.[st]  || 0), 0), 0);
+                  const totSpend = visibleAdNames.reduce((s, a) => s + orderedStates.reduce((s2, st) => s2 + (spendGrid[a]?.[st] || 0), 0), 0);
+                  const totLeads = visibleAdNames.reduce((s, a) => s + orderedStates.reduce((s2, st) => s2 + (grid[a]?.[st]      || 0), 0), 0);
+                  const totCases = visibleAdNames.reduce((s, a) => s + orderedStates.reduce((s2, st) => s2 + (caseGrid[a]?.[st]  || 0), 0), 0);
                   return (<>
                     <td className="tracking-td-total tracking-tfoot-label" style={{ color: '#94a3b8' }}>
                       {totSpend > 0 ? `$${totSpend.toLocaleString('en-US', { maximumFractionDigits: 0 })}` : '—'}
@@ -2324,8 +2324,8 @@ export default function AdsTracking() {
                   </>);
                 })()}
                 {orderedStates.map(state => {
-                  const leads = adNames.reduce((s, a) => s + (grid[a]?.[state]     || 0), 0);
-                  const cases = adNames.reduce((s, a) => s + (caseGrid[a]?.[state] || 0), 0);
+                  const leads = visibleAdNames.reduce((s, a) => s + (grid[a]?.[state]     || 0), 0);
+                  const cases = visibleAdNames.reduce((s, a) => s + (caseGrid[a]?.[state] || 0), 0);
                   return (
                     <td key={state} className="tracking-td-total tracking-tfoot-label">
                       {(leads > 0 || cases > 0) ? (
