@@ -867,6 +867,9 @@ export default function AdsTracking() {
   const [sortDir, setSortDir]           = useState('desc');
   const [cutoffEnabled, setCutoffEnabled] = useState(true);
   const [cutoffDate, setCutoffDate]       = useState('2026-03-08');
+  const [filterTags, setFilterTags]       = useState([]);
+  const [filterMode, setFilterMode]       = useState('or');
+  const [filterInput, setFilterInput]     = useState('');
   // Custom date range for the grid
   const [rangeStart, setRangeStart]     = useState('');
   const [rangeEnd, setRangeEnd]         = useState('');
@@ -1665,6 +1668,17 @@ export default function AdsTracking() {
     });
   }, [adNames, sortKey, sortDir, grid, caseGrid, spendGrid, firstUsed, states]);
 
+  const visibleAdNames = useMemo(() => {
+    if (!filterTags.length) return sortedAdNames;
+    const tags = filterTags.map(t => t.toLowerCase());
+    return sortedAdNames.filter(name => {
+      const n = name.toLowerCase();
+      return filterMode === 'or'
+        ? tags.some(t => n.includes(t))
+        : tags.every(t => n.includes(t));
+    });
+  }, [sortedAdNames, filterTags, filterMode]);
+
   function startColResize(key, defaultW, e) {
     e.preventDefault(); e.stopPropagation();
     const startX = e.clientX, startW = colWidths[key] ?? defaultW;
@@ -1942,10 +1956,56 @@ export default function AdsTracking() {
         </div>
       </div>
 
+      {/* Keyword filter bar */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 0, border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden', background: 'var(--bg)' }}>
+          <input
+            type="text"
+            value={filterInput}
+            onChange={e => setFilterInput(e.target.value)}
+            onKeyDown={e => {
+              if ((e.key === 'Enter' || e.key === ',') && filterInput.trim()) {
+                e.preventDefault();
+                const tag = filterInput.trim().replace(/,$/, '');
+                if (tag && !filterTags.includes(tag)) setFilterTags(t => [...t, tag]);
+                setFilterInput('');
+              }
+              if (e.key === 'Backspace' && !filterInput && filterTags.length) {
+                setFilterTags(t => t.slice(0, -1));
+              }
+            }}
+            placeholder="Filter ads by keyword…"
+            style={{ fontSize: 12, padding: '5px 10px', border: 'none', background: 'transparent', color: 'var(--text)', outline: 'none', minWidth: 180 }}
+          />
+        </div>
+        {filterTags.length > 0 && (
+          <>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
+              {filterTags.map(tag => (
+                <span key={tag} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, padding: '2px 8px', borderRadius: 12, background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text)' }}>
+                  {tag}
+                  <button onClick={() => setFilterTags(t => t.filter(x => x !== tag))} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', padding: 0, fontSize: 12, lineHeight: 1 }}>×</button>
+                </span>
+              ))}
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 0, border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden', fontSize: 11 }}>
+              {['or', 'and'].map(m => (
+                <button key={m} onClick={() => setFilterMode(m)} style={{ padding: '3px 10px', border: 'none', cursor: 'pointer', fontWeight: filterMode === m ? 700 : 400, background: filterMode === m ? 'var(--surface)' : 'transparent', color: filterMode === m ? 'var(--text)' : 'var(--text-muted)', textTransform: 'uppercase', fontSize: 10, letterSpacing: '0.05em' }}>
+                  {m}
+                </button>
+              ))}
+            </div>
+            <button onClick={() => { setFilterTags([]); setFilterInput(''); }} style={{ fontSize: 11, padding: '2px 8px', borderRadius: 4, border: '1px solid var(--border)', background: 'none', cursor: 'pointer', color: 'var(--text-muted)' }}>
+              Clear
+            </button>
+          </>
+        )}
+      </div>
+
       {/* Grid stats */}
       <div style={{ display: 'flex', alignItems: 'center', marginBottom: 10, gap: 10, flexWrap: 'wrap' }}>
         <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-          {adNames.length} unique ads
+          {filterTags.length > 0 ? `${visibleAdNames.length} of ${adNames.length} ads` : `${adNames.length} unique ads`}
           {deletedAds.size > 0 && ` · ${deletedAds.size} hidden`}
           {(rangeStart && rangeEnd) && ` · ${rangeStart} – ${rangeEnd}`}
         </span>
@@ -2130,7 +2190,7 @@ export default function AdsTracking() {
               </tr>
             </thead>
             <tbody>
-              {sortedAdNames.map(adName => {
+              {visibleAdNames.map(adName => {
                 const row        = grid[adName]      || {};
                 const caseRow    = caseGrid[adName]  || {};
                 const spendRow   = spendGrid[adName] || {};
