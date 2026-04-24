@@ -43,6 +43,16 @@ function delay(ms) { return new Promise(res => setTimeout(res, ms)); }
 
 // ── Hyros API ─────────────────────────────────────────────────────────────────
 
+// Per-account lead field: env HYROS_LEADS_FIELD_<accountId>=field_name
+// Falls back to HYROS_LEADS_FIELD, then 'leads'
+function leadsFieldForAccount(accountId) {
+  return (
+    process.env[`HYROS_LEADS_FIELD_${accountId}`] ||
+    process.env.HYROS_LEADS_FIELD ||
+    'leads'
+  );
+}
+
 async function fetchHyrosDay(dateStr) {
   const key      = process.env.HYROS_API_KEY;
   const accounts = (process.env.HYROS_AD_ACCOUNTS || '1125965718442560,758516163121709')
@@ -51,13 +61,14 @@ async function fetchHyrosDay(dateStr) {
   const byAdset = {};
 
   for (const accountId of accounts) {
+    const leadsField = leadsFieldForAccount(accountId);
     let pageId = null;
     do {
       const params = new URLSearchParams({
         startDate: dateStr, endDate: dateStr,
         level: 'facebook_adset',
         attributionModel: 'last_click',
-        fields: 'leads,cost',
+        fields: `${leadsField},cost`,
         isAdAccountId: 'true',
         ids: accountId,
       });
@@ -75,7 +86,8 @@ async function fetchHyrosDay(dateStr) {
 
       for (const row of data.result) {
         if (!byAdset[row.id]) byAdset[row.id] = { leads: 0, cost: 0 };
-        byAdset[row.id].leads += (row.leads || 0);
+        // support custom field names — fall back to row.leads if custom field absent
+        byAdset[row.id].leads += (row[leadsField] ?? row.leads ?? 0);
         byAdset[row.id].cost  += (row.cost  || 0);
       }
 
@@ -87,6 +99,50 @@ async function fetchHyrosDay(dateStr) {
   }
 
   return byAdset;
+}
+
+// ── Probe available Hyros fields for an account ───────────────────────────────
+
+async function probeHyrosFields(accountId, dateStr) {
+  const key = process.env.HYROS_API_KEY;
+  const candidates = [
+    'leads',
+    'leads_b2c_ppl',
+    'leads_zemsky',
+    'leads_acc_con',
+    'converted_leads',
+    'qualified_leads',
+  ];
+
+  const results = {};
+  for (const field of candidates) {
+    try {
+      const params = new URLSearchParams({
+        startDate: dateStr, endDate: dateStr,
+        level: 'facebook_adset',
+        attributionModel: 'last_click',
+        fields: `${field},cost`,
+        isAdAccountId: 'true',
+        ids: accountId,
+      });
+      const r    = await fetch(`${HYROS_BASE}/attribution?${params}`, { headers: { 'API-Key': key } });
+      const data = await r.json();
+
+      if (!Array.isArray(data.result)) {
+        results[field] = { error: data.message || 'not an array' };
+      } else {
+        const totLeads = data.result.reduce((s, row) => s + (row[field] ?? 0), 0);
+        const totCost  = data.result.reduce((s, row) => s + (row.cost  ?? 0), 0);
+        // include per-adset breakdown so caller can spot-check
+        const rows = data.result.map(row => ({ id: row.id, [field]: row[field] ?? null, cost: row.cost ?? 0 }));
+        results[field] = { totalLeads: totLeads, totalCost: totCost, rowCount: rows.length, rows };
+      }
+    } catch (e) {
+      results[field] = { error: e.message };
+    }
+    await delay(400);
+  }
+  return results;
 }
 
 // ── FB API — batch adset name, status, and campaign name ─────────────────────
@@ -429,6 +485,26 @@ router.get('/status', (_req, res) => {
     lastError: _lastError,
     sheetUrl:  `https://docs.google.com/spreadsheets/d/${SHEET_ID}`,
   });
+});
+
+// GET /api/hyros/probe?account=<accountId>&date=<YYYY-MM-DD>
+// Tests known field names against the Hyros attribution API and reports totals.
+// Use this to find which custom field name matches the dashboard value.
+router.get('/probe', async (req, res) => {
+  const accounts = (process.env.HYROS_AD_ACCOUNTS || '1125965718442560,758516163121709')
+    .split(',').map(s => s.trim()).filter(Boolean);
+  const accountId = req.query.account || accounts[0];
+  const dateStr   = req.query.date    || (() => {
+    const d = new Date(); d.setUTCDate(d.getUTCDate() - 1);
+    return d.toISOString().slice(0, 10);
+  })();
+
+  try {
+    const result = await probeHyrosFields(accountId, dateStr);
+    res.json({ accountId, date: dateStr, fields: result });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 export default router;
