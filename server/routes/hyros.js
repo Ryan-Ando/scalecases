@@ -62,8 +62,10 @@ async function fetchLeadsForDay(dateStr) {
     if (!Array.isArray(data.result) || data.result.length === 0) break;
 
     for (const lead of data.result) {
-      // Only count leads that have reached a state-specific stage (@lss-*)
-      if (!lead.tags?.some(t => t.startsWith('@lss-'))) continue;
+      // A lead is qualified when it has a stage tag (e.g. "va", "tx", "fl").
+      // Stage tags have no prefix; action tags start with "!", source tags with "@".
+      const hasStageTag = lead.tags?.some(t => !t.startsWith('!') && !t.startsWith('@'));
+      if (!hasStageTag) continue;
 
       const src = lead.lastSource;
       if (!src?.adSource?.adSourceId) continue;
@@ -481,66 +483,47 @@ router.get('/status', (_req, res) => {
   });
 });
 
-// GET /api/hyros/probe-leads?account=<accountId>&date=<YYYY-MM-DD>
-// Fetches a sample of leads from the /leads endpoint so we can inspect the structure,
-// see what stage/category fields exist, and verify adset IDs are present.
+// GET /api/hyros/probe-leads?date=<YYYY-MM-DD>
+// Tries every plausible lead-journey endpoint shape to find stage data.
 router.get('/probe-leads', async (req, res) => {
   const key     = process.env.HYROS_API_KEY;
+  const headers = { 'API-Key': key };
+
   const dateStr = req.query.date || (() => {
     const d = new Date(); d.setUTCDate(d.getUTCDate() - 1);
     return d.toISOString().slice(0, 10);
   })();
-  const headers = { 'API-Key': key };
-  const out = {};
 
-  // 1. Try leads with various fields= params to get leadStage included
-  const fieldVariants = [
-    'leadStage,tags',
-    'lead_stage,tags',
-    'stage,tags',
-    'leadStage,tags,firstSource,lastSource',
-    'all',
-  ];
-  out.fieldsProbe = {};
-  for (const fields of fieldVariants) {
-    try {
-      const p = new URLSearchParams({ startDate: dateStr, endDate: dateStr, fields });
-      const r = await fetch(`${HYROS_BASE}/leads?${p}`, { headers });
-      const d = await r.json();
-      const sample = Array.isArray(d.result) ? d.result[0] : d;
-      out.fieldsProbe[fields] = sample ? Object.keys(sample) : d;
-    } catch (e) { out.fieldsProbe[fields] = { error: e.message }; }
-    await delay(300);
-  }
-
-  // 2. Grab a known real lead ID (Jennifer Cregger from the CSV export)
-  //    and try every plausible lead-stage endpoint
+  // Known lead ID from Jennifer Cregger's export (reached "va" stage)
   const knownId = '4e4d2b5df6ebadd164b71e93c9cc722a0b4e25ca51ddf09ed1569a8bb519af77';
-  const stagePaths = [
-    `/leads/${knownId}`,
-    `/leads/${knownId}?fields=leadStage,tags`,
-    `/leads/${knownId}?fields=all`,
-    `/lead-stages/${knownId}`,
-    `/lead-stages?leadId=${knownId}`,
-    `/lead-stage/${knownId}`,
-    `/lead/${knownId}/stages`,
+
+  const paths = [
+    `/lead-journey?startDate=${dateStr}&endDate=${dateStr}`,
+    `/lead-journey?leadId=${knownId}`,
     `/lead-journey/${knownId}`,
-    `/leads?id=${knownId}`,
-    `/leads?leadId=${knownId}`,
+    `/leads/journey?leadId=${knownId}`,
+    `/leads/${knownId}/journey`,
+    `/lead-journeys?startDate=${dateStr}&endDate=${dateStr}`,
+    `/lead-journeys/${knownId}`,
+    `/journey?leadId=${knownId}`,
+    `/journey?startDate=${dateStr}&endDate=${dateStr}`,
   ];
-  out.stageEndpointProbe = {};
-  for (const path of stagePaths) {
+
+  const results = {};
+  for (const path of paths) {
     try {
       const r    = await fetch(`${HYROS_BASE}${path}`, { headers });
       const text = await r.text();
       let parsed;
-      try { parsed = JSON.parse(text); } catch { parsed = text.slice(0, 300); }
-      out.stageEndpointProbe[path] = parsed;
-    } catch (e) { out.stageEndpointProbe[path] = { error: e.message }; }
+      try { parsed = JSON.parse(text); } catch { parsed = text.slice(0, 500); }
+      results[path] = parsed;
+    } catch (e) {
+      results[path] = { error: e.message };
+    }
     await delay(300);
   }
 
-  res.json(out);
+  res.json(results);
 });
 
 export default router;
