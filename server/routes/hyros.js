@@ -492,49 +492,64 @@ router.get('/probe-leads', async (req, res) => {
   })();
 
   const headers = { 'API-Key': key };
-  const out = {};
 
-  // 1. Grab a lead ID to test journey endpoints
-  let leadId = null;
-  try {
+  // Fetch up to 3 pages of leads and collect real leads (those with @lss- tags)
+  const allLeads = [];
+  let pageId = null;
+  let pages  = 0;
+  do {
+    pages++;
     const p = new URLSearchParams({ startDate: dateStr, endDate: dateStr });
-    const r = await fetch(`${HYROS_BASE}/leads?${p}`, { headers });
-    const d = await r.json();
-    if (Array.isArray(d.result) && d.result[0]) {
-      leadId = d.result[0].id;
-      out.sampleLead = { id: leadId, tags: d.result[0].tags };
-    }
-  } catch (e) { out.leadsError = e.message; }
+    if (pageId) p.set('pageId', pageId);
+    try {
+      const r = await fetch(`${HYROS_BASE}/leads?${p}`, { headers });
+      const d = await r.json();
+      if (!Array.isArray(d.result)) break;
+      allLeads.push(...d.result);
+      pageId = d.nextPageId || null;
+    } catch { break; }
+    if (pageId) await delay(300);
+  } while (pageId && pages < 3);
 
-  await delay(400);
+  // Prefer leads with @lss- stage tags; fall back to any lead
+  const lssLeads = allLeads.filter(l => l.tags?.some(t => t.startsWith('@lss-')));
+  const testLeads = lssLeads.length ? lssLeads.slice(0, 5) : allLeads.slice(0, 5);
 
-  if (leadId) {
-    // 2. Try every known URL pattern for lead journey
+  const journeyResults = [];
+  for (const lead of testLeads) {
+    const entry = { id: lead.id, tags: lead.tags, journeyResponses: {} };
+
     const urlPatterns = [
-      `${HYROS_BASE}/lead-journey/${leadId}`,
-      `${HYROS_BASE}/lead-journey?leadId=${leadId}`,
-      `${HYROS_BASE}/lead-journey?id=${leadId}`,
-      `${HYROS_BASE}/leads/${leadId}/journey`,
-      `${HYROS_BASE}/leads/${leadId}`,
-      `${HYROS_BASE}/lead/${leadId}`,
+      `/lead-journey/${lead.id}`,
+      `/lead-journey?leadId=${lead.id}`,
+      `/lead-journey?id=${lead.id}`,
+      `/leads/${lead.id}/journey`,
+      `/leads/${lead.id}`,
+      `/lead/${lead.id}`,
     ];
 
-    out.journeyProbe = {};
-    for (const url of urlPatterns) {
+    for (const path of urlPatterns) {
       try {
-        const r    = await fetch(url, { headers });
+        const r    = await fetch(`${HYROS_BASE}${path}`, { headers });
         const text = await r.text();
         let parsed;
-        try { parsed = JSON.parse(text); } catch { parsed = text.slice(0, 200); }
-        out.journeyProbe[url.replace(HYROS_BASE, '')] = parsed;
-      } catch (e) {
-        out.journeyProbe[url.replace(HYROS_BASE, '')] = { error: e.message };
-      }
-      await delay(300);
+        try { parsed = JSON.parse(text); } catch { parsed = text.slice(0, 300); }
+        // Only record non-"Not found" responses to keep output clean
+        if (parsed !== 'Not found' && !(typeof parsed === 'string' && parsed.includes('Not found'))) {
+          entry.journeyResponses[path] = parsed;
+        }
+      } catch (e) { /* skip */ }
+      await delay(200);
     }
+
+    journeyResults.push(entry);
   }
 
-  res.json(out);
+  res.json({
+    totalLeadsFetched: allLeads.length,
+    lssLeadsFound: lssLeads.length,
+    journeyResults,
+  });
 });
 
 export default router;
