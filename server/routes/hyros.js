@@ -43,17 +43,43 @@ function delay(ms) { return new Promise(res => setTimeout(res, ms)); }
 
 // ── Hyros API ─────────────────────────────────────────────────────────────────
 
-// Per-account lead field: env HYROS_LEADS_FIELD_<accountId>=field_name
-// Falls back to HYROS_LEADS_FIELD, then 'leads'
-function leadsFieldForAccount(accountId) {
-  return (
-    process.env[`HYROS_LEADS_FIELD_${accountId}`] ||
-    process.env.HYROS_LEADS_FIELD ||
-    'leads'
-  );
+// Fetch qualified lead counts per adset for a single day.
+// Uses the /leads endpoint, filters to !qualified-lead only, groups by lastSource adset ID.
+async function fetchLeadsForDay(dateStr) {
+  const key      = process.env.HYROS_API_KEY;
+  const byAdset  = {};
+  let pageId     = null;
+  let pages      = 0;
+
+  do {
+    pages++;
+    const params = new URLSearchParams({ startDate: dateStr, endDate: dateStr });
+    if (pageId) params.set('pageId', pageId);
+
+    const r    = await fetch(`${HYROS_BASE}/leads?${params}`, { headers: { 'API-Key': key } });
+    const data = await r.json();
+
+    if (!Array.isArray(data.result) || data.result.length === 0) break;
+
+    for (const lead of data.result) {
+      if (!lead.tags?.includes('!qualified-lead')) continue;
+
+      const src = lead.lastSource;
+      if (!src?.adSource?.adSourceId) continue;
+
+      const id = src.adSource.adSourceId;
+      byAdset[id] = (byAdset[id] || 0) + 1;
+    }
+
+    pageId = data.nextPageId || null;
+    if (pageId) await delay(300);
+  } while (pageId && pages < 100);
+
+  return byAdset;
 }
 
-async function fetchHyrosDay(dateStr) {
+// Fetch spend per adset for a single day via attribution endpoint.
+async function fetchCostForDay(dateStr) {
   const key      = process.env.HYROS_API_KEY;
   const accounts = (process.env.HYROS_AD_ACCOUNTS || '1125965718442560,758516163121709')
     .split(',').map(s => s.trim()).filter(Boolean);
@@ -61,34 +87,29 @@ async function fetchHyrosDay(dateStr) {
   const byAdset = {};
 
   for (const accountId of accounts) {
-    const leadsField = leadsFieldForAccount(accountId);
     let pageId = null;
     do {
       const params = new URLSearchParams({
         startDate: dateStr, endDate: dateStr,
         level: 'facebook_adset',
         attributionModel: 'last_click',
-        fields: `${leadsField},cost`,
+        fields: 'cost',
         isAdAccountId: 'true',
         ids: accountId,
       });
       if (pageId) params.set('pageId', pageId);
 
-      const r    = await fetch(`${HYROS_BASE}/attribution?${params}`, {
-        headers: { 'API-Key': key },
-      });
+      const r    = await fetch(`${HYROS_BASE}/attribution?${params}`, { headers: { 'API-Key': key } });
       const data = await r.json();
 
-      if (data.result === 'ERROR' || !Array.isArray(data.result)) {
-        console.warn(`Hyros [${accountId}] ${dateStr}:`, data.message);
+      if (!Array.isArray(data.result)) {
+        console.warn(`Hyros cost [${accountId}] ${dateStr}:`, data.message);
         break;
       }
 
       for (const row of data.result) {
-        if (!byAdset[row.id]) byAdset[row.id] = { leads: 0, cost: 0 };
-        // support custom field names — fall back to row.leads if custom field absent
-        byAdset[row.id].leads += (row[leadsField] ?? row.leads ?? 0);
-        byAdset[row.id].cost  += (row.cost  || 0);
+        if (!byAdset[row.id]) byAdset[row.id] = 0;
+        byAdset[row.id] += (row.cost || 0);
       }
 
       pageId = data.nextPageId || null;
@@ -101,48 +122,20 @@ async function fetchHyrosDay(dateStr) {
   return byAdset;
 }
 
-// ── Probe available Hyros fields for an account ───────────────────────────────
+async function fetchHyrosDay(dateStr) {
+  const [leadsPerAdset, costPerAdset] = await Promise.all([
+    fetchLeadsForDay(dateStr),
+    fetchCostForDay(dateStr),
+  ]);
 
-async function probeHyrosFields(accountId, dateStr) {
-  const key = process.env.HYROS_API_KEY;
-  const candidates = [
-    'leads',
-    'leads_b2c_ppl',
-    'leads_zemsky',
-    'leads_acc_con',
-    'converted_leads',
-    'qualified_leads',
-  ];
-
-  const results = {};
-  for (const field of candidates) {
-    try {
-      const params = new URLSearchParams({
-        startDate: dateStr, endDate: dateStr,
-        level: 'facebook_adset',
-        attributionModel: 'last_click',
-        fields: `${field},cost`,
-        isAdAccountId: 'true',
-        ids: accountId,
-      });
-      const r    = await fetch(`${HYROS_BASE}/attribution?${params}`, { headers: { 'API-Key': key } });
-      const data = await r.json();
-
-      if (!Array.isArray(data.result)) {
-        results[field] = { error: data.message || 'not an array' };
-      } else {
-        const totLeads = data.result.reduce((s, row) => s + (row[field] ?? 0), 0);
-        const totCost  = data.result.reduce((s, row) => s + (row.cost  ?? 0), 0);
-        // include per-adset breakdown so caller can spot-check
-        const rows = data.result.map(row => ({ id: row.id, [field]: row[field] ?? null, cost: row.cost ?? 0 }));
-        results[field] = { totalLeads: totLeads, totalCost: totCost, rowCount: rows.length, rows };
-      }
-    } catch (e) {
-      results[field] = { error: e.message };
-    }
-    await delay(400);
+  const byAdset = {};
+  for (const id of new Set([...Object.keys(leadsPerAdset), ...Object.keys(costPerAdset)])) {
+    byAdset[id] = {
+      leads: leadsPerAdset[id] || 0,
+      cost:  costPerAdset[id]  || 0,
+    };
   }
-  return results;
+  return byAdset;
 }
 
 // ── FB API — batch adset name, status, and campaign name ─────────────────────
