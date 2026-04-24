@@ -493,31 +493,44 @@ router.get('/probe-leads', async (req, res) => {
   const headers = { 'API-Key': key };
   const out = {};
 
-  // 1. Tags — list all stage/tag definitions
-  try {
-    const r = await fetch(`${HYROS_BASE}/tags`, { headers });
-    out.tags = await r.json();
-  } catch (e) { out.tags = { error: e.message }; }
-
-  await delay(400);
-
-  // 2. Leads — try with date range, no account filter
+  // 1. Grab a lead ID to test journey endpoints
+  let leadId = null;
   try {
     const p = new URLSearchParams({ startDate: dateStr, endDate: dateStr });
     const r = await fetch(`${HYROS_BASE}/leads?${p}`, { headers });
     const d = await r.json();
-    out.leads = Array.isArray(d.result) ? { count: d.result.length, sample: d.result.slice(0, 3), keys: d.result[0] ? Object.keys(d.result[0]) : [] } : d;
-  } catch (e) { out.leads = { error: e.message }; }
+    if (Array.isArray(d.result) && d.result[0]) {
+      leadId = d.result[0].id;
+      out.sampleLead = { id: leadId, tags: d.result[0].tags };
+    }
+  } catch (e) { out.leadsError = e.message; }
 
   await delay(400);
 
-  // 3. Lead journey — sample one lead if we got any
-  if (Array.isArray(out.leads?.sample) && out.leads.sample[0]?.id) {
-    try {
-      const leadId = out.leads.sample[0].id;
-      const r = await fetch(`${HYROS_BASE}/lead-journey/${leadId}`, { headers });
-      out.leadJourney = await r.json();
-    } catch (e) { out.leadJourney = { error: e.message }; }
+  if (leadId) {
+    // 2. Try every known URL pattern for lead journey
+    const urlPatterns = [
+      `${HYROS_BASE}/lead-journey/${leadId}`,
+      `${HYROS_BASE}/lead-journey?leadId=${leadId}`,
+      `${HYROS_BASE}/lead-journey?id=${leadId}`,
+      `${HYROS_BASE}/leads/${leadId}/journey`,
+      `${HYROS_BASE}/leads/${leadId}`,
+      `${HYROS_BASE}/lead/${leadId}`,
+    ];
+
+    out.journeyProbe = {};
+    for (const url of urlPatterns) {
+      try {
+        const r    = await fetch(url, { headers });
+        const text = await r.text();
+        let parsed;
+        try { parsed = JSON.parse(text); } catch { parsed = text.slice(0, 200); }
+        out.journeyProbe[url.replace(HYROS_BASE, '')] = parsed;
+      } catch (e) {
+        out.journeyProbe[url.replace(HYROS_BASE, '')] = { error: e.message };
+      }
+      await delay(300);
+    }
   }
 
   res.json(out);
