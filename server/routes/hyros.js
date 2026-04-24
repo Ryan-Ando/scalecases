@@ -498,15 +498,9 @@ router.get('/probe-leads', async (req, res) => {
   const knownId = '4e4d2b5df6ebadd164b71e93c9cc722a0b4e25ca51ddf09ed1569a8bb519af77';
 
   const paths = [
-    `/lead-journey?startDate=${dateStr}&endDate=${dateStr}`,
-    `/lead-journey?leadId=${knownId}`,
-    `/lead-journey/${knownId}`,
-    `/leads/journey?leadId=${knownId}`,
-    `/leads/${knownId}/journey`,
-    `/lead-journeys?startDate=${dateStr}&endDate=${dateStr}`,
-    `/lead-journeys/${knownId}`,
-    `/journey?leadId=${knownId}`,
-    `/journey?startDate=${dateStr}&endDate=${dateStr}`,
+    `/leads/journey?ids=${knownId}`,
+    `/leads/journey?ids=${knownId}&startDate=${dateStr}&endDate=${dateStr}`,
+    `/leads/journey?ids=${knownId}&startDate=2026-04-01&endDate=${dateStr}`,
   ];
 
   const results = {};
