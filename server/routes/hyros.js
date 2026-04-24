@@ -62,7 +62,8 @@ async function fetchLeadsForDay(dateStr) {
     if (!Array.isArray(data.result) || data.result.length === 0) break;
 
     for (const lead of data.result) {
-      if (!lead.tags?.includes('!qualified-lead')) continue;
+      // Only count leads that have reached a state-specific stage (@lss-*)
+      if (!lead.tags?.some(t => t.startsWith('@lss-'))) continue;
 
       const src = lead.lastSource;
       if (!src?.adSource?.adSourceId) continue;
