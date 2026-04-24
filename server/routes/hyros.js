@@ -490,66 +490,57 @@ router.get('/probe-leads', async (req, res) => {
     const d = new Date(); d.setUTCDate(d.getUTCDate() - 1);
     return d.toISOString().slice(0, 10);
   })();
-
   const headers = { 'API-Key': key };
+  const out = {};
 
-  // Fetch up to 3 pages of leads and collect real leads (those with @lss- tags)
-  const allLeads = [];
-  let pageId = null;
-  let pages  = 0;
-  do {
-    pages++;
-    const p = new URLSearchParams({ startDate: dateStr, endDate: dateStr });
-    if (pageId) p.set('pageId', pageId);
+  // 1. Try leads with various fields= params to get leadStage included
+  const fieldVariants = [
+    'leadStage,tags',
+    'lead_stage,tags',
+    'stage,tags',
+    'leadStage,tags,firstSource,lastSource',
+    'all',
+  ];
+  out.fieldsProbe = {};
+  for (const fields of fieldVariants) {
     try {
+      const p = new URLSearchParams({ startDate: dateStr, endDate: dateStr, fields });
       const r = await fetch(`${HYROS_BASE}/leads?${p}`, { headers });
       const d = await r.json();
-      if (!Array.isArray(d.result)) break;
-      allLeads.push(...d.result);
-      pageId = d.nextPageId || null;
-    } catch { break; }
-    if (pageId) await delay(300);
-  } while (pageId && pages < 3);
-
-  // Prefer leads with @lss- stage tags; fall back to any lead
-  const lssLeads = allLeads.filter(l => l.tags?.some(t => t.startsWith('@lss-')));
-  const testLeads = lssLeads.length ? lssLeads.slice(0, 5) : allLeads.slice(0, 5);
-
-  const journeyResults = [];
-  for (const lead of testLeads) {
-    const entry = { id: lead.id, tags: lead.tags, journeyResponses: {} };
-
-    const urlPatterns = [
-      `/lead-journey/${lead.id}`,
-      `/lead-journey?leadId=${lead.id}`,
-      `/lead-journey?id=${lead.id}`,
-      `/leads/${lead.id}/journey`,
-      `/leads/${lead.id}`,
-      `/lead/${lead.id}`,
-    ];
-
-    for (const path of urlPatterns) {
-      try {
-        const r    = await fetch(`${HYROS_BASE}${path}`, { headers });
-        const text = await r.text();
-        let parsed;
-        try { parsed = JSON.parse(text); } catch { parsed = text.slice(0, 300); }
-        // Only record non-"Not found" responses to keep output clean
-        if (parsed !== 'Not found' && !(typeof parsed === 'string' && parsed.includes('Not found'))) {
-          entry.journeyResponses[path] = parsed;
-        }
-      } catch (e) { /* skip */ }
-      await delay(200);
-    }
-
-    journeyResults.push(entry);
+      const sample = Array.isArray(d.result) ? d.result[0] : d;
+      out.fieldsProbe[fields] = sample ? Object.keys(sample) : d;
+    } catch (e) { out.fieldsProbe[fields] = { error: e.message }; }
+    await delay(300);
   }
 
-  res.json({
-    totalLeadsFetched: allLeads.length,
-    lssLeadsFound: lssLeads.length,
-    journeyResults,
-  });
+  // 2. Grab a known real lead ID (Jennifer Cregger from the CSV export)
+  //    and try every plausible lead-stage endpoint
+  const knownId = '4e4d2b5df6ebadd164b71e93c9cc722a0b4e25ca51ddf09ed1569a8bb519af77';
+  const stagePaths = [
+    `/leads/${knownId}`,
+    `/leads/${knownId}?fields=leadStage,tags`,
+    `/leads/${knownId}?fields=all`,
+    `/lead-stages/${knownId}`,
+    `/lead-stages?leadId=${knownId}`,
+    `/lead-stage/${knownId}`,
+    `/lead/${knownId}/stages`,
+    `/lead-journey/${knownId}`,
+    `/leads?id=${knownId}`,
+    `/leads?leadId=${knownId}`,
+  ];
+  out.stageEndpointProbe = {};
+  for (const path of stagePaths) {
+    try {
+      const r    = await fetch(`${HYROS_BASE}${path}`, { headers });
+      const text = await r.text();
+      let parsed;
+      try { parsed = JSON.parse(text); } catch { parsed = text.slice(0, 300); }
+      out.stageEndpointProbe[path] = parsed;
+    } catch (e) { out.stageEndpointProbe[path] = { error: e.message }; }
+    await delay(300);
+  }
+
+  res.json(out);
 });
 
 export default router;
