@@ -497,14 +497,37 @@ router.get('/probe-leads', async (req, res) => {
     return d.toISOString().slice(0, 10);
   })();
 
+  const headers = { 'API-Key': key };
+  const out = {};
+
+  // 1. Tags — list all stage/tag definitions
   try {
-    const params = new URLSearchParams({ startDate: dateStr, endDate: dateStr });
-    const r    = await fetch(`${HYROS_BASE}/leads?${params}`, { headers: { 'API-Key': key } });
-    const data = await r.json();
-    res.json(data);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
+    const r = await fetch(`${HYROS_BASE}/tags`, { headers });
+    out.tags = await r.json();
+  } catch (e) { out.tags = { error: e.message }; }
+
+  await delay(400);
+
+  // 2. Leads — try with date range, no account filter
+  try {
+    const p = new URLSearchParams({ startDate: dateStr, endDate: dateStr });
+    const r = await fetch(`${HYROS_BASE}/leads?${p}`, { headers });
+    const d = await r.json();
+    out.leads = Array.isArray(d.result) ? { count: d.result.length, sample: d.result.slice(0, 3), keys: d.result[0] ? Object.keys(d.result[0]) : [] } : d;
+  } catch (e) { out.leads = { error: e.message }; }
+
+  await delay(400);
+
+  // 3. Lead journey — sample one lead if we got any
+  if (Array.isArray(out.leads?.sample) && out.leads.sample[0]?.id) {
+    try {
+      const leadId = out.leads.sample[0].id;
+      const r = await fetch(`${HYROS_BASE}/lead-journey/${leadId}`, { headers });
+      out.leadJourney = await r.json();
+    } catch (e) { out.leadJourney = { error: e.message }; }
   }
+
+  res.json(out);
 });
 
 export default router;
