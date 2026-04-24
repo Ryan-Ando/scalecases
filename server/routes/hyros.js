@@ -502,16 +502,16 @@ router.get('/probe-leads', async (req, res) => {
   const acct2 = '758516163121709';
 
   const paths = [
-    // Standard leads field
-    `/attribution?${attrBase}&fields=leads,cost&ids=${acct1}`,
-    `/attribution?${attrBase}&fields=leads,cost&ids=${acct2}`,
-    // Custom metric names from previous investigation
-    `/attribution?${attrBase}&fields=leads_b2c_ppl,cost&ids=${acct1}`,
+    // Test all three custom metrics against both accounts
+    `/attribution?${attrBase}&fields=leads_zemsky,cost&ids=${acct1}`,
     `/attribution?${attrBase}&fields=leads_zemsky,cost&ids=${acct2}`,
-    // Try new_leads
-    `/attribution?${attrBase}&fields=new_leads,cost&ids=${acct1}`,
-    // What custom metric names does Hyros know about for this account?
-    `/attribution?${attrBase}&fields=leads,new_leads,sales,calls,cost&ids=${acct1}`,
+    `/attribution?${attrBase}&fields=leads_b2c_ppl,cost&ids=${acct1}`,
+    `/attribution?${attrBase}&fields=leads_b2c_ppl,cost&ids=${acct2}`,
+    `/attribution?${attrBase}&fields=leads_acc_con,cost&ids=${acct1}`,
+    `/attribution?${attrBase}&fields=leads_acc_con,cost&ids=${acct2}`,
+    // All three together
+    `/attribution?${attrBase}&fields=leads_zemsky,leads_b2c_ppl,leads_acc_con,cost&ids=${acct1}`,
+    `/attribution?${attrBase}&fields=leads_zemsky,leads_b2c_ppl,leads_acc_con,cost&ids=${acct2}`,
   ];
 
   const results = {};
