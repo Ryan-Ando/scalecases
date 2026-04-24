@@ -487,10 +487,11 @@ router.get('/status', (_req, res) => {
   });
 });
 
-// GET /api/hyros/probe?account=<accountId>&date=<YYYY-MM-DD>
-// Tests known field names against the Hyros attribution API and reports totals.
-// Use this to find which custom field name matches the dashboard value.
-router.get('/probe', async (req, res) => {
+// GET /api/hyros/probe-leads?account=<accountId>&date=<YYYY-MM-DD>
+// Fetches a sample of leads from the /leads endpoint so we can inspect the structure,
+// see what stage/category fields exist, and verify adset IDs are present.
+router.get('/probe-leads', async (req, res) => {
+  const key = process.env.HYROS_API_KEY;
   const accounts = (process.env.HYROS_AD_ACCOUNTS || '1125965718442560,758516163121709')
     .split(',').map(s => s.trim()).filter(Boolean);
   const accountId = req.query.account || accounts[0];
@@ -500,8 +501,25 @@ router.get('/probe', async (req, res) => {
   })();
 
   try {
-    const result = await probeHyrosFields(accountId, dateStr);
-    res.json({ accountId, date: dateStr, fields: result });
+    const params = new URLSearchParams({
+      startDate: dateStr,
+      endDate:   dateStr,
+      isAdAccountId: 'true',
+      ids: accountId,
+    });
+    const r    = await fetch(`${HYROS_BASE}/leads?${params}`, { headers: { 'API-Key': key } });
+    const data = await r.json();
+
+    // Return the raw response (first page, up to 10 leads for inspection)
+    const sample = Array.isArray(data.result) ? data.result.slice(0, 10) : data.result;
+    res.json({
+      accountId,
+      date: dateStr,
+      totalReturned: Array.isArray(data.result) ? data.result.length : null,
+      nextPageId: data.nextPageId || null,
+      sample,
+      rawKeys: Array.isArray(data.result) && data.result[0] ? Object.keys(data.result[0]) : [],
+    });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
