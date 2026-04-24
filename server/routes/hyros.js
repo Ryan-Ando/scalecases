@@ -498,9 +498,20 @@ router.get('/probe-leads', async (req, res) => {
   const knownId = '4e4d2b5df6ebadd164b71e93c9cc722a0b4e25ca51ddf09ed1569a8bb519af77';
 
   const paths = [
-    `/leads/journey?ids=${knownId}`,
-    `/leads/journey?ids=${knownId}&startDate=${dateStr}&endDate=${dateStr}`,
-    `/leads/journey?ids=${knownId}&startDate=2026-04-01&endDate=${dateStr}`,
+    // Get Tags — list all tag definitions by type
+    `/tags`,
+    `/tags?startDate=${dateStr}&endDate=${dateStr}`,
+    // Get Lead Optin
+    `/leads/optin?startDate=${dateStr}&endDate=${dateStr}`,
+    `/lead-optin?startDate=${dateStr}&endDate=${dateStr}`,
+    `/leads/opt-in?startDate=${dateStr}&endDate=${dateStr}`,
+    // Filter leads by stage tag value
+    `/leads?startDate=${dateStr}&endDate=${dateStr}&tags=va`,
+    `/leads?startDate=${dateStr}&endDate=${dateStr}&tag=va`,
+    `/leads?startDate=${dateStr}&endDate=${dateStr}&tagFilter=va`,
+    // Get Customer Information
+    `/customer-information?startDate=${dateStr}&endDate=${dateStr}`,
+    `/customers?startDate=${dateStr}&endDate=${dateStr}`,
   ];
 
   const results = {};
