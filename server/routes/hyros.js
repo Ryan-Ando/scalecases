@@ -8,6 +8,8 @@ const HYROS_BASE = 'https://api.hyros.com/v1/api/v1.0';
 const FB_API     = 'https://graph.facebook.com/v19.0';
 const START_DATE = '2026-04-14';
 const SHEET_ID   = process.env.HYROS_SHEET_ID || '16c7rc3LmPcRRMpw5u4lbk5wq8Mwizma8ynNB1nu9Prw';
+const EVENTS_TAB = 'Lead Events';
+const PROTECTED_TABS = new Set([EVENTS_TAB]);
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -41,45 +43,30 @@ function safeTabName(s) {
 
 function delay(ms) { return new Promise(res => setTimeout(res, ms)); }
 
-// ── Hyros API ─────────────────────────────────────────────────────────────────
+// ── Sheet — read stage events ─────────────────────────────────────────────────
 
-// Fetch qualified lead counts per adset for a single day.
-// Uses the /leads endpoint, filters to !qualified-lead only, groups by lastSource adset ID.
-async function fetchLeadsForDay(dateStr) {
-  const key      = process.env.HYROS_API_KEY;
-  const byAdset  = {};
-  let pageId     = null;
-  let pages      = 0;
-
-  do {
-    pages++;
-    const params = new URLSearchParams({ fromDate: dateStr, toDate: dateStr });
-    if (pageId) params.set('pageId', pageId);
-
-    const r    = await fetch(`${HYROS_BASE}/leads?${params}`, { headers: { 'API-Key': key } });
-    const data = await r.json();
-
-    if (!Array.isArray(data.result) || data.result.length === 0) break;
-
-    for (const lead of data.result) {
-      // A lead is qualified when it has a stage tag (e.g. "va", "tx", "fl").
-      // Stage tags have no prefix; action tags start with "!", source tags with "@".
-      const hasStageTag = lead.tags?.some(t => !t.startsWith('!') && !t.startsWith('@'));
-      if (!hasStageTag) continue;
-
-      const src = lead.lastSource;
-      if (!src?.adSource?.adSourceId) continue;
-
-      const id = src.adSource.adSourceId;
-      byAdset[id] = (byAdset[id] || 0) + 1;
+// Reads the "Lead Events" tab and returns leads grouped by date + adset ID.
+// Returns: { '2026-04-23': { '<adsetId>': 3, ... }, ... }
+async function getLeadsFromSheet(sheets) {
+  try {
+    const r = await sheets.spreadsheets.values.get({
+      spreadsheetId: SHEET_ID,
+      range: `${EVENTS_TAB}!A:D`,
+    });
+    const rows = (r.data.values || []).slice(1); // skip header
+    const byDate = {};
+    for (const [, dateStr, adsetId] of rows) {
+      if (!dateStr || !adsetId) continue;
+      if (!byDate[dateStr]) byDate[dateStr] = {};
+      byDate[dateStr][adsetId] = (byDate[dateStr][adsetId] || 0) + 1;
     }
-
-    pageId = data.nextPageId || null;
-    if (pageId) await delay(300);
-  } while (pageId && pages < 100);
-
-  return byAdset;
+    return byDate;
+  } catch {
+    return {};
+  }
 }
+
+// ── Hyros API — spend ─────────────────────────────────────────────────────────
 
 // Fetch spend per adset for a single day via attribution endpoint.
 async function fetchCostForDay(dateStr) {
@@ -125,21 +112,6 @@ async function fetchCostForDay(dateStr) {
   return byAdset;
 }
 
-async function fetchHyrosDay(dateStr) {
-  const [leadsPerAdset, costPerAdset] = await Promise.all([
-    fetchLeadsForDay(dateStr),
-    fetchCostForDay(dateStr),
-  ]);
-
-  const byAdset = {};
-  for (const id of new Set([...Object.keys(leadsPerAdset), ...Object.keys(costPerAdset)])) {
-    byAdset[id] = {
-      leads: leadsPerAdset[id] || 0,
-      cost:  costPerAdset[id]  || 0,
-    };
-  }
-  return byAdset;
-}
 
 // ── FB API — batch adset name, status, and campaign name ─────────────────────
 
@@ -362,16 +334,31 @@ async function runSync() {
 
     // All dates we need to fetch (union, deduplicated)
     const allDates = [...new Set([...dates, ...l4dDates])];
-    console.log(`Hyros sync: ${allDates.length} days (${dates.length} for totals + ${l4dDates.length} for L4D)…`);
+    console.log(`Hyros sync: ${allDates.length} days…`);
 
-    // 1. Fetch Hyros data per day
+    // 1. Get Google Sheets auth early — needed for leads + writing tabs
+    const auth   = await getAuthClient();
+    const sheets = google.sheets({ version: 'v4', auth });
+
+    // 2. Read all stage events from sheet (leads source of truth)
+    const leadsFromSheet = await getLeadsFromSheet(sheets);
+
+    // 3. Fetch spend per day from Hyros attribution API
     const dailyData = {};
     for (const dateStr of allDates) {
-      dailyData[dateStr] = await fetchHyrosDay(dateStr);
+      const costByAdset  = await fetchCostForDay(dateStr);
+      const leadsByAdset = leadsFromSheet[dateStr] || {};
+      dailyData[dateStr] = {};
+      for (const id of new Set([...Object.keys(costByAdset), ...Object.keys(leadsByAdset)])) {
+        dailyData[dateStr][id] = {
+          leads: leadsByAdset[id] || 0,
+          cost:  costByAdset[id]  || 0,
+        };
+      }
       await delay(500);
     }
 
-    // 2. Collect all adset IDs
+    // 4. Collect all adset IDs
     const allAdsetIds = new Set();
     for (const day of Object.values(dailyData)) {
       for (const id of Object.keys(day)) allAdsetIds.add(id);
@@ -404,9 +391,6 @@ async function runSync() {
     }
 
     // 5. Get or create tabs
-    const auth   = await getAuthClient();
-    const sheets = google.sheets({ version: 'v4', auth });
-
     const meta        = await sheets.spreadsheets.get({ spreadsheetId: SHEET_ID });
     const existingTabs = meta.data.sheets.map(s => ({
       title:     s.properties.title,
@@ -442,13 +426,15 @@ async function runSync() {
       await delay(300);
     }
 
-    // 7. Remove the old "Daily Leads" tab if it exists (replaced by campaign tabs)
-    const oldTab = metaAfter.data.sheets.find(s => s.properties.title === 'Daily Leads');
-    if (oldTab && Object.keys(tabMap).length > 1) {
+    // 7. Remove legacy tabs (Daily Leads), never touch protected tabs
+    const toDelete = metaAfter.data.sheets.filter(s =>
+      s.properties.title === 'Daily Leads' && !PROTECTED_TABS.has(s.properties.title)
+    );
+    if (toDelete.length && Object.keys(tabMap).length > 1) {
       await sheets.spreadsheets.batchUpdate({
         spreadsheetId: SHEET_ID,
         requestBody: {
-          requests: [{ deleteSheet: { sheetId: oldTab.properties.sheetId } }],
+          requests: toDelete.map(s => ({ deleteSheet: { sheetId: s.properties.sheetId } })),
         },
       });
     }
@@ -481,6 +467,73 @@ router.get('/status', (_req, res) => {
     lastError: _lastError,
     sheetUrl:  `https://docs.google.com/spreadsheets/d/${SHEET_ID}`,
   });
+});
+
+// POST /api/hyros/stage-event
+// Called by a pixel on each thank-you page. Appends one row to the Lead Events sheet.
+// Body: { lead_stage, fbc_id, utm_campaign, utm_id, h_ad_id, utm_medium, fbclid }
+router.options('/stage-event', (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.sendStatus(204);
+});
+
+router.post('/stage-event', async (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+
+  const { lead_stage, fbc_id, utm_campaign, utm_id, h_ad_id, utm_medium, fbclid } = req.body || {};
+  if (!lead_stage || !fbc_id) {
+    return res.status(400).json({ ok: false, error: 'Missing lead_stage or fbc_id' });
+  }
+
+  const now     = new Date();
+  const dateStr = now.toISOString().slice(0, 10);
+
+  try {
+    const auth   = await getAuthClient();
+    const sheets = google.sheets({ version: 'v4', auth });
+
+    // Create the Events tab + header row if it doesn't exist yet
+    const meta   = await sheets.spreadsheets.get({ spreadsheetId: SHEET_ID });
+    const hasTab = meta.data.sheets.some(s => s.properties.title === EVENTS_TAB);
+    if (!hasTab) {
+      await sheets.spreadsheets.batchUpdate({
+        spreadsheetId: SHEET_ID,
+        requestBody: { requests: [{ addSheet: { properties: { title: EVENTS_TAB } } }] },
+      });
+      await sheets.spreadsheets.values.update({
+        spreadsheetId: SHEET_ID,
+        range: `${EVENTS_TAB}!A1`,
+        valueInputOption: 'RAW',
+        requestBody: { values: [['Timestamp', 'Date', 'Adset ID', 'Stage', 'Campaign', 'Campaign ID', 'Ad ID', 'Ad Name', 'fbclid']] },
+      });
+    }
+
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: SHEET_ID,
+      range: `${EVENTS_TAB}!A:A`,
+      valueInputOption: 'RAW',
+      requestBody: {
+        values: [[
+          now.toISOString(),
+          dateStr,
+          fbc_id,
+          (lead_stage || '').toLowerCase(),
+          utm_campaign || '',
+          utm_id       || '',
+          h_ad_id      || '',
+          utm_medium   || '',
+          fbclid       || '',
+        ]],
+      },
+    });
+
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('stage-event error:', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
 });
 
 // GET /api/hyros/probe-leads?date=<YYYY-MM-DD>
