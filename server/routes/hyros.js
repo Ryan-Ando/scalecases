@@ -53,7 +53,7 @@ async function fetchLeadsForDay(dateStr) {
 
   do {
     pages++;
-    const params = new URLSearchParams({ startDate: dateStr, endDate: dateStr });
+    const params = new URLSearchParams({ fromDate: dateStr, toDate: dateStr });
     if (pageId) params.set('pageId', pageId);
 
     const r    = await fetch(`${HYROS_BASE}/leads?${params}`, { headers: { 'API-Key': key } });
@@ -498,51 +498,31 @@ router.get('/probe-leads', async (req, res) => {
   const knownId = '4e4d2b5df6ebadd164b71e93c9cc722a0b4e25ca51ddf09ed1569a8bb519af77';
 
   const paths = [
-    // Leads variants
-    `/leads?startDate=${dateStr}&endDate=${dateStr}`,
-    `/leads?startDate=${dateStr}&endDate=${dateStr}&tags=va`,
-    `/leads?startDate=${dateStr}&endDate=${dateStr}&tag=va`,
+    // Stages — aggregate counts per stage name
+    `/stages`,
+    `/stages?name=va`,
+    // Leads with correct fromDate/toDate params
+    `/leads?fromDate=${dateStr}&toDate=${dateStr}`,
+    `/leads?fromDate=${dateStr}&toDate=${dateStr}&tags=va`,
     `/leads/journey?ids=${knownId}`,
-    `/leads/optin?startDate=${dateStr}&endDate=${dateStr}`,
-    `/lead-optin?startDate=${dateStr}&endDate=${dateStr}`,
-    `/lead-opt-in?startDate=${dateStr}&endDate=${dateStr}`,
-    `/leads/stages?startDate=${dateStr}&endDate=${dateStr}`,
-    `/lead-stages?startDate=${dateStr}&endDate=${dateStr}`,
+    `/leads/clicks?leadId=${knownId}`,
     // Tags
     `/tags`,
-    `/tags?startDate=${dateStr}&endDate=${dateStr}`,
     `/tags?type=lead-stage`,
-    // Clicks
-    `/lead-clicks?startDate=${dateStr}&endDate=${dateStr}`,
-    `/leads/clicks?startDate=${dateStr}&endDate=${dateStr}`,
-    // Sources
+    // Sources & ads
     `/sources`,
-    `/sources?startDate=${dateStr}&endDate=${dateStr}`,
-    // Ads
     `/ads`,
-    `/ads?startDate=${dateStr}&endDate=${dateStr}`,
-    // Attribution
-    `/attribution?startDate=${dateStr}&endDate=${dateStr}&level=facebook_adset&fields=cost&isAdAccountId=true&ids=1125965718442560`,
-    `/ad-account-attribution?startDate=${dateStr}&endDate=${dateStr}`,
-    // Ad accounts
-    `/ad-accounts`,
-    `/ad-accounts?startDate=${dateStr}&endDate=${dateStr}`,
+    // Attribution (correct params)
+    `/attribution?fromDate=${dateStr}&toDate=${dateStr}&level=facebook_adset&fields=cost&isAdAccountId=true&ids=1125965718442560`,
+    `/attribution/ad-account?fromDate=${dateStr}&toDate=${dateStr}`,
     // Sales & calls
-    `/sales?startDate=${dateStr}&endDate=${dateStr}`,
-    `/calls?startDate=${dateStr}&endDate=${dateStr}`,
-    // Customer / user info
-    `/customer-information?startDate=${dateStr}&endDate=${dateStr}`,
-    `/customer-information/${knownId}`,
-    `/user-information`,
-    `/user`,
-    `/users`,
-    // Integration types
-    `/integration-types`,
-    `/integrations`,
-    // Misc
-    `/lead-journey?startDate=${dateStr}&endDate=${dateStr}`,
-    `/events?startDate=${dateStr}&endDate=${dateStr}`,
-    `/activities?startDate=${dateStr}&endDate=${dateStr}`,
+    `/sales?fromDate=${dateStr}&toDate=${dateStr}`,
+    `/calls?fromDate=${dateStr}&toDate=${dateStr}`,
+    // User info
+    `/user-info`,
+    // Keywords & subscriptions
+    `/keywords`,
+    `/subscriptions?fromDate=${dateStr}&toDate=${dateStr}`,
   ];
 
   const results = {};
