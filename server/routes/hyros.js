@@ -497,32 +497,21 @@ router.get('/probe-leads', async (req, res) => {
   // Known lead ID from Jennifer Cregger's export (reached "va" stage)
   const knownId = '4e4d2b5df6ebadd164b71e93c9cc722a0b4e25ca51ddf09ed1569a8bb519af77';
 
+  const attrBase = `startDate=${dateStr}&endDate=${dateStr}&level=facebook_adset&attributionModel=last_click&isAdAccountId=true`;
+  const acct1 = '1125965718442560';
+  const acct2 = '758516163121709';
+
   const paths = [
-    // Stages — aggregate counts per stage name
-    `/stages`,
-    `/stages?name=va`,
-    // Leads with correct fromDate/toDate params
-    `/leads?fromDate=${dateStr}&toDate=${dateStr}`,
-    `/leads?fromDate=${dateStr}&toDate=${dateStr}&tags=va`,
-    `/leads/journey?ids=${knownId}`,
-    `/leads/clicks?leadId=${knownId}`,
-    // Tags
-    `/tags`,
-    `/tags?type=lead-stage`,
-    // Sources & ads
-    `/sources`,
-    `/ads`,
-    // Attribution (correct params)
-    `/attribution?fromDate=${dateStr}&toDate=${dateStr}&level=facebook_adset&fields=cost&isAdAccountId=true&ids=1125965718442560`,
-    `/attribution/ad-account?fromDate=${dateStr}&toDate=${dateStr}`,
-    // Sales & calls
-    `/sales?fromDate=${dateStr}&toDate=${dateStr}`,
-    `/calls?fromDate=${dateStr}&toDate=${dateStr}`,
-    // User info
-    `/user-info`,
-    // Keywords & subscriptions
-    `/keywords`,
-    `/subscriptions?fromDate=${dateStr}&toDate=${dateStr}`,
+    // Standard leads field
+    `/attribution?${attrBase}&fields=leads,cost&ids=${acct1}`,
+    `/attribution?${attrBase}&fields=leads,cost&ids=${acct2}`,
+    // Custom metric names from previous investigation
+    `/attribution?${attrBase}&fields=leads_b2c_ppl,cost&ids=${acct1}`,
+    `/attribution?${attrBase}&fields=leads_zemsky,cost&ids=${acct2}`,
+    // Try new_leads
+    `/attribution?${attrBase}&fields=new_leads,cost&ids=${acct1}`,
+    // What custom metric names does Hyros know about for this account?
+    `/attribution?${attrBase}&fields=leads,new_leads,sales,calls,cost&ids=${acct1}`,
   ];
 
   const results = {};
