@@ -141,12 +141,28 @@ async function getAuthClient() {
 }
 
 // ── Write one campaign tab ────────────────────────────────────────────────────
+// Column layout:
+//   A: Adset Name
+//   B…: date columns (START_DATE to yesterday — excludes today)
+//   Total Leads   — sum of all date cols (ex today)
+//   Total Spend   — sum of all date cols (ex today)
+//   CPL           — Total Spend / Total Leads (ex today)
+//   L4D Leads     — today + 3 prior days
+//   L4D Spend     — today + 3 prior days
+//   L4D CPL       — L4D Spend / L4D Leads
+//   Status
 
-async function writeCampaignTab(sheets, tabName, numericId, adsets, dailyData, dates) {
-  const leadsCol = 1 + dates.length + 1;
-  const spendCol = leadsCol + 1;
-  const cplCol   = spendCol + 1;
-  const statusCol = cplCol  + 1;
+async function writeCampaignTab(sheets, tabName, numericId, adsets, dailyData, dates, today, l4dDates) {
+  // dates = START_DATE to yesterday (excludes today)
+  // l4dDates = today-3 to today (4 days)
+  const N          = dates.length;
+  const leadsCol   = 1 + N + 1; // 1-based
+  const spendCol   = leadsCol + 1;
+  const cplCol     = spendCol + 1;
+  const l4dLeadsCol = cplCol  + 1;
+  const l4dSpendCol = l4dLeadsCol + 1;
+  const l4dCplCol   = l4dSpendCol + 1;
+  const statusCol   = l4dCplCol  + 1;
 
   const headers = [
     'Adset Name',
@@ -154,7 +170,9 @@ async function writeCampaignTab(sheets, tabName, numericId, adsets, dailyData, d
       const dt = new Date(d + 'T12:00:00Z');
       return `${dt.getUTCMonth() + 1}/${dt.getUTCDate()}`;
     }),
-    'Total Leads', 'Total Spend', 'CPL', 'Status',
+    'Total Leads', 'Total Spend', 'CPL',
+    'L4D Leads', 'L4D Spend', 'L4D CPL',
+    'Status',
   ];
 
   const dataRows = adsets.map((adset, idx) => {
@@ -172,6 +190,18 @@ async function writeCampaignTab(sheets, tabName, numericId, adsets, dailyData, d
     cells.push(totLeads);
     cells.push(Number(totCost.toFixed(2)));
     cells.push(`=IF(${colLetter(leadsCol)}${row}=0,"—",${colLetter(spendCol)}${row}/${colLetter(leadsCol)}${row})`);
+
+    // L4D (last 4 days incl. today)
+    let l4dLeads = 0, l4dCost = 0;
+    for (const dateStr of l4dDates) {
+      const d = dailyData[dateStr]?.[adset.id];
+      l4dLeads += (d?.leads || 0);
+      l4dCost  += (d?.cost  || 0);
+    }
+    cells.push(l4dLeads);
+    cells.push(Number(l4dCost.toFixed(2)));
+    cells.push(`=IF(${colLetter(l4dLeadsCol)}${row}=0,"—",${colLetter(l4dSpendCol)}${row}/${colLetter(l4dLeadsCol)}${row})`);
+
     cells.push(adset.status);
     return cells;
   });
@@ -212,6 +242,7 @@ async function writeCampaignTab(sheets, tabName, numericId, adsets, dailyData, d
           },
         },
         { setBasicFilter: { filter: { range: { sheetId: numericId } } } },
+        // Total Spend: currency
         {
           repeatCell: {
             range: { sheetId: numericId, startRowIndex: 1, startColumnIndex: spendCol - 1, endColumnIndex: spendCol },
@@ -219,9 +250,26 @@ async function writeCampaignTab(sheets, tabName, numericId, adsets, dailyData, d
             fields: 'userEnteredFormat.numberFormat',
           },
         },
+        // CPL: currency
         {
           repeatCell: {
             range: { sheetId: numericId, startRowIndex: 1, startColumnIndex: cplCol - 1, endColumnIndex: cplCol },
+            cell: { userEnteredFormat: { numberFormat: { type: 'CURRENCY', pattern: '"$"#,##0.00' } } },
+            fields: 'userEnteredFormat.numberFormat',
+          },
+        },
+        // L4D Spend: currency
+        {
+          repeatCell: {
+            range: { sheetId: numericId, startRowIndex: 1, startColumnIndex: l4dSpendCol - 1, endColumnIndex: l4dSpendCol },
+            cell: { userEnteredFormat: { numberFormat: { type: 'CURRENCY', pattern: '"$"#,##0.00' } } },
+            fields: 'userEnteredFormat.numberFormat',
+          },
+        },
+        // L4D CPL: currency
+        {
+          repeatCell: {
+            range: { sheetId: numericId, startRowIndex: 1, startColumnIndex: l4dCplCol - 1, endColumnIndex: l4dCplCol },
             cell: { userEnteredFormat: { numberFormat: { type: 'CURRENCY', pattern: '"$"#,##0.00' } } },
             fields: 'userEnteredFormat.numberFormat',
           },
@@ -243,13 +291,30 @@ async function runSync() {
   _lastError   = null;
 
   try {
-    const today = isoToday();
-    const dates = buildDateRange(START_DATE, today);
-    console.log(`Hyros sync: ${dates.length} days…`);
+    const today    = isoToday();
+    const yesterday = buildDateRange(today, today).map(() => {
+      const d = new Date(today + 'T12:00:00Z');
+      d.setUTCDate(d.getUTCDate() - 1);
+      return d.toISOString().slice(0, 10);
+    })[0];
+
+    // Date columns: START_DATE to yesterday (totals exclude today)
+    const dates   = buildDateRange(START_DATE, yesterday);
+    // L4D: today and 3 days prior
+    const l4dStart = (() => {
+      const d = new Date(today + 'T12:00:00Z');
+      d.setUTCDate(d.getUTCDate() - 3);
+      return d.toISOString().slice(0, 10);
+    })();
+    const l4dDates = buildDateRange(l4dStart, today);
+
+    // All dates we need to fetch (union, deduplicated)
+    const allDates = [...new Set([...dates, ...l4dDates])];
+    console.log(`Hyros sync: ${allDates.length} days (${dates.length} for totals + ${l4dDates.length} for L4D)…`);
 
     // 1. Fetch Hyros data per day
     const dailyData = {};
-    for (const dateStr of dates) {
+    for (const dateStr of allDates) {
       dailyData[dateStr] = await fetchHyrosDay(dateStr);
       await delay(500);
     }
@@ -321,7 +386,7 @@ async function runSync() {
     // 6. Write each campaign tab
     for (const [tabName, adsets] of Object.entries(byCampaign)) {
       console.log(`  Writing tab: ${tabName} (${adsets.length} adsets)`);
-      await writeCampaignTab(sheets, tabName, tabMap[tabName], adsets, dailyData, dates);
+      await writeCampaignTab(sheets, tabName, tabMap[tabName], adsets, dailyData, dates, today, l4dDates);
       await delay(300);
     }
 
