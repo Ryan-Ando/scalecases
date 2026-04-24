@@ -9,6 +9,7 @@ import chatRoutes from './routes/chat.js';
 import reportsRoutes from './routes/reports.js';
 import launcherRoutes from './routes/launcher.js';
 import variationsRoutes from './routes/variations.js';
+import hyrosRoutes from './routes/hyros.js';
 
 dotenv.config();
 
@@ -29,6 +30,7 @@ app.use('/api/chat', chatRoutes);
 app.use('/api/reports', reportsRoutes);
 app.use('/api/launcher', launcherRoutes);
 app.use('/api/variations', variationsRoutes);
+app.use('/api/hyros', hyrosRoutes);
 
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 
