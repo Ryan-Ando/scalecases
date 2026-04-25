@@ -622,9 +622,12 @@ async function runBackfillFromContacts(contacts) {
     const sheets = google.sheets({ version: 'v4', auth });
 
     const toInsert = [], noAdset = [];
+    const seen = new Set();
     for (const c of contacts) {
       if (!c.adsetId) { noAdset.push(c.email); continue; }
       const dedupKey = c.fbclid || `email:${c.email}`;
+      if (seen.has(dedupKey)) continue;
+      seen.add(dedupKey);
       toInsert.push([
         new Date().toISOString(), c.date, c.adsetId, c.state,
         c.campaign, c.campaignId, c.adId, '', dedupKey, 'YES',
