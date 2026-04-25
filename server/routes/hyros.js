@@ -192,6 +192,34 @@ async function getAdsetInfo(adsetIds) {
   return info;
 }
 
+// Fetch ALL adsets from the FB ad account (paginated), returns same info shape as getAdsetInfo
+async function getAllAccountAdsets() {
+  const token   = process.env.FB_ACCESS_TOKEN;
+  const account = process.env.FB_AD_ACCOUNT; // e.g. act_XXXXXXXXX
+  const info    = {};
+  if (!token || !account) return info;
+
+  let url = `${FB_API}/${account}/adsets?fields=id,name,effective_status,campaign{name,id}&limit=200&access_token=${token}`;
+  while (url) {
+    try {
+      const r    = await fetch(url);
+      const data = await r.json();
+      if (data.error) { console.warn('FB getAllAdsets error:', data.error.message); break; }
+      for (const d of data.data || []) {
+        info[d.id] = {
+          name:         d.name,
+          status:       d.effective_status || 'UNKNOWN',
+          campaignName: d.campaign?.name   || 'Unknown Campaign',
+          campaignId:   d.campaign?.id     || null,
+        };
+      }
+      url = data.paging?.next || null;
+      if (url) await delay(300);
+    } catch (e) { console.warn('FB getAllAdsets:', e.message); break; }
+  }
+  return info;
+}
+
 // ── Google Sheets auth ────────────────────────────────────────────────────────
 
 async function getAuthClient() {
@@ -394,14 +422,20 @@ async function runSync() {
       await delay(500);
     }
 
-    // 4. Collect all adset IDs
+    // 4. Collect adset IDs from leads + spend, then merge ALL account adsets from FB
     const allAdsetIds = new Set();
     for (const day of Object.values(dailyData)) {
       for (const id of Object.keys(day)) allAdsetIds.add(id);
     }
 
-    // 3. Resolve names, statuses, and campaign names from FB
-    const adsetInfo = await getAdsetInfo([...allAdsetIds]);
+    // Pull every adset from the FB account so new/zero-lead adsets always appear
+    const allAccountAdsets = await getAllAccountAdsets();
+    for (const id of Object.keys(allAccountAdsets)) allAdsetIds.add(id);
+
+    // Merge FB account info with any we already resolved
+    const adsetInfo = { ...allAccountAdsets, ...await getAdsetInfo(
+      [...allAdsetIds].filter(id => !allAccountAdsets[id]) // only look up unknowns
+    )};
 
     // 4. Group adsets by campaign
     const byCampaign = {}; // campaignTabName → adset[]
