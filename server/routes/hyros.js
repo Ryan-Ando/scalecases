@@ -560,24 +560,36 @@ async function fetchGhlContacts(from, to, stateFieldId, fbclidFieldId) {
 
 // Fetch Hyros adset IDs for a list of emails (batches of 50).
 async function hyrosAdsetsByEmail(emails) {
-  const key        = process.env.HYROS_API_KEY;
+  const key = process.env.HYROS_API_KEY;
   const emailToAdset = {};
 
+  // Build all batches upfront
+  const batches = [];
   for (let i = 0; i < emails.length; i += 50) {
-    const batch      = emails.slice(i, i + 50);
-    const emailsStr  = batch.map(e => `"${e}"`).join(',');
-    const params     = new URLSearchParams({ emails: emailsStr });
-    const r          = await fetch(`${HYROS_BASE}/leads?${params}`, { headers: { 'API-Key': key } });
-    const data       = await r.json();
+    batches.push(emails.slice(i, i + 50));
+  }
 
-    for (const lead of data.result || []) {
-      const email   = (lead.email || '').toLowerCase().trim();
-      const adsetId = lead.lastSource?.adSource?.adSourceId;
-      if (email && adsetId && !emailToAdset[email]) {
-        emailToAdset[email] = adsetId;
+  // Fire up to 10 batches concurrently to stay under Render's 30s timeout
+  const CONCURRENCY = 10;
+  for (let i = 0; i < batches.length; i += CONCURRENCY) {
+    const chunk = batches.slice(i, i + CONCURRENCY);
+    const results = await Promise.all(
+      chunk.map(async (batch) => {
+        const emailsStr = batch.map(e => `"${e}"`).join(',');
+        const params    = new URLSearchParams({ emails: emailsStr });
+        const r         = await fetch(`${HYROS_BASE}/leads?${params}`, { headers: { 'API-Key': key } });
+        return r.json();
+      })
+    );
+    for (const data of results) {
+      for (const lead of data.result || []) {
+        const email   = (lead.email || '').toLowerCase().trim();
+        const adsetId = lead.lastSource?.adSource?.adSourceId;
+        if (email && adsetId && !emailToAdset[email]) {
+          emailToAdset[email] = adsetId;
+        }
       }
     }
-    await delay(500);
   }
 
   return emailToAdset;
