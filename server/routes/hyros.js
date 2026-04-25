@@ -595,6 +595,22 @@ async function hyrosAdsetsByEmail(emails) {
   return emailToAdset;
 }
 
+async function ensureEventsTab(sheets) {
+  const meta   = await sheets.spreadsheets.get({ spreadsheetId: SHEET_ID });
+  const hasTab = meta.data.sheets.some(s => s.properties.title === EVENTS_TAB);
+  if (!hasTab) {
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId: SHEET_ID,
+      requestBody: { requests: [{ addSheet: { properties: { title: EVENTS_TAB } } }] },
+    });
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: SHEET_ID, range: `${EVENTS_TAB}!A1`,
+      valueInputOption: 'RAW',
+      requestBody: { values: [['Timestamp', 'Date', 'Adset ID', 'Stage', 'Campaign', 'Campaign ID', 'Ad ID', 'Ad Name', 'fbclid', 'Hyros Verified']] },
+    });
+  }
+}
+
 // ── Backfill state ────────────────────────────────────────────────────────────
 
 let _backfill = { running: false, done: false, result: null, error: null };
@@ -629,6 +645,7 @@ async function runBackfillFromContacts(contacts) {
     }
 
     if (toInsert.length) {
+      await ensureEventsTab(sheets);
       await sheets.spreadsheets.values.append({
         spreadsheetId: SHEET_ID, range: `${EVENTS_TAB}!A:A`,
         valueInputOption: 'RAW', requestBody: { values: toInsert },
@@ -990,21 +1007,7 @@ router.post('/stage-event', async (req, res) => {
       console.warn(`stage-event: fbclid ${fbclid} not in Hyros cache, using URL fbc_id`);
     }
 
-    // Create the Events tab + header row if it doesn't exist yet
-    const meta   = await sheets.spreadsheets.get({ spreadsheetId: SHEET_ID });
-    const hasTab = meta.data.sheets.some(s => s.properties.title === EVENTS_TAB);
-    if (!hasTab) {
-      await sheets.spreadsheets.batchUpdate({
-        spreadsheetId: SHEET_ID,
-        requestBody: { requests: [{ addSheet: { properties: { title: EVENTS_TAB } } }] },
-      });
-      await sheets.spreadsheets.values.update({
-        spreadsheetId: SHEET_ID,
-        range: `${EVENTS_TAB}!A1`,
-        valueInputOption: 'RAW',
-        requestBody: { values: [['Timestamp', 'Date', 'Adset ID', 'Stage', 'Campaign', 'Campaign ID', 'Ad ID', 'Ad Name', 'fbclid', 'Hyros Verified']] },
-      });
-    }
+    await ensureEventsTab(sheets);
 
     await sheets.spreadsheets.values.append({
       spreadsheetId: SHEET_ID,
