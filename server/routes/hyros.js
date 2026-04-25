@@ -240,67 +240,66 @@ async function getAuthClient() {
 // ── Write one campaign tab ────────────────────────────────────────────────────
 // Column layout:
 //   A: Adset Name
-//   B…: date columns (START_DATE to yesterday — excludes today)
-//   Total Leads   — sum of all date cols (ex today)
-//   Total Spend   — sum of all date cols (ex today)
-//   CPL           — Total Spend / Total Leads (ex today)
-//   L4D Leads     — today + 3 prior days
-//   L4D Spend     — today + 3 prior days
-//   L4D CPL       — L4D Spend / L4D Leads
-//   Status
+//   B: Status
+//   C: Total Spend
+//   D: Total Leads
+//   E: CPL
+//   F: L4D Leads
+//   G: L4D Spend
+//   H: L4D CPL
+//   I…: date columns (latest day first, oldest last)
 
 async function writeCampaignTab(sheets, tabName, numericId, adsets, dailyData, dates, today, l4dDates) {
-  // dates = START_DATE to yesterday (excludes today)
-  // l4dDates = today-3 to today (4 days)
-  const N          = dates.length;
-  const leadsCol   = 1 + N + 1; // 1-based
-  const spendCol   = leadsCol + 1;
-  const cplCol     = spendCol + 1;
-  const l4dLeadsCol = cplCol  + 1;
-  const l4dSpendCol = l4dLeadsCol + 1;
-  const l4dCplCol   = l4dSpendCol + 1;
-  const statusCol   = l4dCplCol  + 1;
+  // dates = latest-first array of date strings
+  // l4dDates = yesterday-3 to yesterday (4 days, excludes today)
+  const statusCol   = 2;  // 1-based
+  const spendCol    = 3;
+  const leadsCol    = 4;
+  const cplCol      = 5;
+  const l4dLeadsCol = 6;
+  const l4dSpendCol = 7;
+  const l4dCplCol   = 8;
+  const firstDayCol = 9; // date columns start here
 
   const headers = [
-    'Adset Name',
+    'Adset Name', 'Status', 'Total Spend', 'Total Leads', 'CPL',
+    'L4D Leads', 'L4D Spend', 'L4D CPL',
     ...dates.map(d => {
       const dt = new Date(d + 'T12:00:00Z');
       return `${dt.getUTCMonth() + 1}/${dt.getUTCDate()}`;
     }),
-    'Total Leads', 'Total Spend', 'CPL',
-    'L4D Leads', 'L4D Spend', 'L4D CPL',
-    'Status',
   ];
 
   const dataRows = adsets.map((adset, idx) => {
-    const row   = idx + 2;
-    const cells = [adset.name];
+    const row = idx + 2;
     let totLeads = 0, totCost = 0;
+    const dayCells = [];
 
     for (const dateStr of dates) {
       const d = dailyData[dateStr]?.[adset.id];
-      cells.push(d?.leads || 0);
+      dayCells.push(d?.leads || 0);
       totLeads += (d?.leads || 0);
       totCost  += (d?.cost  || 0);
     }
 
-    cells.push(totLeads);
-    cells.push(Number(totCost.toFixed(2)));
-    cells.push(`=IF(${colLetter(leadsCol)}${row}=0,"—",${colLetter(spendCol)}${row}/${colLetter(leadsCol)}${row})`);
-
-    // L4D (last 4 days incl. today)
     let l4dLeads = 0, l4dCost = 0;
     for (const dateStr of l4dDates) {
       const d = dailyData[dateStr]?.[adset.id];
       l4dLeads += (d?.leads || 0);
       l4dCost  += (d?.cost  || 0);
     }
-    cells.push(l4dLeads);
-    cells.push(Number(l4dCost.toFixed(2)));
-    cells.push(`=IF(${colLetter(l4dLeadsCol)}${row}=0,"—",${colLetter(l4dSpendCol)}${row}/${colLetter(l4dLeadsCol)}${row})`);
 
-    cells.push(adset.status);
-    return cells;
+    return [
+      adset.name,
+      adset.status,
+      Number(totCost.toFixed(2)),
+      totLeads,
+      `=IF(${colLetter(leadsCol)}${row}=0,"—",${colLetter(spendCol)}${row}/${colLetter(leadsCol)}${row})`,
+      l4dLeads,
+      Number(l4dCost.toFixed(2)),
+      `=IF(${colLetter(l4dLeadsCol)}${row}=0,"—",${colLetter(l4dSpendCol)}${row}/${colLetter(l4dLeadsCol)}${row})`,
+      ...dayCells,
+    ];
   });
 
   // Clear + write values
@@ -389,17 +388,22 @@ async function runSync() {
 
   try {
     const today = isoToday();
-
-    // Date columns: START_DATE to today (inclusive)
-    const dates = buildDateRange(START_DATE, today);
-
-    // L4D: today and 3 days prior
-    const l4dStart = (() => {
+    const yesterday = (() => {
       const d = new Date(today + 'T12:00:00Z');
-      d.setUTCDate(d.getUTCDate() - 3);
+      d.setUTCDate(d.getUTCDate() - 1);
       return d.toISOString().slice(0, 10);
     })();
-    const l4dDates = buildDateRange(l4dStart, today);
+
+    // Date columns: START_DATE to today, reversed so latest is first (leftmost)
+    const dates = buildDateRange(START_DATE, today).reverse();
+
+    // L4D: yesterday and 3 days prior (excludes today)
+    const l4dStart = (() => {
+      const d = new Date(today + 'T12:00:00Z');
+      d.setUTCDate(d.getUTCDate() - 4);
+      return d.toISOString().slice(0, 10);
+    })();
+    const l4dDates = buildDateRange(l4dStart, yesterday);
 
     // All dates we need to fetch (union, deduplicated)
     const allDates = [...new Set([...dates, ...l4dDates])];
