@@ -355,15 +355,11 @@ async function runSync() {
   _lastError   = null;
 
   try {
-    const today    = isoToday();
-    const yesterday = buildDateRange(today, today).map(() => {
-      const d = new Date(today + 'T12:00:00Z');
-      d.setUTCDate(d.getUTCDate() - 1);
-      return d.toISOString().slice(0, 10);
-    })[0];
+    const today = isoToday();
 
-    // Date columns: START_DATE to yesterday (totals exclude today)
-    const dates   = buildDateRange(START_DATE, yesterday);
+    // Date columns: START_DATE to today (inclusive)
+    const dates = buildDateRange(START_DATE, today);
+
     // L4D: today and 3 days prior
     const l4dStart = (() => {
       const d = new Date(today + 'T12:00:00Z');
