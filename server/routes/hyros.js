@@ -602,6 +602,31 @@ router.get('/status', (_req, res) => {
   });
 });
 
+// GET /api/hyros/ghl-probe — raw GHL API responses to identify correct structure
+router.get('/ghl-probe', async (req, res) => {
+  const key = process.env.GHL_API_KEY;
+  const headers = { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' };
+  const out = {};
+
+  const paths = [
+    'https://rest.gohighlevel.com/v1/custom-fields/',
+    'https://rest.gohighlevel.com/v1/contacts/?limit=1',
+    'https://services.leadconnectorhq.com/custom-fields/?locationId=',
+    'https://rest.gohighlevel.com/v1/locations/',
+  ];
+
+  for (const url of paths) {
+    try {
+      const r    = await fetch(url, { headers });
+      const text = await r.text();
+      try { out[url] = JSON.parse(text); } catch { out[url] = text.slice(0, 500); }
+    } catch (e) { out[url] = { error: e.message }; }
+    await delay(300);
+  }
+
+  res.json(out);
+});
+
 // GET /api/hyros/backfill?from=YYYY-MM-DD&to=YYYY-MM-DD&dryRun=true
 // Joins GHL contacts (state + fbclid) with Hyros leads (adset ID) and backfills Lead Events.
 // Defaults to dryRun=true — add &dryRun=false to actually write.
