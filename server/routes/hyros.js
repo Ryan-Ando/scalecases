@@ -623,29 +623,24 @@ async function runBackfillFromContacts(contacts) {
 
     const auth   = await getAuthClient();
     const sheets = google.sheets({ version: 'v4', auth });
-    let existingKeys = new Set();
-    try {
-      const r = await sheets.spreadsheets.values.get({
-        spreadsheetId: SHEET_ID, range: `${EVENTS_TAB}!I:I`,
-      });
-      existingKeys = new Set((r.data.values || []).flat().filter(Boolean));
-    } catch { /* tab may not exist yet */ }
 
-    const toInsert = [], noAdset = [], duplicates = [];
+    const toInsert = [], noAdset = [];
     for (const c of contacts) {
       const adsetId  = emailToAdset[c.email];
       const dedupKey = c.fbclid || `email:${c.email}`;
-      if (existingKeys.has(dedupKey)) { duplicates.push(c.email); continue; }
-      if (!adsetId)                   { noAdset.push(c.email);    continue; }
+      if (!adsetId) { noAdset.push(c.email); continue; }
       toInsert.push([
         new Date().toISOString(), c.date, adsetId, c.state,
         '', '', '', '', dedupKey, 'YES',
       ]);
-      existingKeys.add(dedupKey);
     }
 
+    await ensureEventsTab(sheets);
+    // Clear all existing data rows, then write fresh
+    await sheets.spreadsheets.values.clear({
+      spreadsheetId: SHEET_ID, range: `${EVENTS_TAB}!A2:Z`,
+    });
     if (toInsert.length) {
-      await ensureEventsTab(sheets);
       await sheets.spreadsheets.values.append({
         spreadsheetId: SHEET_ID, range: `${EVENTS_TAB}!A:A`,
         valueInputOption: 'RAW', requestBody: { values: toInsert },
@@ -654,11 +649,7 @@ async function runBackfillFromContacts(contacts) {
 
     _backfill = {
       running: false, done: true, error: null,
-      result: {
-        ok: true, inserted: toInsert.length,
-        noHyrosAdset: noAdset.length, alreadyInSheet: duplicates.length,
-        noAdsetSample: noAdset.slice(0, 5),
-      },
+      result: { ok: true, inserted: toInsert.length, noHyrosAdset: noAdset.length, noAdsetSample: noAdset.slice(0, 5) },
     };
   } catch (e) {
     _backfill = { running: false, done: true, result: null, error: String(e) };
