@@ -1102,4 +1102,7 @@ router.get('/probe-leads', async (req, res) => {
   res.json(results);
 });
 
+// Auto-sync every 30 minutes
+setInterval(() => { if (!_syncRunning) runSync(); }, 30 * 60 * 1000);
+
 export default router;
