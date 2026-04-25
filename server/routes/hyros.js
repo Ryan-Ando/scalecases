@@ -625,7 +625,7 @@ async function runBackfillFromContacts(contacts) {
     const seen = new Set();
     for (const c of contacts) {
       if (!c.adsetId) { noAdset.push(c.email); continue; }
-      const dedupKey = c.fbclid || `email:${c.email}`;
+      const dedupKey = c.email;
       if (seen.has(dedupKey)) continue;
       seen.add(dedupKey);
       toInsert.push([
