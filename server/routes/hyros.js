@@ -202,7 +202,7 @@ async function getAllAccountAdsets() {
   if (!token || !accounts.length) return info;
 
   for (const account of accounts) {
-    let url = `${FB_API}/${account}/adsets?fields=id,name,effective_status,campaign{name,id}&limit=200&access_token=${token}`;
+    let url = `${FB_API}/${account}/adsets?fields=id,name,effective_status,campaign{name,id}&effective_status=["ACTIVE"]&limit=200&access_token=${token}`;
     while (url) {
       try {
         const r    = await fetch(url);
@@ -446,16 +446,18 @@ async function runSync() {
       [...allAdsetIds].filter(id => !allAccountAdsets[id]) // only look up unknowns
     )};
 
-    // 4. Group adsets by campaign
+    // 4. Group adsets by campaign — active only
     const byCampaign = {}; // campaignTabName → adset[]
     for (const id of allAdsetIds) {
-      const info     = adsetInfo[id];
-      const tabName  = safeTabName(info?.campaignName || 'Unknown Campaign');
+      const info   = adsetInfo[id];
+      const status = info?.status || 'UNKNOWN';
+      if (status !== 'ACTIVE') continue; // skip paused/deleted/inactive
+      const tabName = safeTabName(info?.campaignName || 'Unknown Campaign');
       if (!byCampaign[tabName]) byCampaign[tabName] = [];
       byCampaign[tabName].push({
         id,
-        name:   info?.name   || id,
-        status: info?.status || 'UNKNOWN',
+        name: info?.name || id,
+        status,
       });
     }
 
