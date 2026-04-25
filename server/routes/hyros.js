@@ -192,30 +192,35 @@ async function getAdsetInfo(adsetIds) {
   return info;
 }
 
-// Fetch ALL adsets from the FB ad account (paginated), returns same info shape as getAdsetInfo
+// Fetch ALL adsets from all FB ad accounts (paginated), returns same info shape as getAdsetInfo
 async function getAllAccountAdsets() {
-  const token   = process.env.FB_ACCESS_TOKEN;
-  const account = process.env.FB_AD_ACCOUNT; // e.g. act_XXXXXXXXX
-  const info    = {};
-  if (!token || !account) return info;
+  const token    = process.env.FB_ACCESS_TOKEN;
+  const accounts = (process.env.FB_AD_ACCOUNTS || '')
+    .split(',').map(a => { const id = a.trim(); return id.startsWith('act_') ? id : `act_${id}`; })
+    .filter(id => id !== 'act_');
+  const info = {};
+  if (!token || !accounts.length) return info;
 
-  let url = `${FB_API}/${account}/adsets?fields=id,name,effective_status,campaign{name,id}&limit=200&access_token=${token}`;
-  while (url) {
-    try {
-      const r    = await fetch(url);
-      const data = await r.json();
-      if (data.error) { console.warn('FB getAllAdsets error:', data.error.message); break; }
-      for (const d of data.data || []) {
-        info[d.id] = {
-          name:         d.name,
-          status:       d.effective_status || 'UNKNOWN',
-          campaignName: d.campaign?.name   || 'Unknown Campaign',
-          campaignId:   d.campaign?.id     || null,
-        };
-      }
-      url = data.paging?.next || null;
-      if (url) await delay(300);
-    } catch (e) { console.warn('FB getAllAdsets:', e.message); break; }
+  for (const account of accounts) {
+    let url = `${FB_API}/${account}/adsets?fields=id,name,effective_status,campaign{name,id}&limit=200&access_token=${token}`;
+    while (url) {
+      try {
+        const r    = await fetch(url);
+        const data = await r.json();
+        if (data.error) { console.warn('FB getAllAdsets error:', data.error.message); break; }
+        for (const d of data.data || []) {
+          info[d.id] = {
+            name:         d.name,
+            status:       d.effective_status || 'UNKNOWN',
+            campaignName: d.campaign?.name   || 'Unknown Campaign',
+            campaignId:   d.campaign?.id     || null,
+          };
+        }
+        url = data.paging?.next || null;
+        if (url) await delay(300);
+      } catch (e) { console.warn('FB getAllAdsets:', e.message); break; }
+    }
+    await delay(300);
   }
   return info;
 }
