@@ -595,6 +595,59 @@ async function hyrosAdsetsByEmail(emails) {
   return emailToAdset;
 }
 
+// ── Backfill state ────────────────────────────────────────────────────────────
+
+let _backfill = { running: false, done: false, result: null, error: null };
+
+async function runBackfillFromContacts(contacts) {
+  _backfill = { running: true, done: false, result: null, error: null };
+  try {
+    const emails       = [...new Set(contacts.map(c => c.email))];
+    const emailToAdset = await hyrosAdsetsByEmail(emails);
+
+    const auth   = await getAuthClient();
+    const sheets = google.sheets({ version: 'v4', auth });
+    let existingKeys = new Set();
+    try {
+      const r = await sheets.spreadsheets.values.get({
+        spreadsheetId: SHEET_ID, range: `${EVENTS_TAB}!I:I`,
+      });
+      existingKeys = new Set((r.data.values || []).flat().filter(Boolean));
+    } catch { /* tab may not exist yet */ }
+
+    const toInsert = [], noAdset = [], duplicates = [];
+    for (const c of contacts) {
+      const adsetId  = emailToAdset[c.email];
+      const dedupKey = c.fbclid || `email:${c.email}`;
+      if (existingKeys.has(dedupKey)) { duplicates.push(c.email); continue; }
+      if (!adsetId)                   { noAdset.push(c.email);    continue; }
+      toInsert.push([
+        new Date().toISOString(), c.date, adsetId, c.state,
+        '', '', '', '', dedupKey, 'YES',
+      ]);
+      existingKeys.add(dedupKey);
+    }
+
+    if (toInsert.length) {
+      await sheets.spreadsheets.values.append({
+        spreadsheetId: SHEET_ID, range: `${EVENTS_TAB}!A:A`,
+        valueInputOption: 'RAW', requestBody: { values: toInsert },
+      });
+    }
+
+    _backfill = {
+      running: false, done: true, error: null,
+      result: {
+        ok: true, inserted: toInsert.length,
+        noHyrosAdset: noAdset.length, alreadyInSheet: duplicates.length,
+        noAdsetSample: noAdset.slice(0, 5),
+      },
+    };
+  } catch (e) {
+    _backfill = { running: false, done: true, result: null, error: String(e) };
+  }
+}
+
 // ── Routes ────────────────────────────────────────────────────────────────────
 
 async function handleSync(req, res) {
@@ -668,7 +721,6 @@ router.post('/backfill-csv', async (req, res) => {
     return res.status(400).json({ ok: false, error: 'Could not find email or state columns', headers });
   }
 
-  // Parse contacts — only those with a state value
   const contacts = [];
   for (const row of rows.slice(1)) {
     const email  = (row[emailIdx]  || '').toLowerCase().trim();
@@ -676,7 +728,6 @@ router.post('/backfill-csv', async (req, res) => {
     const fbclid = (row[fbclidIdx] || '').trim();
     const raw    = (row[dateIdx]   || '').trim();
     const date   = raw.slice(0, 10);
-
     if (!email || !state || !date) continue;
     contacts.push({ email, state, fbclid, date });
   }
@@ -685,61 +736,49 @@ router.post('/backfill-csv', async (req, res) => {
     return res.json({ ok: false, error: 'No contacts with state found in CSV' });
   }
 
-  // Fetch Hyros adset IDs by email
-  const emails       = [...new Set(contacts.map(c => c.email))];
-  const emailToAdset = await hyrosAdsetsByEmail(emails);
+  // Dry run: do the full lookup synchronously and return preview
+  if (dryRun) {
+    const emails       = [...new Set(contacts.map(c => c.email))];
+    const emailToAdset = await hyrosAdsetsByEmail(emails);
 
-  // Load existing dedup keys from Lead Events
-  const auth   = await getAuthClient();
-  const sheets = google.sheets({ version: 'v4', auth });
-  let existingKeys = new Set();
-  try {
-    const r = await sheets.spreadsheets.values.get({
-      spreadsheetId: SHEET_ID, range: `${EVENTS_TAB}!I:I`,
-    });
-    existingKeys = new Set((r.data.values || []).flat().filter(Boolean));
-  } catch { /* tab may not exist yet */ }
+    const auth   = await getAuthClient();
+    const sheets = google.sheets({ version: 'v4', auth });
+    let existingKeys = new Set();
+    try {
+      const r = await sheets.spreadsheets.values.get({
+        spreadsheetId: SHEET_ID, range: `${EVENTS_TAB}!I:I`,
+      });
+      existingKeys = new Set((r.data.values || []).flat().filter(Boolean));
+    } catch { /* tab may not exist yet */ }
 
-  // Build rows
-  const toInsert   = [];
-  const noAdset    = [];
-  const duplicates = [];
-
-  for (const c of contacts) {
-    const adsetId  = emailToAdset[c.email];
-    const dedupKey = c.fbclid || `email:${c.email}`;
-
-    if (existingKeys.has(dedupKey)) { duplicates.push(c.email); continue; }
-    if (!adsetId)                   { noAdset.push(c.email);    continue; }
-
-    toInsert.push([
-      new Date().toISOString(), c.date, adsetId, c.state,
-      '', '', '', '',
-      dedupKey, 'YES',
-    ]);
-    existingKeys.add(dedupKey);
-  }
-
-  const summary = {
-    dryRun,
-    totalInCsv:     contacts.length,
-    hyrosMatched:   toInsert.length,
-    noHyrosAdset:   noAdset.length,
-    alreadyInSheet: duplicates.length,
-    noAdsetSample:  noAdset.slice(0, 5),
-  };
-
-  if (dryRun) return res.json({ ...summary, preview: toInsert.slice(0, 5) });
-
-  if (toInsert.length) {
-    await sheets.spreadsheets.values.append({
-      spreadsheetId: SHEET_ID, range: `${EVENTS_TAB}!A:A`,
-      valueInputOption: 'RAW', requestBody: { values: toInsert },
+    const toInsert = [], noAdset = [], duplicates = [];
+    for (const c of contacts) {
+      const adsetId  = emailToAdset[c.email];
+      const dedupKey = c.fbclid || `email:${c.email}`;
+      if (existingKeys.has(dedupKey)) { duplicates.push(c.email); continue; }
+      if (!adsetId)                   { noAdset.push(c.email);    continue; }
+      toInsert.push([
+        new Date().toISOString(), c.date, adsetId, c.state,
+        '', '', '', '', dedupKey, 'YES',
+      ]);
+      existingKeys.add(dedupKey);
+    }
+    return res.json({
+      dryRun: true, totalInCsv: contacts.length,
+      hyrosMatched: toInsert.length, noHyrosAdset: noAdset.length,
+      alreadyInSheet: duplicates.length, noAdsetSample: noAdset.slice(0, 5),
+      preview: toInsert.slice(0, 5),
     });
   }
 
-  res.json({ ok: true, ...summary });
+  // Real run: respond immediately, process in background
+  if (_backfill.running) return res.json({ ok: false, error: 'Backfill already running' });
+  _backfill = { running: true, done: false, result: null, error: null };
+  res.json({ ok: true, status: 'started', totalContacts: contacts.length, pollUrl: '/api/hyros/backfill-status' });
+  runBackfillFromContacts(contacts);
 });
+
+router.get('/backfill-status', (_req, res) => res.json(_backfill));
 
 // GET /api/hyros/ghl-probe — raw GHL API responses to identify correct structure
 router.get('/ghl-probe', async (req, res) => {
