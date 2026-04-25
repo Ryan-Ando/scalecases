@@ -6,6 +6,7 @@ const router = Router();
 
 const HYROS_BASE = 'https://api.hyros.com/v1/api/v1.0';
 const FB_API     = 'https://graph.facebook.com/v19.0';
+const GHL_BASE   = 'https://rest.gohighlevel.com/v1';
 const START_DATE = '2026-04-14';
 const SHEET_ID   = process.env.HYROS_SHEET_ID || '16c7rc3LmPcRRMpw5u4lbk5wq8Mwizma8ynNB1nu9Prw';
 const EVENTS_TAB  = 'Lead Events';
@@ -489,6 +490,99 @@ async function runSync() {
   }
 }
 
+// ── GHL helpers ───────────────────────────────────────────────────────────────
+
+async function ghlGet(path, params = {}) {
+  const url = new URL(`${GHL_BASE}${path}`);
+  Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, String(v)));
+  const r = await fetch(url.toString(), {
+    headers: { 'Authorization': `Bearer ${process.env.GHL_API_KEY}` },
+  });
+  return r.json();
+}
+
+// Returns { stateFieldId, fbclidFieldId } from GHL custom field definitions
+async function getGhlFieldIds() {
+  const data   = await ghlGet('/custom-fields/');
+  const fields = data.customFields || [];
+  return {
+    stateFieldId:  fields.find(f => f.fieldKey === 'what_state_was_your_accident_in')?.id || null,
+    fbclidFieldId: fields.find(f => f.fieldKey === 'fbclid')?.id || null,
+    allKeys:       fields.map(f => ({ key: f.fieldKey, id: f.id })),
+  };
+}
+
+// Fetch all GHL contacts created between from–to with a state value set.
+async function fetchGhlContacts(from, to, stateFieldId, fbclidFieldId) {
+  const contacts = [];
+  const fromMs   = new Date(from + 'T00:00:00Z').getTime();
+  let   startAfter    = fromMs;
+  let   startAfterId  = null;
+  let   page          = 0;
+
+  while (page < 300) {
+    page++;
+    const params = { limit: 100, startAfter };
+    if (startAfterId) params.startAfterId = startAfterId;
+
+    const data  = await ghlGet('/contacts/', params);
+    const batch = data.contacts || [];
+    if (!batch.length) break;
+
+    for (const c of batch) {
+      const dateStr = (c.dateAdded || '').slice(0, 10);
+      if (dateStr < from) continue;
+      if (dateStr > to)   continue;
+
+      const stateVal  = c.customField?.find(f => f.id === stateFieldId)?.value  || '';
+      const fbclidVal = c.customField?.find(f => f.id === fbclidFieldId)?.value || '';
+      if (!stateVal) continue;
+
+      contacts.push({
+        email:  (c.email || '').toLowerCase().trim(),
+        state:  stateVal.toLowerCase().trim(),
+        fbclid: fbclidVal,
+        date:   dateStr,
+      });
+    }
+
+    const last     = batch[batch.length - 1];
+    const lastDate = (last?.dateAdded || '').slice(0, 10);
+    if (lastDate > to || batch.length < 100) break;
+
+    startAfter   = new Date(last.dateAdded).getTime();
+    startAfterId = last.id;
+    await delay(300);
+  }
+
+  return contacts;
+}
+
+// Fetch Hyros adset IDs for a list of emails (batches of 50).
+async function hyrosAdsetsByEmail(emails) {
+  const key        = process.env.HYROS_API_KEY;
+  const emailToAdset = {};
+
+  for (let i = 0; i < emails.length; i += 50) {
+    const batch      = emails.slice(i, i + 50);
+    const emailsStr  = batch.map(e => `"${e}"`).join(',');
+    const params     = new URLSearchParams({ emails: emailsStr });
+    const r          = await fetch(`${HYROS_BASE}/leads?${params}`, { headers: { 'API-Key': key } });
+    const data       = await r.json();
+
+    for (const lead of data.result || []) {
+      const email   = (lead.email || '').toLowerCase().trim();
+      const adsetId = lead.lastSource?.adSource?.adSourceId;
+      if (email && adsetId && !emailToAdset[email]) {
+        emailToAdset[email] = adsetId;
+      }
+    }
+    await delay(500);
+  }
+
+  return emailToAdset;
+}
+
 // ── Routes ────────────────────────────────────────────────────────────────────
 
 async function handleSync(req, res) {
@@ -506,6 +600,101 @@ router.get('/status', (_req, res) => {
     lastError: _lastError,
     sheetUrl:  `https://docs.google.com/spreadsheets/d/${SHEET_ID}`,
   });
+});
+
+// GET /api/hyros/backfill?from=YYYY-MM-DD&to=YYYY-MM-DD&dryRun=true
+// Joins GHL contacts (state + fbclid) with Hyros leads (adset ID) and backfills Lead Events.
+// Defaults to dryRun=true — add &dryRun=false to actually write.
+router.get('/backfill', async (req, res) => {
+  const dryRun = req.query.dryRun !== 'false';
+  const from   = req.query.from || START_DATE;
+  const to     = req.query.to   || isoToday();
+
+  try {
+    // 1. Resolve GHL custom field IDs
+    const { stateFieldId, fbclidFieldId, allKeys } = await getGhlFieldIds();
+    if (!stateFieldId) {
+      return res.json({ ok: false, error: 'GHL field "what_state_was_your_accident_in" not found', allKeys });
+    }
+
+    // 2. Fetch GHL contacts with a state set in the date range
+    const ghlContacts = await fetchGhlContacts(from, to, stateFieldId, fbclidFieldId);
+    console.log(`Backfill: ${ghlContacts.length} GHL contacts with state in ${from}–${to}`);
+
+    if (!ghlContacts.length) {
+      return res.json({ ok: true, inserted: 0, message: 'No GHL contacts with state found in range' });
+    }
+
+    // 3. Fetch Hyros adset IDs by email
+    const emails       = [...new Set(ghlContacts.map(c => c.email).filter(Boolean))];
+    const emailToAdset = await hyrosAdsetsByEmail(emails);
+
+    // 4. Load existing fbclids from Lead Events to prevent duplicates
+    const auth   = await getAuthClient();
+    const sheets = google.sheets({ version: 'v4', auth });
+
+    let existingKeys = new Set();
+    try {
+      const existing = await sheets.spreadsheets.values.get({
+        spreadsheetId: SHEET_ID,
+        range:         `${EVENTS_TAB}!I:I`, // fbclid column
+      });
+      existingKeys = new Set((existing.data.values || []).flat().filter(Boolean));
+    } catch { /* tab may not exist yet */ }
+
+    // 5. Build rows, deduplicating on fbclid (or email: prefix as fallback)
+    const toInsert   = [];
+    const noAdset    = [];
+    const duplicates = [];
+
+    for (const c of ghlContacts) {
+      const adsetId = emailToAdset[c.email];
+      const dedupKey = c.fbclid || `email:${c.email}`;
+
+      if (existingKeys.has(dedupKey)) { duplicates.push(c.email); continue; }
+      if (!adsetId)                   { noAdset.push(c.email);    continue; }
+
+      toInsert.push([
+        new Date().toISOString(), // Timestamp
+        c.date,                   // Date
+        adsetId,                  // Adset ID (from Hyros)
+        c.state,                  // Stage (from GHL)
+        '', '', '', '',           // Campaign, Campaign ID, Ad ID, Ad Name
+        dedupKey,                 // fbclid / dedup key
+        'YES',                    // Hyros Verified
+      ]);
+      existingKeys.add(dedupKey); // prevent intra-batch duplicates
+    }
+
+    const summary = {
+      dryRun,
+      range:           `${from} → ${to}`,
+      ghlContacts:     ghlContacts.length,
+      hyrosMatched:    toInsert.length,
+      noHyrosAdset:    noAdset.length,
+      alreadyInSheet:  duplicates.length,
+      noAdsetEmails:   noAdset.slice(0, 10),
+    };
+
+    if (dryRun) {
+      return res.json({ ...summary, preview: toInsert.slice(0, 5) });
+    }
+
+    // 6. Write to sheet
+    if (toInsert.length) {
+      await sheets.spreadsheets.values.append({
+        spreadsheetId:    SHEET_ID,
+        range:            `${EVENTS_TAB}!A:A`,
+        valueInputOption: 'RAW',
+        requestBody:      { values: toInsert },
+      });
+    }
+
+    res.json({ ok: true, ...summary });
+  } catch (err) {
+    console.error('backfill error:', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
 });
 
 // POST /api/hyros/webhook
