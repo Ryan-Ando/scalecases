@@ -8,8 +8,13 @@ const HYROS_BASE = 'https://api.hyros.com/v1/api/v1.0';
 const FB_API     = 'https://graph.facebook.com/v19.0';
 const START_DATE = '2026-04-14';
 const SHEET_ID   = process.env.HYROS_SHEET_ID || '16c7rc3LmPcRRMpw5u4lbk5wq8Mwizma8ynNB1nu9Prw';
-const EVENTS_TAB = 'Lead Events';
-const PROTECTED_TABS = new Set([EVENTS_TAB]);
+const EVENTS_TAB  = 'Lead Events';
+const WEBHOOK_TAB = 'Webhook Cache';
+const PROTECTED_TABS = new Set([EVENTS_TAB, WEBHOOK_TAB]);
+
+// In-memory fbclid → adsetId map, populated from Webhook Cache sheet + live webhooks
+const _fbclidCache = new Map();
+let   _cacheLoaded = false;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -42,6 +47,40 @@ function safeTabName(s) {
 }
 
 function delay(ms) { return new Promise(res => setTimeout(res, ms)); }
+
+// ── Webhook cache ─────────────────────────────────────────────────────────────
+
+// Load all fbclid → adsetId mappings from the Webhook Cache sheet into memory.
+async function loadFbclidCache(sheets) {
+  if (_cacheLoaded) return;
+  try {
+    const r = await sheets.spreadsheets.values.get({
+      spreadsheetId: SHEET_ID,
+      range: `${WEBHOOK_TAB}!C:D`, // fbclid, Adset ID
+    });
+    for (const [fbclid, adsetId] of (r.data.values || []).slice(1)) {
+      if (fbclid && adsetId) _fbclidCache.set(fbclid, adsetId);
+    }
+  } catch { /* tab may not exist yet */ }
+  _cacheLoaded = true;
+}
+
+async function ensureWebhookTab(sheets) {
+  const meta   = await sheets.spreadsheets.get({ spreadsheetId: SHEET_ID });
+  const hasTab = meta.data.sheets.some(s => s.properties.title === WEBHOOK_TAB);
+  if (!hasTab) {
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId: SHEET_ID,
+      requestBody: { requests: [{ addSheet: { properties: { title: WEBHOOK_TAB } } }] },
+    });
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: SHEET_ID,
+      range: `${WEBHOOK_TAB}!A1`,
+      valueInputOption: 'RAW',
+      requestBody: { values: [['Timestamp', 'Lead ID', 'fbclid', 'Adset ID', 'Email', 'Event Type']] },
+    });
+  }
+}
 
 // ── Sheet — read stage events ─────────────────────────────────────────────────
 
@@ -469,6 +508,55 @@ router.get('/status', (_req, res) => {
   });
 });
 
+// POST /api/hyros/webhook
+// Receives Hyros lead.opted.in events. Extracts fbclid + adset and caches them
+// so stage-event can do a Hyros-verified adset lookup when the lead hits the thank-you page.
+router.post('/webhook', async (req, res) => {
+  res.sendStatus(200); // respond fast — Hyros retries on timeout
+
+  const payload = req.body || {};
+  console.log('Hyros webhook:', payload.type, payload.eventId);
+
+  if (payload.type !== 'lead.opted.in') return;
+
+  const lead    = payload.body?.lead;
+  const adsetId = lead?.lastSource?.adSource?.adSourceId;
+  const leadId  = lead?.id   || '';
+  const email   = lead?.email || '';
+
+  // fbclid lives in the referrer URL that Hyros records at opt-in time
+  let fbclid = '';
+  try {
+    const referrer = payload.body?.referrer || '';
+    fbclid = new URL(referrer).searchParams.get('fbclid') || '';
+  } catch { /* referrer may be empty or malformed */ }
+
+  if (!adsetId) {
+    console.warn('Hyros webhook: no adsetId found', JSON.stringify(payload).slice(0, 300));
+    return;
+  }
+
+  // Store in memory immediately
+  if (fbclid) _fbclidCache.set(fbclid, adsetId);
+
+  // Persist to Webhook Cache sheet
+  try {
+    const auth   = await getAuthClient();
+    const sheets = google.sheets({ version: 'v4', auth });
+    await ensureWebhookTab(sheets);
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: SHEET_ID,
+      range: `${WEBHOOK_TAB}!A:A`,
+      valueInputOption: 'RAW',
+      requestBody: {
+        values: [[new Date().toISOString(), leadId, fbclid, adsetId, email, payload.type]],
+      },
+    });
+  } catch (err) {
+    console.error('Hyros webhook sheet write error:', err.message);
+  }
+});
+
 // POST /api/hyros/stage-event
 // Called by a pixel on each thank-you page. Appends one row to the Lead Events sheet.
 // Body: { lead_stage, fbc_id, utm_campaign, utm_id, h_ad_id, utm_medium, fbclid }
@@ -483,8 +571,8 @@ router.post('/stage-event', async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
 
   const { lead_stage, fbc_id, utm_campaign, utm_id, h_ad_id, utm_medium, fbclid } = req.body || {};
-  if (!lead_stage || !fbc_id) {
-    return res.status(400).json({ ok: false, error: 'Missing lead_stage or fbc_id' });
+  if (!lead_stage || !fbclid) {
+    return res.status(400).json({ ok: false, error: 'Missing lead_stage or fbclid' });
   }
 
   const now     = new Date();
@@ -493,6 +581,22 @@ router.post('/stage-event', async (req, res) => {
   try {
     const auth   = await getAuthClient();
     const sheets = google.sheets({ version: 'v4', auth });
+
+    // Load Hyros webhook cache from sheet if not yet in memory
+    await loadFbclidCache(sheets);
+
+    // Resolve adset ID — prefer Hyros-verified lookup, fall back to URL fbc_id
+    const hyrosAdsetId = _fbclidCache.get(fbclid);
+    const adsetId      = hyrosAdsetId || fbc_id || '';
+    const verified     = !!hyrosAdsetId;
+
+    if (!adsetId) {
+      return res.status(400).json({ ok: false, error: 'Could not resolve adset ID' });
+    }
+
+    if (!verified) {
+      console.warn(`stage-event: fbclid ${fbclid} not in Hyros cache, using URL fbc_id`);
+    }
 
     // Create the Events tab + header row if it doesn't exist yet
     const meta   = await sheets.spreadsheets.get({ spreadsheetId: SHEET_ID });
@@ -506,7 +610,7 @@ router.post('/stage-event', async (req, res) => {
         spreadsheetId: SHEET_ID,
         range: `${EVENTS_TAB}!A1`,
         valueInputOption: 'RAW',
-        requestBody: { values: [['Timestamp', 'Date', 'Adset ID', 'Stage', 'Campaign', 'Campaign ID', 'Ad ID', 'Ad Name', 'fbclid']] },
+        requestBody: { values: [['Timestamp', 'Date', 'Adset ID', 'Stage', 'Campaign', 'Campaign ID', 'Ad ID', 'Ad Name', 'fbclid', 'Hyros Verified']] },
       });
     }
 
@@ -518,13 +622,14 @@ router.post('/stage-event', async (req, res) => {
         values: [[
           now.toISOString(),
           dateStr,
-          fbc_id,
+          adsetId,
           (lead_stage || '').toLowerCase(),
           utm_campaign || '',
           utm_id       || '',
           h_ad_id      || '',
           utm_medium   || '',
           fbclid       || '',
+          verified ? 'YES' : 'NO',
         ]],
       },
     });
