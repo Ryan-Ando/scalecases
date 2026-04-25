@@ -618,20 +618,39 @@ let _backfill = { running: false, done: false, result: null, error: null };
 async function runBackfillFromContacts(contacts) {
   _backfill = { running: true, done: false, result: null, error: null };
   try {
+    // Build GHL lookup map — email is already lowercased, dedup by email (keep first)
+    const ghlMap = {};
+    for (const c of contacts) {
+      if (!ghlMap[c.email]) ghlMap[c.email] = c;
+    }
+
+    // Ask Hyros which of these emails it knows about → authoritative lead set
+    const emails = Object.keys(ghlMap);
+    const hyrosAdsets = await hyrosAdsetsByEmail(emails);
+    // hyrosAdsets: { email: adsetId } — only emails Hyros has a record for
+
     const auth   = await getAuthClient();
     const sheets = google.sheets({ version: 'v4', auth });
 
-    const toInsert = [], noAdset = [];
-    const seen = new Set();
-    for (const c of contacts) {
-      if (!c.adsetId) { noAdset.push(c.email); continue; }
-      const dedupKey = c.email;
-      if (seen.has(dedupKey)) continue;
-      seen.add(dedupKey);
+    const toInsert = [], noHyros = [], noState = [];
+    for (const email of Object.keys(hyrosAdsets)) {
+      const ghl = ghlMap[email];
+      if (!ghl)        { noState.push(email);  continue; }
+      if (!ghl.state)  { noState.push(email);  continue; }
+
+      // Prefer adset ID from GHL URL (fbc_id), fall back to Hyros attribution
+      const adsetId = ghl.adsetId || hyrosAdsets[email];
+      if (!adsetId) continue;
+
       toInsert.push([
-        new Date().toISOString(), c.date, c.adsetId, c.state,
-        c.campaign, c.campaignId, c.adId, '', dedupKey, 'YES',
+        new Date().toISOString(), ghl.date, adsetId, ghl.state,
+        ghl.campaign, ghl.campaignId, ghl.adId, '', email, 'YES',
       ]);
+    }
+
+    // Track GHL contacts Hyros didn't recognise
+    for (const email of emails) {
+      if (!hyrosAdsets[email]) noHyros.push(email);
     }
 
     await ensureEventsTab(sheets);
@@ -647,7 +666,13 @@ async function runBackfillFromContacts(contacts) {
 
     _backfill = {
       running: false, done: true, error: null,
-      result: { ok: true, inserted: toInsert.length, noAdset: noAdset.length, noAdsetSample: noAdset.slice(0, 5) },
+      result: {
+        ok: true,
+        inserted: toInsert.length,
+        notInHyros: noHyros.length,
+        noStateSample: noState.slice(0, 5),
+        notInHyrosSample: noHyros.slice(0, 5),
+      },
     };
   } catch (e) {
     _backfill = { running: false, done: true, result: null, error: String(e) };
