@@ -602,6 +602,133 @@ router.get('/status', (_req, res) => {
   });
 });
 
+// Simple CSV parser — handles quoted fields with embedded commas/newlines
+function parseCsv(text) {
+  const rows = [];
+  let row = [], field = '', inQuotes = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i], next = text[i + 1];
+    if (inQuotes) {
+      if (ch === '"' && next === '"') { field += '"'; i++; }
+      else if (ch === '"')             { inQuotes = false; }
+      else                             { field += ch; }
+    } else {
+      if      (ch === '"')  { inQuotes = true; }
+      else if (ch === ',')  { row.push(field); field = ''; }
+      else if (ch === '\n') { row.push(field); rows.push(row); row = []; field = ''; }
+      else if (ch === '\r') { /* skip */ }
+      else                  { field += ch; }
+    }
+  }
+  if (field || row.length) { row.push(field); rows.push(row); }
+  return rows;
+}
+
+// POST /api/hyros/backfill-csv?dryRun=true
+// Body: raw CSV text (Content-Type: text/plain or text/csv)
+// Parses GHL export, joins with Hyros for adset IDs, writes to Lead Events.
+router.post('/backfill-csv', async (req, res) => {
+  const dryRun = req.query.dryRun !== 'false';
+
+  // Collect raw body
+  let csv = '';
+  await new Promise((resolve, reject) => {
+    req.setEncoding('utf8');
+    req.on('data', chunk => { csv += chunk; });
+    req.on('end', resolve);
+    req.on('error', reject);
+  });
+
+  if (!csv.trim()) return res.status(400).json({ ok: false, error: 'Empty body' });
+
+  const rows = parseCsv(csv.trim());
+  if (rows.length < 2) return res.status(400).json({ ok: false, error: 'No data rows found' });
+
+  const headers = rows[0].map(h => h.trim().toLowerCase());
+  const col = name => headers.findIndex(h => h.includes(name));
+
+  const emailIdx  = col('email');
+  const fbclidIdx = col('fbclid');
+  const stateIdx  = col('state');
+  const dateIdx   = col('created');
+
+  if (emailIdx < 0 || stateIdx < 0) {
+    return res.status(400).json({ ok: false, error: 'Could not find email or state columns', headers });
+  }
+
+  // Parse contacts — only those with a state value
+  const contacts = [];
+  for (const row of rows.slice(1)) {
+    const email  = (row[emailIdx]  || '').toLowerCase().trim();
+    const state  = (row[stateIdx]  || '').toLowerCase().trim();
+    const fbclid = (row[fbclidIdx] || '').trim();
+    const raw    = (row[dateIdx]   || '').trim();
+    const date   = raw.slice(0, 10);
+
+    if (!email || !state || !date) continue;
+    contacts.push({ email, state, fbclid, date });
+  }
+
+  if (!contacts.length) {
+    return res.json({ ok: false, error: 'No contacts with state found in CSV' });
+  }
+
+  // Fetch Hyros adset IDs by email
+  const emails       = [...new Set(contacts.map(c => c.email))];
+  const emailToAdset = await hyrosAdsetsByEmail(emails);
+
+  // Load existing dedup keys from Lead Events
+  const auth   = await getAuthClient();
+  const sheets = google.sheets({ version: 'v4', auth });
+  let existingKeys = new Set();
+  try {
+    const r = await sheets.spreadsheets.values.get({
+      spreadsheetId: SHEET_ID, range: `${EVENTS_TAB}!I:I`,
+    });
+    existingKeys = new Set((r.data.values || []).flat().filter(Boolean));
+  } catch { /* tab may not exist yet */ }
+
+  // Build rows
+  const toInsert   = [];
+  const noAdset    = [];
+  const duplicates = [];
+
+  for (const c of contacts) {
+    const adsetId  = emailToAdset[c.email];
+    const dedupKey = c.fbclid || `email:${c.email}`;
+
+    if (existingKeys.has(dedupKey)) { duplicates.push(c.email); continue; }
+    if (!adsetId)                   { noAdset.push(c.email);    continue; }
+
+    toInsert.push([
+      new Date().toISOString(), c.date, adsetId, c.state,
+      '', '', '', '',
+      dedupKey, 'YES',
+    ]);
+    existingKeys.add(dedupKey);
+  }
+
+  const summary = {
+    dryRun,
+    totalInCsv:     contacts.length,
+    hyrosMatched:   toInsert.length,
+    noHyrosAdset:   noAdset.length,
+    alreadyInSheet: duplicates.length,
+    noAdsetSample:  noAdset.slice(0, 5),
+  };
+
+  if (dryRun) return res.json({ ...summary, preview: toInsert.slice(0, 5) });
+
+  if (toInsert.length) {
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: SHEET_ID, range: `${EVENTS_TAB}!A:A`,
+      valueInputOption: 'RAW', requestBody: { values: toInsert },
+    });
+  }
+
+  res.json({ ok: true, ...summary });
+});
+
 // GET /api/hyros/ghl-probe — raw GHL API responses to identify correct structure
 router.get('/ghl-probe', async (req, res) => {
   const key = process.env.GHL_API_KEY;
