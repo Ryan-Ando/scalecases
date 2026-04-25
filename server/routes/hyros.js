@@ -618,25 +618,20 @@ let _backfill = { running: false, done: false, result: null, error: null };
 async function runBackfillFromContacts(contacts) {
   _backfill = { running: true, done: false, result: null, error: null };
   try {
-    const emails       = [...new Set(contacts.map(c => c.email))];
-    const emailToAdset = await hyrosAdsetsByEmail(emails);
-
     const auth   = await getAuthClient();
     const sheets = google.sheets({ version: 'v4', auth });
 
     const toInsert = [], noAdset = [];
     for (const c of contacts) {
-      const adsetId  = emailToAdset[c.email];
+      if (!c.adsetId) { noAdset.push(c.email); continue; }
       const dedupKey = c.fbclid || `email:${c.email}`;
-      if (!adsetId) { noAdset.push(c.email); continue; }
       toInsert.push([
-        new Date().toISOString(), c.date, adsetId, c.state,
-        '', '', '', '', dedupKey, 'YES',
+        new Date().toISOString(), c.date, c.adsetId, c.state,
+        c.campaign, c.campaignId, c.adId, '', dedupKey, 'YES',
       ]);
     }
 
     await ensureEventsTab(sheets);
-    // Clear all existing data rows, then write fresh
     await sheets.spreadsheets.values.clear({
       spreadsheetId: SHEET_ID, range: `${EVENTS_TAB}!A2:Z`,
     });
@@ -649,7 +644,7 @@ async function runBackfillFromContacts(contacts) {
 
     _backfill = {
       running: false, done: true, error: null,
-      result: { ok: true, inserted: toInsert.length, noHyrosAdset: noAdset.length, noAdsetSample: noAdset.slice(0, 5) },
+      result: { ok: true, inserted: toInsert.length, noAdset: noAdset.length, noAdsetSample: noAdset.slice(0, 5) },
     };
   } catch (e) {
     _backfill = { running: false, done: true, result: null, error: String(e) };
@@ -724,6 +719,7 @@ router.post('/backfill-csv', async (req, res) => {
   const fbclidIdx = col('fbclid');
   const stateIdx  = col('state');
   const dateIdx   = col('created');
+  const urlIdx    = col('url');
 
   if (emailIdx < 0 || stateIdx < 0) {
     return res.status(400).json({ ok: false, error: 'Could not find email or state columns', headers });
@@ -737,45 +733,40 @@ router.post('/backfill-csv', async (req, res) => {
     const raw    = (row[dateIdx]   || '').trim();
     const date   = raw.slice(0, 10);
     if (!email || !state || !date) continue;
-    contacts.push({ email, state, fbclid, date });
+
+    // Parse URL for adset/ad/campaign IDs
+    let adsetId = '', adId = '', campaignId = '', campaign = '';
+    const rawUrl = urlIdx >= 0 ? (row[urlIdx] || '').trim() : '';
+    if (rawUrl) {
+      try {
+        const u = new URL(rawUrl);
+        adsetId    = u.searchParams.get('fbc_id')       || '';
+        adId       = u.searchParams.get('h_ad_id')      || '';
+        campaignId = u.searchParams.get('utm_id')       || '';
+        campaign   = u.searchParams.get('utm_campaign') || '';
+      } catch { /* malformed URL */ }
+    }
+
+    contacts.push({ email, state, fbclid, date, adsetId, adId, campaignId, campaign });
   }
 
   if (!contacts.length) {
     return res.json({ ok: false, error: 'No contacts with state found in CSV' });
   }
 
-  // Dry run: do the full lookup synchronously and return preview
+  const noAdset = contacts.filter(c => !c.adsetId).map(c => c.email);
+  const withAdset = contacts.filter(c => c.adsetId);
+
+  // Dry run: return preview without writing
   if (dryRun) {
-    const emails       = [...new Set(contacts.map(c => c.email))];
-    const emailToAdset = await hyrosAdsetsByEmail(emails);
-
-    const auth   = await getAuthClient();
-    const sheets = google.sheets({ version: 'v4', auth });
-    let existingKeys = new Set();
-    try {
-      const r = await sheets.spreadsheets.values.get({
-        spreadsheetId: SHEET_ID, range: `${EVENTS_TAB}!I:I`,
-      });
-      existingKeys = new Set((r.data.values || []).flat().filter(Boolean));
-    } catch { /* tab may not exist yet */ }
-
-    const toInsert = [], noAdset = [], duplicates = [];
-    for (const c of contacts) {
-      const adsetId  = emailToAdset[c.email];
-      const dedupKey = c.fbclid || `email:${c.email}`;
-      if (existingKeys.has(dedupKey)) { duplicates.push(c.email); continue; }
-      if (!adsetId)                   { noAdset.push(c.email);    continue; }
-      toInsert.push([
-        new Date().toISOString(), c.date, adsetId, c.state,
-        '', '', '', '', dedupKey, 'YES',
-      ]);
-      existingKeys.add(dedupKey);
-    }
+    const preview = withAdset.slice(0, 5).map(c => [
+      new Date().toISOString(), c.date, c.adsetId, c.state,
+      c.campaign, c.campaignId, c.adId, '', c.fbclid || `email:${c.email}`, 'YES',
+    ]);
     return res.json({
       dryRun: true, totalInCsv: contacts.length,
-      hyrosMatched: toInsert.length, noHyrosAdset: noAdset.length,
-      alreadyInSheet: duplicates.length, noAdsetSample: noAdset.slice(0, 5),
-      preview: toInsert.slice(0, 5),
+      withAdset: withAdset.length, noAdset: noAdset.length,
+      noAdsetSample: noAdset.slice(0, 5), preview,
     });
   }
 
