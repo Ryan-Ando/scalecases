@@ -611,7 +611,7 @@ async function ensureEventsTab(sheets) {
 
 let _backfill = { running: false, done: false, result: null, error: null };
 
-async function runBackfillFromContacts(contacts) {
+async function runBackfillFromContacts(contacts, append = false) {
   _backfill = { running: true, done: false, result: null, error: null };
   try {
     // Build GHL lookup map — email is already lowercased, dedup by email (keep first)
@@ -623,18 +623,27 @@ async function runBackfillFromContacts(contacts) {
     // Ask Hyros which of these emails it knows about → authoritative lead set
     const emails = Object.keys(ghlMap);
     const hyrosAdsets = await hyrosAdsetsByEmail(emails);
-    // hyrosAdsets: { email: adsetId } — only emails Hyros has a record for
 
     const auth   = await getAuthClient();
     const sheets = google.sheets({ version: 'v4', auth });
 
-    const toInsert = [], noHyros = [], noState = [];
+    // In append mode, load existing emails to skip duplicates
+    let existingEmails = new Set();
+    if (append) {
+      try {
+        const r = await sheets.spreadsheets.values.get({
+          spreadsheetId: SHEET_ID, range: `${EVENTS_TAB}!I:I`,
+        });
+        existingEmails = new Set((r.data.values || []).flat().filter(Boolean));
+      } catch { /* tab may not exist */ }
+    }
+
+    const toInsert = [], noHyros = [], noState = [], skipped = [];
     for (const email of Object.keys(hyrosAdsets)) {
       const ghl = ghlMap[email];
-      if (!ghl)        { noState.push(email);  continue; }
-      if (!ghl.state)  { noState.push(email);  continue; }
+      if (!ghl || !ghl.state) { noState.push(email); continue; }
+      if (append && existingEmails.has(email)) { skipped.push(email); continue; }
 
-      // Prefer adset ID from GHL URL (fbc_id), fall back to Hyros attribution
       const adsetId = ghl.adsetId || hyrosAdsets[email];
       if (!adsetId) continue;
 
@@ -644,15 +653,16 @@ async function runBackfillFromContacts(contacts) {
       ]);
     }
 
-    // Track GHL contacts Hyros didn't recognise
     for (const email of emails) {
       if (!hyrosAdsets[email]) noHyros.push(email);
     }
 
     await ensureEventsTab(sheets);
-    await sheets.spreadsheets.values.clear({
-      spreadsheetId: SHEET_ID, range: `${EVENTS_TAB}!A2:Z`,
-    });
+    if (!append) {
+      await sheets.spreadsheets.values.clear({
+        spreadsheetId: SHEET_ID, range: `${EVENTS_TAB}!A2:Z`,
+      });
+    }
     if (toInsert.length) {
       await sheets.spreadsheets.values.append({
         spreadsheetId: SHEET_ID, range: `${EVENTS_TAB}!A:A`,
@@ -795,10 +805,12 @@ router.post('/backfill-csv', async (req, res) => {
   }
 
   // Real run: respond immediately, process in background
+  // append=true → skip emails already in sheet (for daily top-ups)
+  const append = req.query.append === 'true';
   if (_backfill.running) return res.json({ ok: false, error: 'Backfill already running' });
   _backfill = { running: true, done: false, result: null, error: null };
-  res.json({ ok: true, status: 'started', totalContacts: contacts.length, pollUrl: '/api/hyros/backfill-status' });
-  runBackfillFromContacts(contacts);
+  res.json({ ok: true, status: 'started', totalContacts: contacts.length, append, pollUrl: '/api/hyros/backfill-status' });
+  runBackfillFromContacts(contacts, append);
 });
 
 router.get('/backfill-status', (_req, res) => res.json(_backfill));
