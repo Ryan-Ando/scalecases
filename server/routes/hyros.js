@@ -86,17 +86,21 @@ async function ensureWebhookTab(sheets) {
 // ── Sheet — read stage events ─────────────────────────────────────────────────
 
 // Reads the "Lead Events" tab and returns leads grouped by date + adset ID.
+// Only counts rows where HyrosVerified (col J) = 'YES' — skips DROPPED/NO rows.
 // Returns: { '2026-04-23': { '<adsetId>': 3, ... }, ... }
 async function getLeadsFromSheet(sheets) {
   try {
     const r = await sheets.spreadsheets.values.get({
       spreadsheetId: SHEET_ID,
-      range: `${EVENTS_TAB}!A:D`,
+      range: `${EVENTS_TAB}!A:J`,
     });
-    const rows = (r.data.values || []).slice(1); // skip header
+    const rows = (r.data.values || []).slice(1);
     const byDate = {};
-    for (const [, dateStr, adsetId] of rows) {
-      if (!dateStr || !adsetId) continue;
+    for (const row of rows) {
+      const dateStr  = row[1];
+      const adsetId  = row[2];
+      const verified = row[9];
+      if (!dateStr || !adsetId || verified !== 'YES') continue;
       if (!byDate[dateStr]) byDate[dateStr] = {};
       byDate[dateStr][adsetId] = (byDate[dateStr][adsetId] || 0) + 1;
     }
@@ -463,6 +467,58 @@ async function writeHomeTab(sheets, tabMap) {
   });
 }
 
+// ── Dedup Lead Events by email ────────────────────────────────────────────────
+// Multiple CSV uploads can write the same email twice. Keep one row per email:
+// prefer 'YES'-verified rows, then the most recent date among equals.
+async function deduplicateLeadEvents(sheets) {
+  let r;
+  try {
+    r = await sheets.spreadsheets.values.get({
+      spreadsheetId: SHEET_ID,
+      range: `${EVENTS_TAB}!A:J`,
+    });
+  } catch { return; }
+
+  const rows = r.data.values || [];
+  if (rows.length <= 1) return;
+
+  const dataRows = rows.slice(1);
+  const emailBest = {}; // email → best row
+  const noEmail   = []; // rows without a real email (keep as-is)
+
+  for (const row of dataRows) {
+    const email = (row[8] || '').toLowerCase().trim();
+    if (!email || !email.includes('@')) { noEmail.push(row); continue; }
+
+    if (!emailBest[email]) {
+      emailBest[email] = row;
+    } else {
+      const prev        = emailBest[email];
+      const prevYes     = (prev[9] || '')  === 'YES';
+      const curYes      = (row[9]  || '')  === 'YES';
+      const prevDate    = prev[1] || '';
+      const curDate     = row[1]  || '';
+      // Prefer YES; among ties prefer more recent date
+      if ((!prevYes && curYes) || (prevYes === curYes && curDate > prevDate)) {
+        emailBest[email] = row;
+      }
+    }
+  }
+
+  const deduped = [...Object.values(emailBest), ...noEmail];
+  const removed = dataRows.length - deduped.length;
+  if (!removed) return;
+
+  await sheets.spreadsheets.values.clear({ spreadsheetId: SHEET_ID, range: `${EVENTS_TAB}!A2:J` });
+  if (deduped.length) {
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: SHEET_ID, range: `${EVENTS_TAB}!A2`,
+      valueInputOption: 'RAW', requestBody: { values: deduped },
+    });
+  }
+  console.log(`Dedup: removed ${removed} duplicate lead row(s)`);
+}
+
 // ── Re-attribution: refresh adset IDs in Lead Events from current Hyros data ──
 // Hyros continuously re-attributes leads using last-click logic. This function
 // re-queries Hyros for every known email in Lead Events and updates any adset
@@ -498,17 +554,25 @@ async function reattributeLeadEvents(sheets) {
   console.log(`Re-attribution: querying Hyros for ${emails.length} known lead emails…`);
   const freshAdsets = await hyrosAdsetsByEmail(emails);
 
-  // Update rows where attribution changed
+  // Update rows based on current Hyros attribution
   let changed = 0;
   for (const [email, indices] of Object.entries(emailRows)) {
     const newAdsetId = freshAdsets[email];
-    if (!newAdsetId) continue;
     for (const idx of indices) {
-      // Pad row to at least 10 columns so we can safely write column C (index 2)
       while (dataRows[idx].length < 10) dataRows[idx].push('');
-      if (dataRows[idx][2] !== newAdsetId) {
-        dataRows[idx][2] = newAdsetId;
-        changed++;
+      if (newAdsetId) {
+        // Hyros still knows this lead — update adset ID if shifted
+        if (dataRows[idx][2] !== newAdsetId) {
+          dataRows[idx][2] = newAdsetId;
+          dataRows[idx][9] = 'YES';
+          changed++;
+        }
+      } else {
+        // Hyros no longer attributes this lead — mark DROPPED so it stops counting
+        if (dataRows[idx][9] === 'YES') {
+          dataRows[idx][9] = 'DROPPED';
+          changed++;
+        }
       }
     }
   }
@@ -565,11 +629,14 @@ async function runSync() {
     const auth   = await getAuthClient();
     const sheets = google.sheets({ version: 'v4', auth });
 
-    // 2. Re-attribute Lead Events from current Hyros last-click data so counts
-    //    stay in sync with Hyros dashboard (leads can shift between adsets over time)
+    // 2. Clean up duplicate emails from overlapping CSV uploads
+    await deduplicateLeadEvents(sheets);
+
+    // 3. Re-attribute Lead Events from current Hyros last-click data; mark DROPPED
+    //    if Hyros no longer recognises a lead (removes overcount)
     await reattributeLeadEvents(sheets);
 
-    // 3. Read all stage events from sheet (now with refreshed attribution)
+    // 4. Read all stage events from sheet (now deduped + re-attributed)
     const leadsFromSheet = await getLeadsFromSheet(sheets);
 
     // 4. Fetch spend per day from Hyros attribution API
