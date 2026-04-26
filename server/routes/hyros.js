@@ -197,7 +197,9 @@ async function getLeadsFromSheet(sheets) {
 
 // ── Hyros API — spend ─────────────────────────────────────────────────────────
 
-// Fetch spend per adset for a single day via attribution endpoint.
+// Fetch spend AND lead count per adset for a single day via Hyros attribution endpoint.
+// Returns { [adsetId]: { cost, leads } }
+// Using Hyros's own `leads` field guarantees adset-level counts match the Hyros UI exactly.
 async function fetchCostForDay(dateStr) {
   const key      = process.env.HYROS_API_KEY;
   const accounts = (process.env.HYROS_AD_ACCOUNTS || '1125965718442560,758516163121709')
@@ -212,7 +214,7 @@ async function fetchCostForDay(dateStr) {
         startDate: dateStr, endDate: dateStr,
         level: 'facebook_adset',
         attributionModel: 'last_click',
-        fields: 'cost',
+        fields: 'cost,leads',
         isAdAccountId: 'true',
         ids: accountId,
       });
@@ -222,13 +224,14 @@ async function fetchCostForDay(dateStr) {
       const data = await r.json();
 
       if (!Array.isArray(data.result)) {
-        console.warn(`Hyros cost [${accountId}] ${dateStr}:`, data.message);
+        console.warn(`Hyros attribution [${accountId}] ${dateStr}:`, data.message);
         break;
       }
 
       for (const row of data.result) {
-        if (!byAdset[row.id]) byAdset[row.id] = 0;
-        byAdset[row.id] += (row.cost || 0);
+        if (!byAdset[row.id]) byAdset[row.id] = { cost: 0, leads: 0 };
+        byAdset[row.id].cost  += (row.cost  || 0);
+        byAdset[row.id].leads += (row.leads || 0);
       }
 
       pageId = data.nextPageId || null;
@@ -756,14 +759,10 @@ async function runSync() {
     // 4. Fetch spend per day from Hyros attribution API
     const dailyData = {};
     for (const dateStr of allDates) {
-      const costByAdset  = await fetchCostForDay(dateStr);
-      const leadsByAdset = leadsFromSheet[dateStr] || {};
+      const attrByAdset = await fetchCostForDay(dateStr);
       dailyData[dateStr] = {};
-      for (const id of new Set([...Object.keys(costByAdset), ...Object.keys(leadsByAdset)])) {
-        dailyData[dateStr][id] = {
-          leads: leadsByAdset[id] || 0,
-          cost:  costByAdset[id]  || 0,
-        };
+      for (const [id, data] of Object.entries(attrByAdset)) {
+        dailyData[dateStr][id] = { leads: data.leads || 0, cost: data.cost || 0 };
       }
       await delay(500);
     }
