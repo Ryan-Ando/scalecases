@@ -279,8 +279,18 @@ async function writeCampaignTab(sheets, tabName, numericId, adsets, dailyData, d
     return { adset, dayCells, totLeads, totCost, l4dCost, cpl: totLeads > 0 ? totCost / totLeads : -1 };
   });
 
-  // Sort by CPL descending (highest CPL first; zero-lead adsets go to bottom via cpl=-1)
-  adsetData.sort((a, b) => b.cpl - a.cpl);
+  // Sort: ACTIVE adsets first (by CPL desc), then inactive adsets (by CPL desc)
+  adsetData.sort((a, b) => {
+    const aActive = a.adset.status === 'ACTIVE';
+    const bActive = b.adset.status === 'ACTIVE';
+    if (aActive !== bActive) return aActive ? -1 : 1;
+    return b.cpl - a.cpl;
+  });
+
+  // Find where inactive rows start (sheet row index is 0-based; header=0, totals=1, data starts at 2)
+  const firstInactiveDataIdx = adsetData.findIndex(({ adset }) => adset.status !== 'ACTIVE');
+  const inactiveSheetStart   = firstInactiveDataIdx >= 0 ? firstInactiveDataIdx + 2 : -1;
+  const inactiveSheetEnd     = inactiveSheetStart   >= 0 ? 2 + adsetData.length     : -1;
 
   // Build data rows (start at sheet row 3; row 1=header, row 2=totals)
   const dataRows = adsetData.map(({ adset, dayCells, totCost, l4dCost }, idx) => {
@@ -327,7 +337,7 @@ async function writeCampaignTab(sheets, tabName, numericId, adsets, dailyData, d
   });
 
   const requests = [
-    // Unhide all rows (previous syncs may have hidden inactive rows via dimension properties)
+    // Reset all row visibility before applying new hide state
     {
       updateDimensionProperties: {
         range: { sheetId: numericId, dimension: 'ROWS', startIndex: 0, endIndex: 2000 },
@@ -335,6 +345,14 @@ async function writeCampaignTab(sheets, tabName, numericId, adsets, dailyData, d
         fields: 'hiddenByUser',
       },
     },
+    // Hide inactive adset rows (grouped at bottom) so they can be unhidden manually
+    ...(inactiveSheetStart >= 0 ? [{
+      updateDimensionProperties: {
+        range: { sheetId: numericId, dimension: 'ROWS', startIndex: inactiveSheetStart, endIndex: inactiveSheetEnd },
+        properties: { hiddenByUser: true },
+        fields: 'hiddenByUser',
+      },
+    }] : []),
     // Header row style
     {
       repeatCell: {
@@ -516,16 +534,14 @@ async function runSync() {
       [...allAdsetIds].filter(id => !allAccountAdsets[id]) // only look up unknowns
     )};
 
-    // 4. Group adsets by campaign — active only
-    // Only include ACTIVE adsets — inactive ones are excluded entirely
+    // 4. Group adsets by campaign — all statuses (active first, inactive hidden in tab)
     const byCampaign = {}; // campaignTabName → adset[]
     for (const id of allAdsetIds) {
-      const info   = adsetInfo[id];
-      const status = info?.status || 'UNKNOWN';
-      if (status !== 'ACTIVE') continue;
+      const info = adsetInfo[id];
+      if (!info) continue; // skip completely unknown adsets
       const tabName = safeTabName(info?.campaignName || 'Unknown Campaign');
       if (!byCampaign[tabName]) byCampaign[tabName] = [];
-      byCampaign[tabName].push({ id, name: info?.name || id, status });
+      byCampaign[tabName].push({ id, name: info.name || id, status: info.status || 'UNKNOWN' });
     }
 
     // 5. Get or create tabs
