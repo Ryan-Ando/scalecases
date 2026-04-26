@@ -327,6 +327,14 @@ async function writeCampaignTab(sheets, tabName, numericId, adsets, dailyData, d
   });
 
   const requests = [
+    // Unhide all rows (previous syncs may have hidden inactive rows via dimension properties)
+    {
+      updateDimensionProperties: {
+        range: { sheetId: numericId, dimension: 'ROWS', startIndex: 0, endIndex: 2000 },
+        properties: { hiddenByUser: false },
+        fields: 'hiddenByUser',
+      },
+    },
     // Header row style
     {
       repeatCell: {
