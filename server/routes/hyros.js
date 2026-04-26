@@ -1045,8 +1045,7 @@ async function fetchAllHyrosLeadsUnfiltered(fromDate, toDate) {
       for (const lead of data.result) {
         const email = (lead.email || '').toLowerCase().trim();
         if (!email) continue;
-        const adsetId = adsetFromTags(lead.tags)
-          || lead.lastSource?.adSource?.adSourceId   // last-click — matches Hyros UI
+        const adsetId = lead.lastSource?.adSource?.adSourceId   // last-click — matches Hyros UI
           || lead.firstSource?.adSource?.adSourceId  // first-click fallback only
           || '';
         const date    = (lead.creationDate || lead.dateAdded || '').slice(0, 10) || fromDate;
@@ -1656,8 +1655,7 @@ router.get('/probe-no-adset', async (req, res) => {
       for (const lead of data.result) {
         const email = (lead.email || '').trim();
         if (!email) continue;
-        const adsetId = adsetFromTags(lead.tags)
-          || lead.lastSource?.adSource?.adSourceId
+        const adsetId = lead.lastSource?.adSource?.adSourceId
           || lead.firstSource?.adSource?.adSourceId
           || '';
         if (!adsetId) {
