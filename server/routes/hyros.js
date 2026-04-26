@@ -1058,11 +1058,11 @@ async function fetchAllHyrosLeadsUnfiltered(fromDate, toDate) {
   return leads;
 }
 
-// Returns click data for a Hyros lead: fbclids found + whether /next-steps appeared.
+// Returns click data for a Hyros lead: fbclids, /next-steps presence, and adset ID from URL params.
 async function fetchLeadClickData(email) {
   const key    = process.env.HYROS_API_KEY;
   const p      = new URLSearchParams({ email, pageSize: 50 });
-  const result = { hasNextSteps: false, fbclids: [] };
+  const result = { hasNextSteps: false, fbclids: [], adsetId: '' };
   try {
     const r    = await fetch(`${HYROS_BASE}/leads/clicks?${p}`, { headers: { 'API-Key': key } });
     const text = await r.text();
@@ -1072,6 +1072,10 @@ async function fetchLeadClickData(email) {
       const fbclid = click.parsedParameters?.fbclid;
       if (fbclid) result.fbclids.push(fbclid);
       if ((click.trackedUrl || '').includes('/next-steps')) result.hasNextSteps = true;
+      // fbc_id / adSpendId in click URL = FB adset ID — use as fallback attribution
+      if (!result.adsetId) {
+        result.adsetId = click.parsedParameters?.fbc_id || click.adSpendId || '';
+      }
     }
   } catch { /* ignore */ }
   return result;
@@ -1380,7 +1384,8 @@ async function runBackfillNextSteps(append = false) {
         if (!clickData.hasNextSteps) continue;
         nextStepsCount++;
 
-        if (!lead.adsetId) { noAdsetCount++; continue; }
+        const adsetId = lead.adsetId || clickData.adsetId;
+        if (!adsetId) { noAdsetCount++; continue; }
 
         // Prefer first fbclid as dedup key; fall back to email: prefix
         const dedupKey = clickData.fbclids[0] || `email:${lead.email}`;
@@ -1388,9 +1393,9 @@ async function runBackfillNextSteps(append = false) {
 
         toInsert.push([
           new Date().toISOString(),
-          lead.date,    // from Hyros creationDate
-          lead.adsetId, // from @attribution tag
-          lead.state,   // parsed from firstSource.category (e.g. "wa", "tx")
+          lead.date,  // from Hyros creationDate
+          adsetId,    // from @attribution tag or click URL fbc_id/adSpendId
+          lead.state, // parsed from firstSource.category (e.g. "wa", "tx")
           '',           // campaign name
           '',           // campaign ID
           '',           // ad ID
