@@ -49,6 +49,41 @@ function safeTabName(s) {
 
 function delay(ms) { return new Promise(res => setTimeout(res, ms)); }
 
+const BAD_TLDS    = new Set(['comf','cpm','ocm','con','cmo','comm','ney','ner','nte','ogr','coim','cob','cok']);
+const BAD_DOMAINS = new Set([
+  'gmaill.com','gamil.com','gmial.com','gnail.com','gmai.com','gmali.com','gmal.com',
+  'gmail.con','gmail.cmo','gmail.comm','gmail.co','gmail.net',
+  'hotmial.com','hotmail.con','hotmail.cmo','hotmai.com',
+  'yaho.com','yhoo.com','yahooo.com','yahoo.con',
+  'outlok.com','outllok.com','otulook.com',
+]);
+
+function isValidEmail(email) {
+  if (!email || !email.includes('@')) return false;
+  const parts = email.split('@');
+  if (parts.length !== 2) return false;
+  const [local, domain] = parts;
+  if (!local || !domain) return false;
+  const dot = domain.lastIndexOf('.');
+  if (dot < 1) return false;
+  const tld = domain.slice(dot + 1).toLowerCase();
+  if (!/^[a-z]{2,6}$/.test(tld)) return false;
+  if (BAD_TLDS.has(tld)) return false;
+  if (BAD_DOMAINS.has(domain.toLowerCase())) return false;
+  return true;
+}
+
+function hasNameEmailMismatch(firstName, lastName, email) {
+  if (!firstName && !lastName) return false;
+  const nameParts = [
+    ...(firstName || '').toLowerCase().split(/[\s._\-]+/),
+    ...(lastName  || '').toLowerCase().split(/[\s._\-]+/),
+  ].filter(p => p.length >= 3);
+  if (!nameParts.length) return false;
+  const local = (email.split('@')[0] || '').toLowerCase();
+  return !nameParts.some(p => local.includes(p));
+}
+
 // ── Webhook cache ─────────────────────────────────────────────────────────────
 
 // Load all fbclid → adsetId mappings from the Webhook Cache sheet into memory.
@@ -893,7 +928,7 @@ async function runBackfillFromContacts(contacts, append = false) {
       } catch { /* tab may not exist */ }
     }
 
-    const toInsert = [], noHyros = [], noState = [], skipped = [];
+    const toInsert = [], noHyros = [], noState = [], skipped = [], nameMismatches = [];
     for (const email of Object.keys(hyrosAdsets)) {
       const ghl = ghlMap[email];
       if (!ghl || !ghl.state) { noState.push(email); continue; }
@@ -901,6 +936,11 @@ async function runBackfillFromContacts(contacts, append = false) {
 
       const adsetId = ghl.adsetId || hyrosAdsets[email];
       if (!adsetId) continue;
+
+      if (hasNameEmailMismatch(ghl.firstName, ghl.lastName, email)) {
+        nameMismatches.push({ email, name: `${ghl.firstName || ''} ${ghl.lastName || ''}`.trim() });
+        console.warn(`[backfill] name/email mismatch: "${ghl.firstName} ${ghl.lastName}" → ${email}`);
+      }
 
       toInsert.push([
         new Date().toISOString(), ghl.date, adsetId, ghl.state,
@@ -933,6 +973,8 @@ async function runBackfillFromContacts(contacts, append = false) {
         notInHyros: noHyros.length,
         noStateSample: noState.slice(0, 5),
         notInHyrosSample: noHyros.slice(0, 5),
+        nameMismatches: nameMismatches.length,
+        nameMismatchSample: nameMismatches.slice(0, 5),
       },
     };
   } catch (e) {
@@ -1009,19 +1051,24 @@ router.post('/backfill-csv', async (req, res) => {
   const stateIdx  = col('state');
   const dateIdx   = col('created');
   const urlIdx    = col('url');
+  const firstIdx  = col('first name');
+  const lastIdx   = col('last name');
 
   if (emailIdx < 0 || stateIdx < 0) {
     return res.status(400).json({ ok: false, error: 'Could not find email or state columns', headers });
   }
 
-  const contacts = [];
+  const contacts = [], invalidEmailRows = [];
   for (const row of rows.slice(1)) {
     const email  = (row[emailIdx]  || '').toLowerCase().trim();
     const state  = (row[stateIdx]  || '').toLowerCase().trim();
     const fbclid = (row[fbclidIdx] || '').trim();
     const raw    = (row[dateIdx]   || '').trim();
     const date   = raw.slice(0, 10);
+    const firstName = firstIdx >= 0 ? (row[firstIdx] || '').trim() : '';
+    const lastName  = lastIdx  >= 0 ? (row[lastIdx]  || '').trim() : '';
     if (!email || !state || !date) continue;
+    if (!isValidEmail(email)) { invalidEmailRows.push(email); continue; }
 
     // Parse URL for adset/ad/campaign IDs
     let adsetId = '', adId = '', campaignId = '', campaign = '';
@@ -1036,11 +1083,14 @@ router.post('/backfill-csv', async (req, res) => {
       } catch { /* malformed URL */ }
     }
 
-    contacts.push({ email, state, fbclid, date, adsetId, adId, campaignId, campaign });
+    contacts.push({ email, state, fbclid, date, adsetId, adId, campaignId, campaign, firstName, lastName });
   }
 
   if (!contacts.length) {
-    return res.json({ ok: false, error: 'No contacts with state found in CSV' });
+    const msg = invalidEmailRows.length
+      ? `No valid contacts found — ${invalidEmailRows.length} row(s) had invalid emails`
+      : 'No contacts with state found in CSV';
+    return res.json({ ok: false, error: msg, invalidEmailSample: invalidEmailRows.slice(0, 10) });
   }
 
   const noAdset = contacts.filter(c => !c.adsetId).map(c => c.email);
@@ -1050,12 +1100,20 @@ router.post('/backfill-csv', async (req, res) => {
   if (dryRun) {
     const preview = withAdset.slice(0, 5).map(c => [
       new Date().toISOString(), c.date, c.adsetId, c.state,
-      c.campaign, c.campaignId, c.adId, '', c.fbclid || `email:${c.email}`, 'YES',
+      c.campaign, c.campaignId, c.adId, '', c.email, 'YES',
     ]);
+    const mismatchSample = contacts
+      .filter(c => hasNameEmailMismatch(c.firstName, c.lastName, c.email))
+      .slice(0, 5)
+      .map(c => ({ email: c.email, name: `${c.firstName} ${c.lastName}`.trim() }));
     return res.json({
-      dryRun: true, totalInCsv: contacts.length,
+      dryRun: true, totalInCsv: contacts.length + invalidEmailRows.length,
+      validContacts: contacts.length, invalidEmails: invalidEmailRows.length,
+      invalidEmailSample: invalidEmailRows.slice(0, 10),
       withAdset: withAdset.length, noAdset: noAdset.length,
-      noAdsetSample: noAdset.slice(0, 5), preview,
+      noAdsetSample: noAdset.slice(0, 5),
+      suspiciousNameMismatch: mismatchSample.length, mismatchSample,
+      preview,
     });
   }
 
