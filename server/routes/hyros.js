@@ -463,6 +463,70 @@ async function writeHomeTab(sheets, tabMap) {
   });
 }
 
+// ── Re-attribution: refresh adset IDs in Lead Events from current Hyros data ──
+// Hyros continuously re-attributes leads using last-click logic. This function
+// re-queries Hyros for every known email in Lead Events and updates any adset
+// IDs that have shifted since the row was originally written.
+async function reattributeLeadEvents(sheets) {
+  // Read all Lead Events rows
+  let r;
+  try {
+    r = await sheets.spreadsheets.values.get({
+      spreadsheetId: SHEET_ID,
+      range: `${EVENTS_TAB}!A:J`,
+    });
+  } catch { return; }
+
+  const rows = r.data.values || [];
+  if (rows.length <= 1) return; // no data rows
+
+  const dataRows = rows.slice(1).map(row => [...row]); // deep copy
+
+  // Build email → [row indices] map (column I = index 8)
+  const emailRows = {};
+  for (let i = 0; i < dataRows.length; i++) {
+    const email = (dataRows[i][8] || '').toLowerCase().trim();
+    if (email && !email.startsWith('email:') && email.includes('@')) {
+      if (!emailRows[email]) emailRows[email] = [];
+      emailRows[email].push(i);
+    }
+  }
+
+  const emails = Object.keys(emailRows);
+  if (!emails.length) return;
+
+  console.log(`Re-attribution: querying Hyros for ${emails.length} known lead emails…`);
+  const freshAdsets = await hyrosAdsetsByEmail(emails);
+
+  // Update rows where attribution changed
+  let changed = 0;
+  for (const [email, indices] of Object.entries(emailRows)) {
+    const newAdsetId = freshAdsets[email];
+    if (!newAdsetId) continue;
+    for (const idx of indices) {
+      // Pad row to at least 10 columns so we can safely write column C (index 2)
+      while (dataRows[idx].length < 10) dataRows[idx].push('');
+      if (dataRows[idx][2] !== newAdsetId) {
+        dataRows[idx][2] = newAdsetId;
+        changed++;
+      }
+    }
+  }
+
+  if (!changed) {
+    console.log('Re-attribution: no adset changes found');
+    return;
+  }
+
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: SHEET_ID,
+    range: `${EVENTS_TAB}!A2`,
+    valueInputOption: 'RAW',
+    requestBody: { values: dataRows },
+  });
+  console.log(`Re-attribution: updated ${changed} lead row(s)`);
+}
+
 // ── Core sync ─────────────────────────────────────────────────────────────────
 
 let _syncRunning = false;
@@ -501,10 +565,14 @@ async function runSync() {
     const auth   = await getAuthClient();
     const sheets = google.sheets({ version: 'v4', auth });
 
-    // 2. Read all stage events from sheet (leads source of truth)
+    // 2. Re-attribute Lead Events from current Hyros last-click data so counts
+    //    stay in sync with Hyros dashboard (leads can shift between adsets over time)
+    await reattributeLeadEvents(sheets);
+
+    // 3. Read all stage events from sheet (now with refreshed attribution)
     const leadsFromSheet = await getLeadsFromSheet(sheets);
 
-    // 3. Fetch spend per day from Hyros attribution API
+    // 4. Fetch spend per day from Hyros attribution API
     const dailyData = {};
     for (const dateStr of allDates) {
       const costByAdset  = await fetchCostForDay(dateStr);
