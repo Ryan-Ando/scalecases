@@ -1229,6 +1229,27 @@ router.post('/backfill-csv', async (req, res) => {
 
 router.get('/backfill-status', (_req, res) => res.json(_backfill));
 
+// GET /api/hyros/hyros-probe?email=someone@gmail.com — show raw Hyros lead record
+router.get('/hyros-probe', async (req, res) => {
+  const key   = process.env.HYROS_API_KEY;
+  const email = req.query.email;
+  if (!email) return res.json({ error: 'Pass ?email=...' });
+  try {
+    const params = new URLSearchParams({ emails: `"${email}"` });
+    const r    = await fetch(`${HYROS_BASE}/leads?${params}`, { headers: { 'API-Key': key } });
+    const data = await r.json();
+    // Also try phones param if provided
+    const phone = req.query.phone;
+    let phoneData = null;
+    if (phone) {
+      const pp = new URLSearchParams({ phones: `"${phone}"` });
+      const pr = await fetch(`${HYROS_BASE}/leads?${pp}`, { headers: { 'API-Key': key } });
+      phoneData = await pr.json();
+    }
+    res.json({ emailResult: data, phoneResult: phoneData });
+  } catch (e) { res.json({ error: String(e) }); }
+});
+
 // GET /api/hyros/ghl-probe — raw GHL API responses to identify correct structure
 router.get('/ghl-probe', async (req, res) => {
   const key = process.env.GHL_API_KEY;
