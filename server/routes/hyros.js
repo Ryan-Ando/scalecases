@@ -1240,16 +1240,13 @@ router.get('/hyros-probe', async (req, res) => {
       out.emailResult = await (await fetch(`${HYROS_BASE}/leads?${p}`, { headers })).json();
     }
     if (req.query.fbclid) {
-      // Try every plausible Hyros parameter name for fbclid lookup
+      const safeJson = async (r) => { try { return await r.json(); } catch { return { raw: await r.text().catch(() => '?') }; } };
       for (const param of ['fbclids', 'fbclid', 'clickIds', 'click_ids', 'fbc']) {
         const p = new URLSearchParams({ [param]: `"${req.query.fbclid}"` });
-        const r = await fetch(`${HYROS_BASE}/leads?${p}`, { headers });
-        out[`fbclid_as_${param}`] = await r.json();
+        out[`fbclid_as_${param}`] = await safeJson(await fetch(`${HYROS_BASE}/leads?${p}`, { headers }));
       }
-      // Also try the clicks endpoint if it exists
       const p2 = new URLSearchParams({ fbclid: req.query.fbclid });
-      const r2 = await fetch(`${HYROS_BASE}/clicks?${p2}`, { headers });
-      out.clicksEndpoint = await r2.json();
+      out.clicksEndpoint = await safeJson(await fetch(`${HYROS_BASE}/clicks?${p2}`, { headers }));
     }
     res.json(out);
   } catch (e) { res.json({ error: String(e) }); }
