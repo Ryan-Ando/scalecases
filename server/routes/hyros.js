@@ -559,10 +559,13 @@ async function runSync() {
       await delay(300);
     }
 
-    // 7. Remove legacy tabs (Daily Leads), never touch protected tabs
-    const toDelete = metaAfter.data.sheets.filter(s =>
-      s.properties.title === 'Daily Leads' && !PROTECTED_TABS.has(s.properties.title)
-    );
+    // 7. Remove stale campaign tabs + legacy "Daily Leads", never touch protected tabs or Home
+    const toDelete = metaAfter.data.sheets.filter(s => {
+      const title = s.properties.title;
+      if (PROTECTED_TABS.has(title)) return false;
+      if (title === 'Home') return false;
+      return title === 'Daily Leads' || !campaignTabNames.has(title);
+    });
     if (toDelete.length && Object.keys(tabMap).length > 1) {
       await sheets.spreadsheets.batchUpdate({
         spreadsheetId: SHEET_ID,
