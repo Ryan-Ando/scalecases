@@ -202,7 +202,7 @@ async function getAllAccountAdsets() {
   if (!token || !accounts.length) return info;
 
   for (const account of accounts) {
-    let url = `${FB_API}/${account}/adsets?fields=id,name,effective_status,campaign{name,id}&limit=200&access_token=${token}`;
+    let url = `${FB_API}/${account}/adsets?fields=id,name,effective_status,campaign{name,id}&effective_status=["ACTIVE"]&limit=200&access_token=${token}`;
     while (url) {
       try {
         const r    = await fetch(url);
@@ -262,7 +262,7 @@ async function writeCampaignTab(sheets, tabName, numericId, adsets, dailyData, d
     }),
   ];
 
-  // Build per-adset computed values for sorting
+  // Build per-adset data for sorting
   const adsetData = adsets.map(adset => {
     let totLeads = 0, totCost = 0, l4dCost = 0;
     const dayCells = [];
@@ -283,10 +283,8 @@ async function writeCampaignTab(sheets, tabName, numericId, adsets, dailyData, d
   adsetData.sort((a, b) => b.cpl - a.cpl);
 
   // Build data rows (start at sheet row 3; row 1=header, row 2=totals)
-  const inactiveRows = [];
   const dataRows = adsetData.map(({ adset, dayCells, totCost, l4dCost }, idx) => {
     const row = idx + 3; // 1-based sheet row
-    if (adset.status !== 'ACTIVE') inactiveRows.push(idx + 2); // 0-based row index (skip header+totals)
     return [
       adset.name,
       adset.status,
@@ -357,22 +355,6 @@ async function writeCampaignTab(sheets, tabName, numericId, adsets, dailyData, d
     currencyFmt(cplCol,      cplCol),
     currencyFmt(l4dSpendCol, l4dSpendCol),
     currencyFmt(l4dCplCol,   l4dCplCol),
-    // Unhide all data rows first, then hide inactive ones
-    {
-      updateDimensionProperties: {
-        range: { sheetId: numericId, dimension: 'ROWS', startIndex: 2, endIndex: 2 + dataRows.length },
-        properties: { hiddenByUser: false },
-        fields: 'hiddenByUser',
-      },
-    },
-    // Hide inactive rows
-    ...inactiveRows.map(rowIdx => ({
-      updateDimensionProperties: {
-        range: { sheetId: numericId, dimension: 'ROWS', startIndex: rowIdx, endIndex: rowIdx + 1 },
-        properties: { hiddenByUser: true },
-        fields: 'hiddenByUser',
-      },
-    })),
   ];
 
   await sheets.spreadsheets.batchUpdate({ spreadsheetId: SHEET_ID, requestBody: { requests } });
@@ -527,11 +509,12 @@ async function runSync() {
     )};
 
     // 4. Group adsets by campaign — active only
-    // Include all adsets — inactive ones will be hidden in the sheet, not excluded
+    // Only include ACTIVE adsets — inactive ones are excluded entirely
     const byCampaign = {}; // campaignTabName → adset[]
     for (const id of allAdsetIds) {
-      const info    = adsetInfo[id];
-      const status  = info?.status || 'UNKNOWN';
+      const info   = adsetInfo[id];
+      const status = info?.status || 'UNKNOWN';
+      if (status !== 'ACTIVE') continue;
       const tabName = safeTabName(info?.campaignName || 'Unknown Campaign');
       if (!byCampaign[tabName]) byCampaign[tabName] = [];
       byCampaign[tabName].push({ id, name: info?.name || id, status });
