@@ -1046,11 +1046,11 @@ async function fetchAllHyrosLeadsUnfiltered(fromDate, toDate) {
         const email = (lead.email || '').toLowerCase().trim();
         if (!email) continue;
         const adsetId = adsetFromTags(lead.tags)
-          || lead.firstSource?.adSource?.adSourceId
-          || lead.lastSource?.adSource?.adSourceId
+          || lead.lastSource?.adSource?.adSourceId   // last-click — matches Hyros UI
+          || lead.firstSource?.adSource?.adSourceId  // first-click fallback only
           || '';
         const date    = (lead.creationDate || lead.dateAdded || '').slice(0, 10) || fromDate;
-        const state   = stateFromCategory(lead.firstSource?.category || lead.lastSource?.category || '');
+        const state   = stateFromCategory(lead.lastSource?.category || lead.firstSource?.category || '');
         leads.push({ email, leadId: lead.id || '', adsetId, date, state });
       }
       pageId = data.nextPageId || null;
@@ -1075,10 +1075,9 @@ async function fetchLeadClickData(email) {
       const fbclid = click.parsedParameters?.fbclid;
       if (fbclid) result.fbclids.push(fbclid);
       if ((click.trackedUrl || '').includes('/next-steps')) result.hasNextSteps = true;
-      // fbc_id / adSpendId in click URL = FB adset ID — use as fallback attribution
-      if (!result.adsetId) {
-        result.adsetId = click.parsedParameters?.fbc_id || click.adSpendId || '';
-      }
+      // Keep updating so the last click with an adset ID wins (last-click attribution)
+      const clickAdset = click.parsedParameters?.fbc_id || click.adSpendId || '';
+      if (clickAdset) result.adsetId = clickAdset;
     }
   } catch { /* ignore */ }
   return result;
@@ -1658,8 +1657,8 @@ router.get('/probe-no-adset', async (req, res) => {
         const email = (lead.email || '').trim();
         if (!email) continue;
         const adsetId = adsetFromTags(lead.tags)
-          || lead.firstSource?.adSource?.adSourceId
           || lead.lastSource?.adSource?.adSourceId
+          || lead.firstSource?.adSource?.adSourceId
           || '';
         if (!adsetId) {
           noAdset.push({
