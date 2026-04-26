@@ -1045,9 +1045,12 @@ async function fetchAllHyrosLeadsUnfiltered(fromDate, toDate) {
       for (const lead of data.result) {
         const email = (lead.email || '').toLowerCase().trim();
         if (!email) continue;
-        const adsetId = adsetFromTags(lead.tags) || lead.firstSource?.adSource?.adSourceId || '';
+        const adsetId = adsetFromTags(lead.tags)
+          || lead.firstSource?.adSource?.adSourceId
+          || lead.lastSource?.adSource?.adSourceId
+          || '';
         const date    = (lead.creationDate || lead.dateAdded || '').slice(0, 10) || fromDate;
-        const state   = stateFromCategory(lead.firstSource?.category || '');
+        const state   = stateFromCategory(lead.firstSource?.category || lead.lastSource?.category || '');
         leads.push({ email, leadId: lead.id || '', adsetId, date, state });
       }
       pageId = data.nextPageId || null;
@@ -1625,6 +1628,46 @@ router.get('/hyros-probe', async (req, res) => {
     }
     res.json(out);
   } catch (e) { res.json({ error: String(e) }); }
+});
+
+// GET /api/hyros/probe-no-adset — fetch leads with no adset ID, show raw fields for debugging
+router.get('/probe-no-adset', async (req, res) => {
+  const key   = process.env.HYROS_API_KEY;
+  const from  = req.query.from || START_DATE;
+  const to    = req.query.to   || isoToday();
+  const noAdset = [];
+  let pageId = null, page = 0;
+  do {
+    page++;
+    const params = new URLSearchParams({ fromDate: from, toDate: to, pageSize: 100 });
+    if (pageId) params.set('pageId', pageId);
+    try {
+      const r    = await fetch(`${HYROS_BASE}/leads?${params}`, { headers: { 'API-Key': key } });
+      const data = await r.json();
+      if (!Array.isArray(data.result)) break;
+      for (const lead of data.result) {
+        const email = (lead.email || '').trim();
+        if (!email) continue;
+        const adsetId = adsetFromTags(lead.tags)
+          || lead.firstSource?.adSource?.adSourceId
+          || lead.lastSource?.adSource?.adSourceId
+          || '';
+        if (!adsetId) {
+          noAdset.push({
+            email,
+            tags: lead.tags,
+            firstSourceAdSource: lead.firstSource?.adSource,
+            lastSourceAdSource:  lead.lastSource?.adSource,
+            firstSourceCategory: lead.firstSource?.category,
+            firstSourceName:     lead.firstSource?.name,
+          });
+        }
+      }
+      pageId = data.nextPageId || null;
+      if (pageId) await delay(300);
+    } catch (e) { return res.json({ error: String(e) }); }
+  } while (pageId && page < 50);
+  res.json({ total: noAdset.length, sample: noAdset.slice(0, 10) });
 });
 
 // GET /api/hyros/probe-leads?from=YYYY-MM-DD&to=YYYY-MM-DD — raw first page of /leads
