@@ -1061,11 +1061,11 @@ async function fetchAllHyrosLeadsUnfiltered(fromDate, toDate) {
   return leads;
 }
 
-// Returns click data for a Hyros lead: fbclids, /next-steps presence, and adset ID from URL params.
+// Returns click data for a Hyros lead: fbclids, /next-steps presence, conversion date, and adset ID.
 async function fetchLeadClickData(email) {
   const key    = process.env.HYROS_API_KEY;
   const p      = new URLSearchParams({ email, pageSize: 50 });
-  const result = { hasNextSteps: false, fbclids: [], adsetId: '' };
+  const result = { hasNextSteps: false, fbclids: [], adsetId: '', conversionDate: '' };
   try {
     const r    = await fetch(`${HYROS_BASE}/leads/clicks?${p}`, { headers: { 'API-Key': key } });
     const text = await r.text();
@@ -1074,7 +1074,12 @@ async function fetchLeadClickData(email) {
     for (const click of data.result || []) {
       const fbclid = click.parsedParameters?.fbclid;
       if (fbclid) result.fbclids.push(fbclid);
-      if ((click.trackedUrl || '').includes('/next-steps')) result.hasNextSteps = true;
+      // Capture the date of the /next-steps click — this is when the lead converted,
+      // which is what Hyros uses for day-level reporting (not the last ad click date)
+      if ((click.trackedUrl || '').includes('/next-steps')) {
+        result.hasNextSteps = true;
+        result.conversionDate = (click.UTCClickDate || click.clickDate || '').slice(0, 10);
+      }
       // Keep updating so the last click with an adset ID wins (last-click attribution)
       const clickAdset = click.parsedParameters?.fbc_id || click.adSpendId || '';
       if (clickAdset) result.adsetId = clickAdset;
@@ -1404,8 +1409,8 @@ async function runBackfillNextSteps(append = false) {
 
         toInsert.push([
           new Date().toISOString(),
-          lead.date,  // from Hyros creationDate
-          adsetId,    // from @attribution tag or click URL fbc_id/adSpendId
+          clickData.conversionDate || lead.date, // date of /next-steps visit = Hyros conversion date
+          adsetId,    // lastSource adset ID
           lead.state, // parsed from firstSource.category (e.g. "wa", "tx")
           '',           // campaign name
           '',           // campaign ID
