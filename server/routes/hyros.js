@@ -1722,13 +1722,16 @@ router.get('/probe-attr-fields', async (req, res) => {
   const acct1 = '1125965718442560';
   const attrBase = `startDate=${dateStr}&endDate=${dateStr}&level=facebook_adset&attributionModel=last_click&isAdAccountId=true&ids=${acct1}`;
 
-  // Candidate field names — Hyros uses snake_case of the goal/event name
+  // State abbreviations (custom goals per state), generic names, and common Hyros goal names
   const candidates = [
     'leads', 'lead', 'new_leads', 'total_leads',
     'qualified_lead', 'qualified_leads',
+    'WA', 'TX', 'CA', 'FL', 'NY', 'IL', 'PA', 'OH', 'GA', 'NC', 'MI', 'NJ', 'VA', 'AZ', 'TN',
+    'wa', 'tx', 'ca', 'fl', 'ny', 'il', 'pa', 'oh', 'ga', 'nc', 'mi', 'nj', 'va', 'az', 'tn',
     'opt_in', 'opt_ins', 'form_submit', 'form_submits',
     'intake', 'intakes', 'submission', 'submissions',
     'calls', 'appointments', 'conversions',
+    'legal_intake', 'case_intake', 'accident_lead',
   ];
 
   const working = [], errors = [];
@@ -1739,15 +1742,51 @@ router.get('/probe-attr-fields', async (req, res) => {
       if (data.result === 'ERROR') {
         errors.push({ field, message: data.message });
       } else if (Array.isArray(data.result)) {
-        // Check if any row has a non-zero value for this field
-        const sample = data.result.slice(0, 3).map(row => ({ id: row.id, [field]: row[field], cost: row.cost }));
-        working.push({ field, rows: data.result.length, sample });
+        const total = data.result.reduce((s, row) => s + (row[field] || 0), 0);
+        const sample = data.result.filter(r => r[field] > 0).slice(0, 3).map(row => ({ id: row.id, [field]: row[field], cost: row.cost }));
+        working.push({ field, rows: data.result.length, total, sample });
       }
     } catch (e) { errors.push({ field, error: e.message }); }
-    await delay(200);
+    await delay(150);
   }
 
   res.json({ date: dateStr, working, errorCount: errors.length, errors: errors.slice(0, 5) });
+});
+
+// GET /api/hyros/probe-hyros-endpoints
+// Tries many Hyros API endpoint paths to discover goals, events, tags, and custom fields.
+router.get('/probe-hyros-endpoints', async (req, res) => {
+  const key     = process.env.HYROS_API_KEY;
+  const headers = { 'API-Key': key };
+
+  const paths = [
+    '/goals', '/goals/', '/goal',
+    '/events', '/events/', '/event',
+    '/conversions', '/conversion-goals', '/custom-conversions',
+    '/tags', '/tags/', '/lead-tags',
+    '/attribution/fields', '/attribution/metrics',
+    '/metrics', '/fields',
+    '/leads/tags', '/leads/goals',
+    '/sources', '/ad-sources',
+    '/custom-fields', '/settings', '/account',
+  ];
+
+  const results = {};
+  for (const path of paths) {
+    try {
+      const r    = await fetch(`${HYROS_BASE}${path}`, { headers });
+      const text = await r.text();
+      let parsed;
+      try { parsed = JSON.parse(text); } catch { parsed = text.slice(0, 300); }
+      // Only include non-404/non-error responses
+      const isError = typeof parsed === 'string' || parsed?.result === 'ERROR' || parsed?.message === 'Not found' || (Array.isArray(parsed?.message) && parsed.message[0]?.includes('not found'));
+      if (!isError) results[path] = parsed;
+      else          results[path] = { skipped: true, hint: typeof parsed === 'string' ? parsed.slice(0, 100) : parsed?.message };
+    } catch (e) { results[path] = { error: e.message }; }
+    await delay(150);
+  }
+
+  res.json(results);
 });
 
 // Auto-sync every 30 minutes
