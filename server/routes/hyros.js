@@ -1621,6 +1621,21 @@ router.get('/hyros-probe', async (req, res) => {
   } catch (e) { res.json({ error: String(e) }); }
 });
 
+// GET /api/hyros/probe-leads?from=YYYY-MM-DD&to=YYYY-MM-DD — raw first page of /leads
+router.get('/probe-leads', async (req, res) => {
+  const key   = process.env.HYROS_API_KEY;
+  const from  = req.query.from || START_DATE;
+  const to    = req.query.to   || isoToday();
+  const params = new URLSearchParams({ fromDate: from, toDate: to, pageSize: 5 });
+  try {
+    const r    = await fetch(`${HYROS_BASE}/leads?${params}`, { headers: { 'API-Key': key } });
+    const text = await r.text();
+    let data;
+    try { data = JSON.parse(text); } catch { return res.json({ raw: text.slice(0, 500) }); }
+    res.json({ url: `${HYROS_BASE}/leads?${params}`, status: r.status, resultType: typeof data.result, resultIsArray: Array.isArray(data.result), resultLength: Array.isArray(data.result) ? data.result.length : null, message: data.message, nextPageId: data.nextPageId, sample: Array.isArray(data.result) ? data.result.slice(0, 2) : data.result });
+  } catch (e) { res.json({ error: String(e) }); }
+});
+
 // GET /api/hyros/ghl-probe — raw GHL API responses to identify correct structure
 router.get('/ghl-probe', async (req, res) => {
   const key = process.env.GHL_API_KEY;
