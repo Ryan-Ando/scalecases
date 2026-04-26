@@ -1708,9 +1708,9 @@ router.post('/stage-event', async (req, res) => {
   }
 });
 
-// GET /api/hyros/probe-leads?date=<YYYY-MM-DD>
-// Tries every plausible lead-journey endpoint shape to find stage data.
-router.get('/probe-leads', async (req, res) => {
+// GET /api/hyros/probe-attr-fields?date=<YYYY-MM-DD>
+// Probes Hyros attribution API with many candidate lead field names to find which one works.
+router.get('/probe-attr-fields', async (req, res) => {
   const key     = process.env.HYROS_API_KEY;
   const headers = { 'API-Key': key };
 
@@ -1719,41 +1719,35 @@ router.get('/probe-leads', async (req, res) => {
     return d.toISOString().slice(0, 10);
   })();
 
-  // Known lead ID from Jennifer Cregger's export (reached "va" stage)
-  const knownId = '4e4d2b5df6ebadd164b71e93c9cc722a0b4e25ca51ddf09ed1569a8bb519af77';
-
-  const attrBase = `startDate=${dateStr}&endDate=${dateStr}&level=facebook_adset&attributionModel=last_click&isAdAccountId=true`;
   const acct1 = '1125965718442560';
-  const acct2 = '758516163121709';
+  const attrBase = `startDate=${dateStr}&endDate=${dateStr}&level=facebook_adset&attributionModel=last_click&isAdAccountId=true&ids=${acct1}`;
 
-  const paths = [
-    // Test all three custom metrics against both accounts
-    `/attribution?${attrBase}&fields=leads_zemsky,cost&ids=${acct1}`,
-    `/attribution?${attrBase}&fields=leads_zemsky,cost&ids=${acct2}`,
-    `/attribution?${attrBase}&fields=leads_b2c_ppl,cost&ids=${acct1}`,
-    `/attribution?${attrBase}&fields=leads_b2c_ppl,cost&ids=${acct2}`,
-    `/attribution?${attrBase}&fields=leads_acc_con,cost&ids=${acct1}`,
-    `/attribution?${attrBase}&fields=leads_acc_con,cost&ids=${acct2}`,
-    // All three together
-    `/attribution?${attrBase}&fields=leads_zemsky,leads_b2c_ppl,leads_acc_con,cost&ids=${acct1}`,
-    `/attribution?${attrBase}&fields=leads_zemsky,leads_b2c_ppl,leads_acc_con,cost&ids=${acct2}`,
+  // Candidate field names — Hyros uses snake_case of the goal/event name
+  const candidates = [
+    'leads', 'lead', 'new_leads', 'total_leads',
+    'qualified_lead', 'qualified_leads',
+    'opt_in', 'opt_ins', 'form_submit', 'form_submits',
+    'intake', 'intakes', 'submission', 'submissions',
+    'calls', 'appointments', 'conversions',
   ];
 
-  const results = {};
-  for (const path of paths) {
+  const working = [], errors = [];
+  for (const field of candidates) {
     try {
-      const r    = await fetch(`${HYROS_BASE}${path}`, { headers });
-      const text = await r.text();
-      let parsed;
-      try { parsed = JSON.parse(text); } catch { parsed = text.slice(0, 500); }
-      results[path] = parsed;
-    } catch (e) {
-      results[path] = { error: e.message };
-    }
-    await delay(300);
+      const r    = await fetch(`${HYROS_BASE}/attribution?${attrBase}&fields=${field},cost`, { headers });
+      const data = await r.json();
+      if (data.result === 'ERROR') {
+        errors.push({ field, message: data.message });
+      } else if (Array.isArray(data.result)) {
+        // Check if any row has a non-zero value for this field
+        const sample = data.result.slice(0, 3).map(row => ({ id: row.id, [field]: row[field], cost: row.cost }));
+        working.push({ field, rows: data.result.length, sample });
+      }
+    } catch (e) { errors.push({ field, error: e.message }); }
+    await delay(200);
   }
 
-  res.json(results);
+  res.json({ date: dateStr, working, errorCount: errors.length, errors: errors.slice(0, 5) });
 });
 
 // Auto-sync every 30 minutes
