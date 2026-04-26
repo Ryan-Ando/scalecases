@@ -925,6 +925,7 @@ async function fetchGhlContacts(from, to, stateFieldId, fbclidFieldId) {
 async function hyrosAdsetsByEmail(emails) {
   const key = process.env.HYROS_API_KEY;
   const emailToAdset = {};
+  const emailSet = new Set(emails.map(e => e.toLowerCase()));
 
   // Build all batches upfront
   const batches = [];
@@ -946,11 +947,18 @@ async function hyrosAdsetsByEmail(emails) {
     );
     for (const data of results) {
       for (const lead of data.result || []) {
-        const email   = (lead.email || '').toLowerCase().trim();
+        const returnedEmail = (lead.email || '').toLowerCase().trim();
         const adsetId = lead.lastSource?.adSource?.adSourceId;
-        if (email && adsetId && !emailToAdset[email]) {
-          emailToAdset[email] = adsetId;
+        if (!returnedEmail || !adsetId) continue;
+        // Hyros may return the email it has stored (possibly a typo) rather than
+        // the email we queried with. Normalise back to the queried email so that
+        // ghlMap lookups succeed.
+        let useEmail = returnedEmail;
+        if (!emailSet.has(returnedEmail)) {
+          const corrected = correctEmail(returnedEmail);
+          if (corrected && emailSet.has(corrected)) useEmail = corrected;
         }
+        if (!emailToAdset[useEmail]) emailToAdset[useEmail] = adsetId;
       }
     }
   }
