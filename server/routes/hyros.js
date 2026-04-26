@@ -1131,16 +1131,20 @@ async function runBackfillFromContacts(contacts, append = false) {
 async function runBackfillFbclid(ghlContacts, append = false) {
   _backfill = { running: true, done: false, result: null, error: null };
   try {
-    // Build lookup: fbclid → GHL contact (from URL ?fbclid= param)
+    // Build two GHL lookup maps:
+    //   fbclidToGhl — keyed by ?fbclid= from the URL field (primary match)
+    //   emailToGhl  — keyed by email (fallback: confirms lead is real even when fbclids differ)
     const fbclidToGhl = {};
+    const emailToGhl  = {};
     for (const c of ghlContacts) {
       if (c.fbclid && !fbclidToGhl[c.fbclid]) fbclidToGhl[c.fbclid] = c;
+      if (c.email  && !emailToGhl[c.email])   emailToGhl[c.email]   = c;
     }
     const ghlFbclidCount = Object.keys(fbclidToGhl).length;
     console.log(`Backfill fbclid: ${ghlFbclidCount} GHL contacts with fbclid, ${ghlContacts.length - ghlFbclidCount} without`);
 
-    if (!ghlFbclidCount) {
-      _backfill = { running: false, done: true, error: null, result: { ok: false, message: 'No GHL contacts with fbclid in URL field — check that CSV URL column contains ?fbclid= param' } };
+    if (!ghlFbclidCount && !Object.keys(emailToGhl).length) {
+      _backfill = { running: false, done: true, error: null, result: { ok: false, message: 'No GHL contacts found in CSV' } };
       return;
     }
 
@@ -1156,38 +1160,62 @@ async function runBackfillFbclid(ghlContacts, append = false) {
     const sheets = google.sheets({ version: 'v4', auth });
     await ensureEventsTab(sheets);
 
-    // Load existing fbclids to prevent duplicates in append mode
-    let existingFbclids = new Set();
+    // Load existing dedup keys (fbclid or email:X) to skip in append mode
+    let existingKeys = new Set();
     if (append) {
       try {
         const r = await sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: `${EVENTS_TAB}!I:I` });
-        existingFbclids = new Set((r.data.values || []).flat().filter(Boolean));
+        existingKeys = new Set((r.data.values || []).flat().filter(Boolean));
       } catch { /* tab may not exist */ }
     }
 
     // For each Hyros lead, fetch their click fbclids and check for a GHL match.
-    // Run 5 concurrent /leads/clicks calls to stay well under rate limits.
+    // Primary:  fbclid match — most reliable, confirms same click event
+    // Fallback: email match  — catches real leads where GHL URL lacked ?fbclid=
+    //           (click-only Hyros leads can't sneak in here because they're not in GHL)
     const CONCURRENCY = 5;
-    const toInsert = [], noMatch = [], noFbclid = [];
+    const toInsert = [], notInGhl = [], noFbclid = [];
+    let fbclidMatches = 0, emailFallbackMatches = 0;
 
     for (let i = 0; i < hyrosLeads.length; i += CONCURRENCY) {
-      const batch   = hyrosLeads.slice(i, i + CONCURRENCY);
-      const fbclids = await Promise.all(batch.map(lead => fetchLeadFbclids(lead.email)));
+      const batch      = hyrosLeads.slice(i, i + CONCURRENCY);
+      const batchClicks = await Promise.all(batch.map(lead => fetchLeadFbclids(lead.email)));
 
       for (let j = 0; j < batch.length; j++) {
         const lead        = batch[j];
-        const clickFbclids = fbclids[j];
+        const clickFbclids = batchClicks[j];
 
-        if (!clickFbclids.length) { noFbclid.push(lead.email); continue; }
-
-        // Find the first click fbclid that matches a GHL contact
-        let matchedFbclid = null, matchedGhl = null;
+        // ── Primary: fbclid match ──────────────────────────────────────────
+        let matchedFbclid = null, matchedGhl = null, matchMethod = '';
         for (const fc of clickFbclids) {
-          if (fbclidToGhl[fc]) { matchedFbclid = fc; matchedGhl = fbclidToGhl[fc]; break; }
+          if (fbclidToGhl[fc]) { matchedFbclid = fc; matchedGhl = fbclidToGhl[fc]; matchMethod = 'fbclid'; break; }
         }
 
-        if (!matchedFbclid) { noMatch.push(lead.email); continue; }
-        if (append && existingFbclids.has(matchedFbclid)) continue;
+        // ── Fallback: email match (validates lead is real — in GHL) ────────
+        if (!matchedGhl) {
+          const hyrosEmail   = lead.email;
+          let   ghlByEmail   = emailToGhl[hyrosEmail];
+          if (!ghlByEmail) {
+            // Try correcting a potential Hyros-side email typo
+            const corrected = correctEmail(hyrosEmail);
+            if (corrected) ghlByEmail = emailToGhl[corrected];
+          }
+          if (ghlByEmail) {
+            // Use the GHL contact's fbclid as the dedup key, or fall back to email:prefix
+            matchedGhl    = ghlByEmail;
+            matchedFbclid = ghlByEmail.fbclid || `email:${ghlByEmail.email}`;
+            matchMethod   = 'email';
+          }
+        }
+
+        if (!matchedGhl) {
+          // Not in GHL at all — click-only Hyros lead, skip
+          if (!clickFbclids.length) noFbclid.push(lead.email);
+          else                      notInGhl.push(lead.email);
+          continue;
+        }
+
+        if (append && existingKeys.has(matchedFbclid)) continue;
 
         // Attribution priority: Hyros firstSource > GHL fbc_id
         const adsetId = lead.adsetId || matchedGhl.adsetId;
@@ -1205,7 +1233,9 @@ async function runBackfillFbclid(ghlContacts, append = false) {
           matchedFbclid,
           'YES',
         ]);
-        existingFbclids.add(matchedFbclid);
+        existingKeys.add(matchedFbclid);
+        if (matchMethod === 'fbclid') fbclidMatches++;
+        else                          emailFallbackMatches++;
       }
 
       if (i + CONCURRENCY < hyrosLeads.length) await delay(500);
@@ -1225,17 +1255,19 @@ async function runBackfillFbclid(ghlContacts, append = false) {
     _backfill = {
       running: false, done: true, error: null,
       result: {
-        ok:              true,
-        hyrosLeads:      hyrosLeads.length,
-        ghlWithFbclid:   ghlFbclidCount,
-        inserted:        toInsert.length,
-        noFbclidInHyros: noFbclid.length,
-        noGhlMatch:      noMatch.length,
-        noFbclidSample:  noFbclid.slice(0, 5),
-        noMatchSample:   noMatch.slice(0, 5),
+        ok:                   true,
+        hyrosLeads:           hyrosLeads.length,
+        ghlWithFbclid:        ghlFbclidCount,
+        inserted:             toInsert.length,
+        fbclidMatches,
+        emailFallbackMatches,
+        notInGhl:             notInGhl.length,
+        noFbclidInHyros:      noFbclid.length,
+        notInGhlSample:       notInGhl.slice(0, 5),
+        noFbclidSample:       noFbclid.slice(0, 5),
       },
     };
-    console.log(`Backfill fbclid done: ${toInsert.length} inserted, ${noMatch.length} no GHL match, ${noFbclid.length} no fbclid in Hyros`);
+    console.log(`Backfill fbclid done: ${toInsert.length} inserted (${fbclidMatches} fbclid, ${emailFallbackMatches} email fallback), ${notInGhl.length} not in GHL, ${noFbclid.length} no fbclid in Hyros`);
   } catch (e) {
     console.error('runBackfillFbclid error:', e.message);
     _backfill = { running: false, done: true, result: null, error: String(e) };
