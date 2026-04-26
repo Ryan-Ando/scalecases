@@ -1240,13 +1240,26 @@ router.get('/hyros-probe', async (req, res) => {
       out.emailResult = await (await fetch(`${HYROS_BASE}/leads?${p}`, { headers })).json();
     }
     if (req.query.fbclid) {
-      const safeJson = async (r) => { try { return await r.json(); } catch { return { raw: await r.text().catch(() => '?') }; } };
-      for (const param of ['fbclids', 'fbclid', 'clickIds', 'click_ids', 'fbc']) {
-        const p = new URLSearchParams({ [param]: `"${req.query.fbclid}"` });
-        out[`fbclid_as_${param}`] = await safeJson(await fetch(`${HYROS_BASE}/leads?${p}`, { headers }));
+      const fbc = req.query.fbclid;
+      const safeJson = async (r) => { try { return await r.json(); } catch { return { raw: (await r.text().catch(() => '?')).slice(0, 200) }; } };
+      // Try every plausible clicks/lead-clicks endpoint and param combination
+      const clickEndpoints = [
+        `/lead-clicks?fbclid=${fbc}`,
+        `/lead-clicks?fbc=${fbc}`,
+        `/lead-clicks?fbclids="${fbc}"`,
+        `/lead-clicks?clickId=${fbc}`,
+        `/lead-clicks`,
+        `/clicks?fbclid=${fbc}`,
+        `/clicks?fbc=${fbc}`,
+        `/tracking/clicks?fbclid=${fbc}`,
+        `/leads?fbclids="${fbc}"`,
+        `/leads?fbc="${fbc}"`,
+      ];
+      for (const path of clickEndpoints) {
+        const r = await fetch(`${HYROS_BASE}${path}`, { headers });
+        const key = path.replace(/[^a-zA-Z0-9]/g, '_').slice(0, 60);
+        out[key] = await safeJson(r);
       }
-      const p2 = new URLSearchParams({ fbclid: req.query.fbclid });
-      out.clicksEndpoint = await safeJson(await fetch(`${HYROS_BASE}/clicks?${p2}`, { headers }));
     }
     res.json(out);
   } catch (e) { res.json({ error: String(e) }); }
