@@ -49,14 +49,36 @@ function safeTabName(s) {
 
 function delay(ms) { return new Promise(res => setTimeout(res, ms)); }
 
-const BAD_TLDS    = new Set(['comf','cpm','ocm','con','cmo','comm','ney','ner','nte','ogr','coim','cob','cok']);
-const BAD_DOMAINS = new Set([
-  'gmaill.com','gamil.com','gmial.com','gnail.com','gmai.com','gmali.com','gmal.com',
-  'gmail.con','gmail.cmo','gmail.comm','gmail.co','gmail.net',
-  'hotmial.com','hotmail.con','hotmail.cmo','hotmai.com',
-  'yaho.com','yhoo.com','yahooo.com','yahoo.con',
-  'outlok.com','outllok.com','otulook.com',
-]);
+// Known-good domains for fuzzy matching (edit-distance-1 typos get corrected to these)
+const KNOWN_DOMAINS = ['gmail.com','yahoo.com','hotmail.com','outlook.com','icloud.com','aol.com','comcast.net','verizon.net','att.net','live.com','msn.com'];
+
+// Returns edit distance between two strings (Levenshtein)
+function editDistance(a, b) {
+  const m = a.length, n = b.length;
+  const dp = Array.from({ length: m + 1 }, (_, i) => [i, ...Array(n).fill(0)]);
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      dp[i][j] = a[i-1] === b[j-1]
+        ? dp[i-1][j-1]
+        : 1 + Math.min(dp[i-1][j], dp[i][j-1], dp[i-1][j-1]);
+    }
+  }
+  return dp[m][n];
+}
+
+// Attempt to correct a typo TLD back to 'com' algorithmically.
+// Handles: comd, comf, comm, cmo, con, ocm, cpm, cob, etc.
+function correctTld(tld) {
+  if (tld === 'com') return null; // already correct
+  // Any permutation/extension of 'com' up to length 4
+  if (tld.length <= 4 && editDistance(tld, 'com') <= 1) return 'com';
+  // TLD starts with 'com' but has extra char (comf, comd, comm, coms...)
+  if (tld.startsWith('com') && tld.length === 4) return 'com';
+  // TLD ends with 'om' and 3 chars — likely mistyped 'com'
+  if (tld.endsWith('om') && tld.length === 3 && editDistance(tld, 'com') === 1) return 'com';
+  return null;
+}
 
 function isValidEmail(email) {
   if (!email || !email.includes('@')) return false;
@@ -68,55 +90,36 @@ function isValidEmail(email) {
   if (dot < 1) return false;
   const tld = domain.slice(dot + 1).toLowerCase();
   if (!/^[a-z]{2,6}$/.test(tld)) return false;
-  if (BAD_TLDS.has(tld)) return false;
-  if (BAD_DOMAINS.has(domain.toLowerCase())) return false;
+  if (correctTld(tld)) return false; // bad TLD
+  // Check if domain is a 1-edit typo of a known good domain
+  const d = domain.toLowerCase();
+  if (KNOWN_DOMAINS.some(good => good !== d && editDistance(d, good) <= 1)) return false;
   return true;
 }
-
-// Domain typo correction map — bad domain → likely intended domain
-const DOMAIN_CORRECTIONS = {
-  'gmaill.com':  'gmail.com',
-  'gamil.com':   'gmail.com',
-  'gmial.com':   'gmail.com',
-  'gnail.com':   'gmail.com',
-  'gmai.com':    'gmail.com',
-  'gmali.com':   'gmail.com',
-  'gmal.com':    'gmail.com',
-  'gmail.con':   'gmail.com',
-  'gmail.cmo':   'gmail.com',
-  'gmail.comm':  'gmail.com',
-  'hotmial.com': 'hotmail.com',
-  'hotmail.con': 'hotmail.com',
-  'hotmai.com':  'hotmail.com',
-  'yaho.com':    'yahoo.com',
-  'yhoo.com':    'yahoo.com',
-  'yahoo.con':   'yahoo.com',
-  'outlok.com':  'outlook.com',
-};
-// TLD typo correction map — bad TLD → corrected TLD (same domain base)
-const TLD_CORRECTIONS = {
-  'comf': 'com',
-  'cmo':  'com',
-  'con':  'com',
-  'comm': 'com',
-  'cpm':  'com',
-  'ocm':  'com',
-};
 
 function correctEmail(email) {
   if (!email || !email.includes('@')) return null;
   const [local, domain] = email.split('@');
   if (!local || !domain) return null;
-  // Try full domain correction first
-  const domainFixed = DOMAIN_CORRECTIONS[domain.toLowerCase()];
-  if (domainFixed) return `${local}@${domainFixed}`;
-  // Try TLD correction
-  const dot = domain.lastIndexOf('.');
+  const d   = domain.toLowerCase();
+  const dot = d.lastIndexOf('.');
   if (dot < 1) return null;
-  const base = domain.slice(0, dot);
-  const tld  = domain.slice(dot + 1).toLowerCase();
-  const tldFixed = TLD_CORRECTIONS[tld];
-  if (tldFixed) return `${local}@${base}.${tldFixed}`;
+  const base = d.slice(0, dot);
+  const tld  = d.slice(dot + 1);
+
+  // Try fixing a bad TLD first (e.g. gmail.comd → gmail.com)
+  const fixedTld = correctTld(tld);
+  if (fixedTld) {
+    const candidate = `${base}.${fixedTld}`;
+    // If base itself is also a typo, fix that too
+    const bestDomain = KNOWN_DOMAINS.find(good => editDistance(candidate, good) <= 1) || candidate;
+    return `${local}@${bestDomain}`;
+  }
+
+  // Try fixing the whole domain (e.g. gmaill.com → gmail.com)
+  const bestDomain = KNOWN_DOMAINS.find(good => good !== d && editDistance(d, good) <= 1);
+  if (bestDomain) return `${local}@${bestDomain}`;
+
   return null;
 }
 
