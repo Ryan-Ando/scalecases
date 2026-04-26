@@ -197,9 +197,8 @@ async function getLeadsFromSheet(sheets) {
 
 // ── Hyros API — spend ─────────────────────────────────────────────────────────
 
-// Fetch spend AND lead count per adset for a single day via Hyros attribution endpoint.
-// Returns { [adsetId]: { cost, leads } }
-// Using Hyros's own `leads` field guarantees adset-level counts match the Hyros UI exactly.
+// Fetch spend per adset for a single day via Hyros attribution endpoint.
+// Returns { [adsetId]: { cost } }
 async function fetchCostForDay(dateStr) {
   const key      = process.env.HYROS_API_KEY;
   const accounts = (process.env.HYROS_AD_ACCOUNTS || '1125965718442560,758516163121709')
@@ -214,7 +213,7 @@ async function fetchCostForDay(dateStr) {
         startDate: dateStr, endDate: dateStr,
         level: 'facebook_adset',
         attributionModel: 'last_click',
-        fields: 'cost,leads',
+        fields: 'cost',
         isAdAccountId: 'true',
         ids: accountId,
       });
@@ -229,9 +228,8 @@ async function fetchCostForDay(dateStr) {
       }
 
       for (const row of data.result) {
-        if (!byAdset[row.id]) byAdset[row.id] = { cost: 0, leads: 0 };
-        byAdset[row.id].cost  += (row.cost  || 0);
-        byAdset[row.id].leads += (row.leads || 0);
+        if (!byAdset[row.id]) byAdset[row.id] = { cost: 0 };
+        byAdset[row.id].cost += (row.cost || 0);
       }
 
       pageId = data.nextPageId || null;
@@ -756,13 +754,17 @@ async function runSync() {
     // 4. Read all stage events from sheet (now deduped + re-attributed)
     const leadsFromSheet = await getLeadsFromSheet(sheets);
 
-    // 4. Fetch spend per day from Hyros attribution API
+    // 5. Fetch spend per day from Hyros attribution API; merge with Lead Events for lead counts
     const dailyData = {};
     for (const dateStr of allDates) {
       const attrByAdset = await fetchCostForDay(dateStr);
       dailyData[dateStr] = {};
       for (const [id, data] of Object.entries(attrByAdset)) {
-        dailyData[dateStr][id] = { leads: data.leads || 0, cost: data.cost || 0 };
+        dailyData[dateStr][id] = { leads: leadsFromSheet[dateStr]?.[id] || 0, cost: data.cost || 0 };
+      }
+      // Include adsets that have leads in sheet but no spend that day
+      for (const [id, count] of Object.entries(leadsFromSheet[dateStr] || {})) {
+        if (!dailyData[dateStr][id]) dailyData[dateStr][id] = { leads: count, cost: 0 };
       }
       await delay(500);
     }
@@ -1018,12 +1020,48 @@ async function fetchAllHyrosLeads(fromDate, toDate) {
   return leads;
 }
 
-// Returns all fbclids from a Hyros lead's click history.
-// Each item in the array is the fbclid string from parsedParameters.fbclid.
-async function fetchLeadFbclids(email) {
+// Extract US state abbreviation from a Hyros category string (e.g. "LSS WA 2" → "wa").
+function stateFromCategory(category) {
+  const m = (category || '').toUpperCase().match(/\b(WA|TX|CA|FL|NY|IL|PA|OH|GA|NC|MI|NJ|VA|AZ|TN|AL|LA|CO|IN|MO|MD|WI|MN|SC|KY|OR|OK|CT|NV|NM|MS|AR|IA|UT|KS|NE|WV|ID|HI|NH|ME|MT|RI|DE|SD|ND|AK|VT|WY|DC)\b/);
+  return m ? m[1].toLowerCase() : '';
+}
+
+// Like fetchAllHyrosLeads but with NO tag filter — every lead with an email is returned.
+// Also captures date (creationDate) and state (from firstSource.category) for each lead.
+async function fetchAllHyrosLeadsUnfiltered(fromDate, toDate) {
+  const key   = process.env.HYROS_API_KEY;
+  const leads = [];
+  let pageId  = null, page = 0, totalFetched = 0;
+  do {
+    page++;
+    const params = new URLSearchParams({ fromDate, toDate, pageSize: 100 });
+    if (pageId) params.set('pageId', pageId);
+    try {
+      const r    = await fetch(`${HYROS_BASE}/leads?${params}`, { headers: { 'API-Key': key } });
+      const data = await r.json();
+      if (!Array.isArray(data.result)) { console.warn('fetchAllHyrosLeadsUnfiltered error:', data.message); break; }
+      totalFetched += data.result.length;
+      for (const lead of data.result) {
+        const email = (lead.email || '').toLowerCase().trim();
+        if (!email) continue;
+        const adsetId = adsetFromTags(lead.tags) || lead.firstSource?.adSource?.adSourceId || '';
+        const date    = (lead.creationDate || lead.dateAdded || '').slice(0, 10) || fromDate;
+        const state   = stateFromCategory(lead.firstSource?.category || '');
+        leads.push({ email, leadId: lead.id || '', adsetId, date, state });
+      }
+      pageId = data.nextPageId || null;
+      if (pageId) await delay(400);
+    } catch (e) { console.warn('fetchAllHyrosLeadsUnfiltered error:', e.message); break; }
+  } while (pageId && page < 50);
+  console.log(`fetchAllHyrosLeadsUnfiltered: ${leads.length} leads with email out of ${totalFetched} total (${page} page(s))`);
+  return leads;
+}
+
+// Returns click data for a Hyros lead: fbclids found + whether /next-steps appeared.
+async function fetchLeadClickData(email) {
   const key    = process.env.HYROS_API_KEY;
   const p      = new URLSearchParams({ email, pageSize: 50 });
-  const result = [];
+  const result = { hasNextSteps: false, fbclids: [] };
   try {
     const r    = await fetch(`${HYROS_BASE}/leads/clicks?${p}`, { headers: { 'API-Key': key } });
     const text = await r.text();
@@ -1031,10 +1069,16 @@ async function fetchLeadFbclids(email) {
     try { data = JSON.parse(text); } catch { return result; }
     for (const click of data.result || []) {
       const fbclid = click.parsedParameters?.fbclid;
-      if (fbclid) result.push(fbclid);
+      if (fbclid) result.fbclids.push(fbclid);
+      if ((click.trackedUrl || '').includes('/next-steps')) result.hasNextSteps = true;
     }
   } catch { /* ignore */ }
   return result;
+}
+
+// Kept for use by runBackfillFbclid
+async function fetchLeadFbclids(email) {
+  return (await fetchLeadClickData(email)).fbclids;
 }
 
 async function ensureEventsTab(sheets) {
@@ -1289,6 +1333,105 @@ async function runBackfillFbclid(ghlContacts, append = false) {
   }
 }
 
+// ── /next-steps backfill ──────────────────────────────────────────────────────
+// The Hyros pixel fires on /next-steps (confirmation page) only for real form
+// submissions. Click-only / partial-entry leads never reach it.
+// Strategy: fetch ALL Hyros leads → check each lead's click history for a
+// /next-steps trackedUrl → only those are real → insert into Lead Events.
+// No GHL CSV required; adset comes from Hyros @attribution tag.
+async function runBackfillNextSteps(append = false) {
+  _backfill = { running: true, done: false, result: null, error: null };
+  try {
+    const today = isoToday();
+
+    // Fetch all Hyros leads without any tag filter
+    const hyrosLeads = await fetchAllHyrosLeadsUnfiltered(START_DATE, today);
+    if (!hyrosLeads.length) {
+      _backfill = { running: false, done: true, error: null, result: { ok: true, inserted: 0, hyrosLeads: 0, message: 'No Hyros leads found in date range' } };
+      return;
+    }
+
+    const auth   = await getAuthClient();
+    const sheets = google.sheets({ version: 'v4', auth });
+    await ensureEventsTab(sheets);
+
+    // Load existing dedup keys in append mode
+    let existingKeys = new Set();
+    if (append) {
+      try {
+        const r = await sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: `${EVENTS_TAB}!I:I` });
+        existingKeys = new Set((r.data.values || []).flat().filter(Boolean));
+      } catch { /* tab may not exist */ }
+    }
+
+    const CONCURRENCY = 5;
+    const toInsert = [];
+    let nextStepsCount = 0, skippedCount = 0, noAdsetCount = 0;
+
+    for (let i = 0; i < hyrosLeads.length; i += CONCURRENCY) {
+      const batch          = hyrosLeads.slice(i, i + CONCURRENCY);
+      const batchClickData = await Promise.all(batch.map(lead => fetchLeadClickData(lead.email)));
+
+      for (let j = 0; j < batch.length; j++) {
+        const lead      = batch[j];
+        const clickData = batchClickData[j];
+
+        if (!clickData.hasNextSteps) continue;
+        nextStepsCount++;
+
+        if (!lead.adsetId) { noAdsetCount++; continue; }
+
+        // Prefer first fbclid as dedup key; fall back to email: prefix
+        const dedupKey = clickData.fbclids[0] || `email:${lead.email}`;
+        if (append && existingKeys.has(dedupKey)) { skippedCount++; continue; }
+
+        toInsert.push([
+          new Date().toISOString(),
+          lead.date,    // from Hyros creationDate
+          lead.adsetId, // from @attribution tag
+          lead.state,   // parsed from firstSource.category (e.g. "wa", "tx")
+          '',           // campaign name
+          '',           // campaign ID
+          '',           // ad ID
+          '',           // ad name
+          dedupKey,     // fbclid or email: dedup key
+          'YES',        // Hyros verified
+        ]);
+        existingKeys.add(dedupKey);
+      }
+
+      if ((i + CONCURRENCY) % 50 === 0) console.log(`  /next-steps backfill: checked ${Math.min(i + CONCURRENCY, hyrosLeads.length)}/${hyrosLeads.length} leads, ${nextStepsCount} real so far`);
+      if (i + CONCURRENCY < hyrosLeads.length) await delay(500);
+    }
+
+    if (!append) {
+      await sheets.spreadsheets.values.clear({ spreadsheetId: SHEET_ID, range: `${EVENTS_TAB}!A2:Z` });
+    }
+    if (toInsert.length) {
+      await sheets.spreadsheets.values.append({
+        spreadsheetId: SHEET_ID, range: `${EVENTS_TAB}!A:A`,
+        valueInputOption: 'RAW', requestBody: { values: toInsert },
+      });
+    }
+
+    _backfill = {
+      running: false, done: true, error: null,
+      result: {
+        ok:                  true,
+        hyrosLeads:          hyrosLeads.length,
+        realLeads:           nextStepsCount,
+        inserted:            toInsert.length,
+        skippedDuplicate:    skippedCount,
+        noAdset:             noAdsetCount,
+      },
+    };
+    console.log(`Backfill next-steps done: ${toInsert.length} inserted (${nextStepsCount} real leads found out of ${hyrosLeads.length} total)`);
+  } catch (e) {
+    console.error('runBackfillNextSteps error:', e.message);
+    _backfill = { running: false, done: true, result: null, error: String(e) };
+  }
+}
+
 // ── Routes ────────────────────────────────────────────────────────────────────
 
 async function handleSync(req, res) {
@@ -1442,6 +1585,16 @@ router.post('/backfill-csv', async (req, res) => {
 });
 
 router.get('/backfill-status', (_req, res) => res.json(_backfill));
+
+// POST /api/hyros/backfill-next-steps[?append=true]
+// Fetches all Hyros leads, checks each for /next-steps in click history (= real submission),
+// and writes matching leads to Lead Events. No GHL CSV needed.
+router.post('/backfill-next-steps', (req, res) => {
+  if (_backfill.running) return res.json({ ok: false, error: 'Backfill already running' });
+  const append = req.query.append === 'true';
+  res.json({ ok: true, status: 'started', mode: 'next-steps', append, pollUrl: '/api/hyros/backfill-status' });
+  runBackfillNextSteps(append);
+});
 
 // GET /api/hyros/hyros-probe?email=x&fbclid=y — probe Hyros lookup methods
 router.get('/hyros-probe', async (req, res) => {
