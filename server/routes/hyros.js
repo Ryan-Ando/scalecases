@@ -972,6 +972,56 @@ async function hyrosAdsetsByEmail(emails) {
   return emailToAdset;
 }
 
+// Fetch all Hyros leads from a date range (paginated, up to 5000 leads).
+async function fetchAllHyrosLeads(fromDate, toDate) {
+  const key   = process.env.HYROS_API_KEY;
+  const leads = [];
+  let pageId  = null;
+  let page    = 0;
+  do {
+    page++;
+    const params = new URLSearchParams({ fromDate, toDate, pageSize: 100 });
+    if (pageId) params.set('pageId', pageId);
+    try {
+      const r    = await fetch(`${HYROS_BASE}/leads?${params}`, { headers: { 'API-Key': key } });
+      const data = await r.json();
+      if (!Array.isArray(data.result)) { console.warn('fetchAllHyrosLeads page error:', data.message); break; }
+      for (const lead of data.result) {
+        const email = (lead.email || '').toLowerCase().trim();
+        if (!email) continue;
+        leads.push({
+          email,
+          leadId:  lead.id   || '',
+          adsetId: lead.firstSource?.adSource?.adSourceId || '',
+        });
+      }
+      pageId = data.nextPageId || null;
+      if (pageId) await delay(400);
+    } catch (e) { console.warn('fetchAllHyrosLeads error:', e.message); break; }
+  } while (pageId && page < 50);
+  console.log(`fetchAllHyrosLeads: ${leads.length} leads (${page} page(s))`);
+  return leads;
+}
+
+// Returns all fbclids from a Hyros lead's click history.
+// Each item in the array is the fbclid string from parsedParameters.fbclid.
+async function fetchLeadFbclids(email) {
+  const key    = process.env.HYROS_API_KEY;
+  const p      = new URLSearchParams({ email, pageSize: 50 });
+  const result = [];
+  try {
+    const r    = await fetch(`${HYROS_BASE}/leads/clicks?${p}`, { headers: { 'API-Key': key } });
+    const text = await r.text();
+    let data;
+    try { data = JSON.parse(text); } catch { return result; }
+    for (const click of data.result || []) {
+      const fbclid = click.parsedParameters?.fbclid;
+      if (fbclid) result.push(fbclid);
+    }
+  } catch { /* ignore */ }
+  return result;
+}
+
 async function ensureEventsTab(sheets) {
   const meta   = await sheets.spreadsheets.get({ spreadsheetId: SHEET_ID });
   const hasTab = meta.data.sheets.some(s => s.properties.title === EVENTS_TAB);
@@ -1073,6 +1123,125 @@ async function runBackfillFromContacts(contacts, append = false) {
   }
 }
 
+// ── fbclid-based backfill ─────────────────────────────────────────────────────
+// Pulls ALL Hyros leads for the period, fetches each lead's click fbclids,
+// matches against the GHL CSV contacts (keyed by fbclid from their URL field),
+// and only inserts leads present in BOTH systems.  GHL validates realness;
+// Hyros provides first-touch adset attribution.
+async function runBackfillFbclid(ghlContacts, append = false) {
+  _backfill = { running: true, done: false, result: null, error: null };
+  try {
+    // Build lookup: fbclid → GHL contact (from URL ?fbclid= param)
+    const fbclidToGhl = {};
+    for (const c of ghlContacts) {
+      if (c.fbclid && !fbclidToGhl[c.fbclid]) fbclidToGhl[c.fbclid] = c;
+    }
+    const ghlFbclidCount = Object.keys(fbclidToGhl).length;
+    console.log(`Backfill fbclid: ${ghlFbclidCount} GHL contacts with fbclid, ${ghlContacts.length - ghlFbclidCount} without`);
+
+    if (!ghlFbclidCount) {
+      _backfill = { running: false, done: true, error: null, result: { ok: false, message: 'No GHL contacts with fbclid in URL field — check that CSV URL column contains ?fbclid= param' } };
+      return;
+    }
+
+    // Fetch all Hyros leads for the full date range
+    const today      = isoToday();
+    const hyrosLeads = await fetchAllHyrosLeads(START_DATE, today);
+    if (!hyrosLeads.length) {
+      _backfill = { running: false, done: true, error: null, result: { ok: true, inserted: 0, hyrosLeads: 0, message: 'No Hyros leads found in date range' } };
+      return;
+    }
+
+    const auth   = await getAuthClient();
+    const sheets = google.sheets({ version: 'v4', auth });
+    await ensureEventsTab(sheets);
+
+    // Load existing fbclids to prevent duplicates in append mode
+    let existingFbclids = new Set();
+    if (append) {
+      try {
+        const r = await sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: `${EVENTS_TAB}!I:I` });
+        existingFbclids = new Set((r.data.values || []).flat().filter(Boolean));
+      } catch { /* tab may not exist */ }
+    }
+
+    // For each Hyros lead, fetch their click fbclids and check for a GHL match.
+    // Run 5 concurrent /leads/clicks calls to stay well under rate limits.
+    const CONCURRENCY = 5;
+    const toInsert = [], noMatch = [], noFbclid = [];
+
+    for (let i = 0; i < hyrosLeads.length; i += CONCURRENCY) {
+      const batch   = hyrosLeads.slice(i, i + CONCURRENCY);
+      const fbclids = await Promise.all(batch.map(lead => fetchLeadFbclids(lead.email)));
+
+      for (let j = 0; j < batch.length; j++) {
+        const lead        = batch[j];
+        const clickFbclids = fbclids[j];
+
+        if (!clickFbclids.length) { noFbclid.push(lead.email); continue; }
+
+        // Find the first click fbclid that matches a GHL contact
+        let matchedFbclid = null, matchedGhl = null;
+        for (const fc of clickFbclids) {
+          if (fbclidToGhl[fc]) { matchedFbclid = fc; matchedGhl = fbclidToGhl[fc]; break; }
+        }
+
+        if (!matchedFbclid) { noMatch.push(lead.email); continue; }
+        if (append && existingFbclids.has(matchedFbclid)) continue;
+
+        // Attribution priority: Hyros firstSource > GHL fbc_id
+        const adsetId = lead.adsetId || matchedGhl.adsetId;
+        if (!adsetId) continue;
+
+        toInsert.push([
+          new Date().toISOString(),
+          matchedGhl.date,
+          adsetId,
+          matchedGhl.state,
+          matchedGhl.campaign   || '',
+          matchedGhl.campaignId || '',
+          matchedGhl.adId       || '',
+          '',
+          matchedFbclid,
+          'YES',
+        ]);
+        existingFbclids.add(matchedFbclid);
+      }
+
+      if (i + CONCURRENCY < hyrosLeads.length) await delay(500);
+    }
+
+    // Write to sheet
+    if (!append) {
+      await sheets.spreadsheets.values.clear({ spreadsheetId: SHEET_ID, range: `${EVENTS_TAB}!A2:Z` });
+    }
+    if (toInsert.length) {
+      await sheets.spreadsheets.values.append({
+        spreadsheetId: SHEET_ID, range: `${EVENTS_TAB}!A:A`,
+        valueInputOption: 'RAW', requestBody: { values: toInsert },
+      });
+    }
+
+    _backfill = {
+      running: false, done: true, error: null,
+      result: {
+        ok:              true,
+        hyrosLeads:      hyrosLeads.length,
+        ghlWithFbclid:   ghlFbclidCount,
+        inserted:        toInsert.length,
+        noFbclidInHyros: noFbclid.length,
+        noGhlMatch:      noMatch.length,
+        noFbclidSample:  noFbclid.slice(0, 5),
+        noMatchSample:   noMatch.slice(0, 5),
+      },
+    };
+    console.log(`Backfill fbclid done: ${toInsert.length} inserted, ${noMatch.length} no GHL match, ${noFbclid.length} no fbclid in Hyros`);
+  } catch (e) {
+    console.error('runBackfillFbclid error:', e.message);
+    _backfill = { running: false, done: true, result: null, error: String(e) };
+  }
+}
+
 // ── Routes ────────────────────────────────────────────────────────────────────
 
 async function handleSync(req, res) {
@@ -1161,7 +1330,7 @@ router.post('/backfill-csv', async (req, res) => {
     if (!rawEmail || !state || !date) continue;
 
     // Parse URL for adset/ad/campaign IDs (needed for all contacts, valid or corrected)
-    let adsetId = '', adId = '', campaignId = '', campaign = '';
+    let adsetId = '', adId = '', campaignId = '', campaign = '', urlFbclid = '';
     const rawUrl = urlIdx >= 0 ? (row[urlIdx] || '').trim() : '';
     if (rawUrl) {
       try {
@@ -1170,13 +1339,14 @@ router.post('/backfill-csv', async (req, res) => {
         adId       = u.searchParams.get('h_ad_id')      || '';
         campaignId = u.searchParams.get('utm_id')       || '';
         campaign   = u.searchParams.get('utm_campaign') || '';
+        urlFbclid  = u.searchParams.get('fbclid')       || '';
       } catch { /* malformed URL */ }
     }
 
     if (!isValidEmail(rawEmail)) {
       const corrected = correctEmail(rawEmail);
       if (corrected) {
-        contacts.push({ email: corrected, state, fbclid, date, adsetId, adId, campaignId, campaign, firstName, lastName, correctedFrom: rawEmail });
+        contacts.push({ email: corrected, state, fbclid: urlFbclid || fbclid, date, adsetId, adId, campaignId, campaign, firstName, lastName, correctedFrom: rawEmail });
         invalidEmailRows.push(`${rawEmail} → ${corrected}`);
       } else {
         invalidEmailRows.push(rawEmail);
@@ -1184,7 +1354,7 @@ router.post('/backfill-csv', async (req, res) => {
       continue;
     }
 
-    contacts.push({ email: rawEmail, state, fbclid, date, adsetId, adId, campaignId, campaign, firstName, lastName });
+    contacts.push({ email: rawEmail, state, fbclid: urlFbclid || fbclid, date, adsetId, adId, campaignId, campaign, firstName, lastName });
   }
 
   if (!contacts.length) {
@@ -1194,37 +1364,34 @@ router.post('/backfill-csv', async (req, res) => {
     return res.json({ ok: false, error: msg, invalidEmailSample: invalidEmailRows.slice(0, 10) });
   }
 
-  const noAdset = contacts.filter(c => !c.adsetId).map(c => c.email);
-  const withAdset = contacts.filter(c => c.adsetId);
+  const withFbclid    = contacts.filter(c => c.fbclid);
+  const withoutFbclid = contacts.filter(c => !c.fbclid);
 
-  // Dry run: return preview without writing
+  // Dry run: show CSV parsing stats; Hyros matching happens only in real run
   if (dryRun) {
-    const preview = withAdset.slice(0, 5).map(c => [
-      new Date().toISOString(), c.date, c.adsetId, c.state,
-      c.campaign, c.campaignId, c.adId, '', c.email, 'YES',
-    ]);
-    const mismatchSample = contacts
-      .filter(c => hasNameEmailMismatch(c.firstName, c.lastName, c.email))
-      .slice(0, 5)
-      .map(c => ({ email: c.email, name: `${c.firstName} ${c.lastName}`.trim() }));
+    const sample = withFbclid.slice(0, 5).map(c => ({
+      email: c.email, fbclid: c.fbclid, state: c.state, date: c.date, adsetId: c.adsetId,
+    }));
     return res.json({
-      dryRun: true, totalInCsv: contacts.length + invalidEmailRows.length,
-      validContacts: contacts.length, invalidEmails: invalidEmailRows.length,
+      dryRun:        true,
+      mode:          'fbclid',
+      totalInCsv:    contacts.length + invalidEmailRows.length,
+      validContacts: contacts.length,
+      invalidEmails: invalidEmailRows.length,
       invalidEmailSample: invalidEmailRows.slice(0, 10),
-      withAdset: withAdset.length, noAdset: noAdset.length,
-      noAdsetSample: noAdset.slice(0, 5),
-      suspiciousNameMismatch: mismatchSample.length, mismatchSample,
-      preview,
+      withFbclid:    withFbclid.length,
+      withoutFbclid: withoutFbclid.length,
+      note: 'Real run pulls all Hyros leads, fetches each lead\'s click fbclids, and matches against GHL fbclids — contacts without fbclid are skipped',
+      sample,
     });
   }
 
-  // Real run: respond immediately, process in background
-  // append=true → skip emails already in sheet (for daily top-ups)
+  // Real run: respond immediately, process fbclid matching in background
   const append = req.query.append === 'true';
   if (_backfill.running) return res.json({ ok: false, error: 'Backfill already running' });
   _backfill = { running: true, done: false, result: null, error: null };
-  res.json({ ok: true, status: 'started', totalContacts: contacts.length, append, pollUrl: '/api/hyros/backfill-status' });
-  runBackfillFromContacts(contacts, append);
+  res.json({ ok: true, status: 'started', mode: 'fbclid', totalContacts: contacts.length, withFbclid: withFbclid.length, append, pollUrl: '/api/hyros/backfill-status' });
+  runBackfillFbclid(contacts, append);
 });
 
 router.get('/backfill-status', (_req, res) => res.json(_backfill));
