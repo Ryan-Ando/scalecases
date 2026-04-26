@@ -539,12 +539,14 @@ async function reattributeLeadEvents(sheets) {
   const dataRows = rows.slice(1).map(row => [...row]); // deep copy
 
   // Build email → [row indices] map (column I = index 8)
+  // Also handle legacy "email:someone@example.com" format from old backfill route
   const emailRows = {};
   for (let i = 0; i < dataRows.length; i++) {
-    const email = (dataRows[i][8] || '').toLowerCase().trim();
-    if (email && !email.startsWith('email:') && email.includes('@')) {
-      if (!emailRows[email]) emailRows[email] = [];
-      emailRows[email].push(i);
+    let raw = (dataRows[i][8] || '').toLowerCase().trim();
+    if (raw.startsWith('email:')) raw = raw.slice(6); // strip legacy prefix
+    if (raw && raw.includes('@')) {
+      if (!emailRows[raw]) emailRows[raw] = [];
+      emailRows[raw].push(i);
     }
   }
 
@@ -554,25 +556,19 @@ async function reattributeLeadEvents(sheets) {
   console.log(`Re-attribution: querying Hyros for ${emails.length} known lead emails…`);
   const freshAdsets = await hyrosAdsetsByEmail(emails);
 
-  // Update rows based on current Hyros attribution
+  // Update rows where Hyros returns a (possibly different) adset ID.
+  // We do NOT mark DROPPED when Hyros returns nothing — the API can miss leads
+  // temporarily, and marking them would cause false undercounts.
   let changed = 0;
   for (const [email, indices] of Object.entries(emailRows)) {
     const newAdsetId = freshAdsets[email];
+    if (!newAdsetId) continue; // Hyros returned nothing — leave row unchanged
     for (const idx of indices) {
       while (dataRows[idx].length < 10) dataRows[idx].push('');
-      if (newAdsetId) {
-        // Hyros still knows this lead — update adset ID if shifted
-        if (dataRows[idx][2] !== newAdsetId) {
-          dataRows[idx][2] = newAdsetId;
-          dataRows[idx][9] = 'YES';
-          changed++;
-        }
-      } else {
-        // Hyros no longer attributes this lead — mark DROPPED so it stops counting
-        if (dataRows[idx][9] === 'YES') {
-          dataRows[idx][9] = 'DROPPED';
-          changed++;
-        }
+      if (dataRows[idx][2] !== newAdsetId) {
+        dataRows[idx][2] = newAdsetId;
+        dataRows[idx][9] = 'YES';
+        changed++;
       }
     }
   }
