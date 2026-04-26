@@ -202,7 +202,7 @@ async function getAllAccountAdsets() {
   if (!token || !accounts.length) return info;
 
   for (const account of accounts) {
-    let url = `${FB_API}/${account}/adsets?fields=id,name,effective_status,campaign{name,id}&effective_status=["ACTIVE"]&limit=200&access_token=${token}`;
+    let url = `${FB_API}/${account}/adsets?fields=id,name,effective_status,campaign{name,id}&limit=200&access_token=${token}`;
     while (url) {
       try {
         const r    = await fetch(url);
@@ -238,28 +238,20 @@ async function getAuthClient() {
 }
 
 // ── Write one campaign tab ────────────────────────────────────────────────────
-// Column layout:
-//   A: Adset Name
-//   B: Status
-//   C: Total Spend
-//   D: Total Leads
-//   E: CPL
-//   F: L4D Leads
-//   G: L4D Spend
-//   H: L4D CPL
-//   I…: date columns (latest day first, oldest last)
+// Row 1: Headers (frozen)
+// Row 2: Totals  (frozen, equation-based, pinned below header)
+// Row 3+: Adset data sorted by CPL desc; inactive rows hidden
 
 async function writeCampaignTab(sheets, tabName, numericId, adsets, dailyData, dates, today, l4dDates) {
-  // dates = latest-first array of date strings
-  // l4dDates = yesterday-3 to yesterday (4 days, excludes today)
-  const statusCol   = 2;  // 1-based
-  const spendCol    = 3;
+  const spendCol    = 3;  // 1-based column indices
   const leadsCol    = 4;
   const cplCol      = 5;
   const l4dLeadsCol = 6;
   const l4dSpendCol = 7;
   const l4dCplCol   = 8;
-  const firstDayCol = 9; // date columns start here
+  const firstDayCol = 9;
+  const lastDayCol  = firstDayCol + dates.length - 1;
+  const l4dEndCol   = firstDayCol + Math.min(l4dDates.length, dates.length) - 1;
 
   const headers = [
     'Adset Name', 'Status', 'Total Spend', 'Total Leads', 'CPL',
@@ -270,106 +262,194 @@ async function writeCampaignTab(sheets, tabName, numericId, adsets, dailyData, d
     }),
   ];
 
-  const dataRows = adsets.map((adset, idx) => {
-    const row = idx + 2;
-    let totLeads = 0, totCost = 0;
+  // Build per-adset computed values for sorting
+  const adsetData = adsets.map(adset => {
+    let totLeads = 0, totCost = 0, l4dCost = 0;
     const dayCells = [];
-
     for (const dateStr of dates) {
       const d = dailyData[dateStr]?.[adset.id];
       dayCells.push(d?.leads || 0);
       totLeads += (d?.leads || 0);
       totCost  += (d?.cost  || 0);
     }
-
-    let l4dLeads = 0, l4dCost = 0;
     for (const dateStr of l4dDates) {
       const d = dailyData[dateStr]?.[adset.id];
-      l4dLeads += (d?.leads || 0);
-      l4dCost  += (d?.cost  || 0);
+      l4dCost += (d?.cost || 0);
     }
+    return { adset, dayCells, totLeads, totCost, l4dCost, cpl: totLeads > 0 ? totCost / totLeads : -1 };
+  });
 
+  // Sort by CPL descending (highest CPL first; zero-lead adsets go to bottom via cpl=-1)
+  adsetData.sort((a, b) => b.cpl - a.cpl);
+
+  // Build data rows (start at sheet row 3; row 1=header, row 2=totals)
+  const inactiveRows = [];
+  const dataRows = adsetData.map(({ adset, dayCells, totCost, l4dCost }, idx) => {
+    const row = idx + 3; // 1-based sheet row
+    if (adset.status !== 'ACTIVE') inactiveRows.push(idx + 2); // 0-based row index (skip header+totals)
     return [
       adset.name,
       adset.status,
       Number(totCost.toFixed(2)),
-      totLeads,
+      `=SUM(${colLetter(firstDayCol)}${row}:${colLetter(lastDayCol)}${row})`,
       `=IF(${colLetter(leadsCol)}${row}=0,"—",${colLetter(spendCol)}${row}/${colLetter(leadsCol)}${row})`,
-      l4dLeads,
+      `=SUM(${colLetter(firstDayCol)}${row}:${colLetter(l4dEndCol)}${row})`,
       Number(l4dCost.toFixed(2)),
       `=IF(${colLetter(l4dLeadsCol)}${row}=0,"—",${colLetter(l4dSpendCol)}${row}/${colLetter(l4dLeadsCol)}${row})`,
       ...dayCells,
     ];
   });
 
-  // Clear + write values
+  // Totals row (row 2) — all equation-based, sums rows 3 to end
+  const lastRow = 2 + dataRows.length;
+  const totalsRow = [
+    'TOTALS', '',
+    `=SUM(${colLetter(spendCol)}3:${colLetter(spendCol)}${lastRow})`,
+    `=SUM(${colLetter(leadsCol)}3:${colLetter(leadsCol)}${lastRow})`,
+    `=IF(${colLetter(leadsCol)}2=0,"—",${colLetter(spendCol)}2/${colLetter(leadsCol)}2)`,
+    `=SUM(${colLetter(l4dLeadsCol)}3:${colLetter(l4dLeadsCol)}${lastRow})`,
+    `=SUM(${colLetter(l4dSpendCol)}3:${colLetter(l4dSpendCol)}${lastRow})`,
+    `=IF(${colLetter(l4dLeadsCol)}2=0,"—",${colLetter(l4dSpendCol)}2/${colLetter(l4dLeadsCol)}2)`,
+    ...dates.map((_, i) => `=SUM(${colLetter(firstDayCol + i)}3:${colLetter(firstDayCol + i)}${lastRow})`),
+  ];
+
   await sheets.spreadsheets.values.clear({ spreadsheetId: SHEET_ID, range: tabName });
   await sheets.spreadsheets.values.update({
-    spreadsheetId:    SHEET_ID,
-    range:            `${tabName}!A1`,
+    spreadsheetId: SHEET_ID, range: `${tabName}!A1`,
     valueInputOption: 'USER_ENTERED',
-    requestBody:      { values: [headers, ...dataRows] },
+    requestBody: { values: [headers, totalsRow, ...dataRows] },
   });
 
-  // Formatting
+  const currencyFmt = (startCol, endCol, startRow = 1) => ({
+    repeatCell: {
+      range: { sheetId: numericId, startRowIndex: startRow, startColumnIndex: startCol - 1, endColumnIndex: endCol },
+      cell: { userEnteredFormat: { numberFormat: { type: 'CURRENCY', pattern: '"$"#,##0.00' } } },
+      fields: 'userEnteredFormat.numberFormat',
+    },
+  });
+
+  const requests = [
+    // Header row style
+    {
+      repeatCell: {
+        range: { sheetId: numericId, startRowIndex: 0, endRowIndex: 1 },
+        cell: { userEnteredFormat: { textFormat: { bold: true }, backgroundColor: { red: 0.22, green: 0.56, blue: 0.36 } } },
+        fields: 'userEnteredFormat.textFormat.bold,userEnteredFormat.backgroundColor',
+      },
+    },
+    // Totals row style
+    {
+      repeatCell: {
+        range: { sheetId: numericId, startRowIndex: 1, endRowIndex: 2 },
+        cell: { userEnteredFormat: { textFormat: { bold: true }, backgroundColor: { red: 0.85, green: 0.93, blue: 0.87 } } },
+        fields: 'userEnteredFormat.textFormat.bold,userEnteredFormat.backgroundColor',
+      },
+    },
+    // Freeze 2 rows + 1 column
+    {
+      updateSheetProperties: {
+        properties: { sheetId: numericId, gridProperties: { frozenRowCount: 2, frozenColumnCount: 1 } },
+        fields: 'gridProperties.frozenRowCount,gridProperties.frozenColumnCount',
+      },
+    },
+    { setBasicFilter: { filter: { range: { sheetId: numericId } } } },
+    currencyFmt(spendCol,    spendCol),
+    currencyFmt(cplCol,      cplCol),
+    currencyFmt(l4dSpendCol, l4dSpendCol),
+    currencyFmt(l4dCplCol,   l4dCplCol),
+    // Unhide all data rows first, then hide inactive ones
+    {
+      updateDimensionProperties: {
+        range: { sheetId: numericId, dimension: 'ROWS', startIndex: 2, endIndex: 2 + dataRows.length },
+        properties: { hiddenByUser: false },
+        fields: 'hiddenByUser',
+      },
+    },
+    // Hide inactive rows
+    ...inactiveRows.map(rowIdx => ({
+      updateDimensionProperties: {
+        range: { sheetId: numericId, dimension: 'ROWS', startIndex: rowIdx, endIndex: rowIdx + 1 },
+        properties: { hiddenByUser: true },
+        fields: 'hiddenByUser',
+      },
+    })),
+  ];
+
+  await sheets.spreadsheets.batchUpdate({ spreadsheetId: SHEET_ID, requestBody: { requests } });
+}
+
+// ── Write Home tab ────────────────────────────────────────────────────────────
+async function writeHomeTab(sheets, tabMap) {
+  const HOME = 'Home';
+  if (!tabMap[HOME]) {
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId: SHEET_ID,
+      requestBody: { requests: [{ addSheet: { properties: { title: HOME, index: 0 } } }] },
+    });
+    // Re-fetch to get sheetId
+    const m = await sheets.spreadsheets.get({ spreadsheetId: SHEET_ID });
+    tabMap[HOME] = m.data.sheets.find(s => s.properties.title === HOME)?.properties?.sheetId;
+  }
+
+  const serverUrl = 'https://scalecases-server.onrender.com';
+  const sheetUrl  = `https://docs.google.com/spreadsheets/d/${SHEET_ID}`;
+
+  const rows = [
+    ['Scale Cases — Ad Intelligence'],
+    [''],
+    ['Action', 'Link', 'Description'],
+    ['Sync Now',        `=HYPERLINK("${serverUrl}/api/hyros/sync","▶ Run Sync")`,          'Refresh all campaign tabs with latest spend + leads'],
+    ['Sync Status',     `=HYPERLINK("${serverUrl}/api/hyros/status","◉ Check Status")`,    'See last sync time and whether a sync is running'],
+    ['Backfill Status', `=HYPERLINK("${serverUrl}/api/hyros/backfill-status","◉ Backfill Status")`, 'Check status of last CSV backfill'],
+    ['Open Sheet',      `=HYPERLINK("${sheetUrl}","📊 Open")`,                             'Link to this spreadsheet'],
+    [''],
+    ['Notes'],
+    ['• Sheet auto-syncs every 30 minutes'],
+    ['• Inactive adsets are hidden — use filters to show them'],
+    ['• L4D = last 4 days excluding today'],
+    ['• Day columns are newest-first (left to right)'],
+  ];
+
+  await sheets.spreadsheets.values.clear({ spreadsheetId: SHEET_ID, range: HOME });
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: SHEET_ID, range: `${HOME}!A1`,
+    valueInputOption: 'USER_ENTERED',
+    requestBody: { values: rows },
+  });
+
+  const homeId = tabMap[HOME];
+  if (homeId == null) return;
   await sheets.spreadsheets.batchUpdate({
     spreadsheetId: SHEET_ID,
     requestBody: {
       requests: [
+        // Title row
         {
           repeatCell: {
-            range: { sheetId: numericId, startRowIndex: 0, endRowIndex: 1 },
-            cell: {
-              userEnteredFormat: {
-                textFormat: { bold: true },
-                backgroundColor: { red: 0.9, green: 0.9, blue: 0.9 },
-              },
-            },
+            range: { sheetId: homeId, startRowIndex: 0, endRowIndex: 1 },
+            cell: { userEnteredFormat: { textFormat: { bold: true, fontSize: 16 }, backgroundColor: { red: 0.22, green: 0.56, blue: 0.36 } } },
+            fields: 'userEnteredFormat.textFormat,userEnteredFormat.backgroundColor',
+          },
+        },
+        // Table header row (row 3 = index 2)
+        {
+          repeatCell: {
+            range: { sheetId: homeId, startRowIndex: 2, endRowIndex: 3 },
+            cell: { userEnteredFormat: { textFormat: { bold: true }, backgroundColor: { red: 0.9, green: 0.9, blue: 0.9 } } },
             fields: 'userEnteredFormat.textFormat.bold,userEnteredFormat.backgroundColor',
           },
         },
+        // Freeze top row
         {
           updateSheetProperties: {
-            properties: {
-              sheetId: numericId,
-              gridProperties: { frozenRowCount: 1, frozenColumnCount: 1 },
-            },
-            fields: 'gridProperties.frozenRowCount,gridProperties.frozenColumnCount',
+            properties: { sheetId: homeId, gridProperties: { frozenRowCount: 1 } },
+            fields: 'gridProperties.frozenRowCount',
           },
         },
-        { setBasicFilter: { filter: { range: { sheetId: numericId } } } },
-        // Total Spend: currency
-        {
-          repeatCell: {
-            range: { sheetId: numericId, startRowIndex: 1, startColumnIndex: spendCol - 1, endColumnIndex: spendCol },
-            cell: { userEnteredFormat: { numberFormat: { type: 'CURRENCY', pattern: '"$"#,##0.00' } } },
-            fields: 'userEnteredFormat.numberFormat',
-          },
-        },
-        // CPL: currency
-        {
-          repeatCell: {
-            range: { sheetId: numericId, startRowIndex: 1, startColumnIndex: cplCol - 1, endColumnIndex: cplCol },
-            cell: { userEnteredFormat: { numberFormat: { type: 'CURRENCY', pattern: '"$"#,##0.00' } } },
-            fields: 'userEnteredFormat.numberFormat',
-          },
-        },
-        // L4D Spend: currency
-        {
-          repeatCell: {
-            range: { sheetId: numericId, startRowIndex: 1, startColumnIndex: l4dSpendCol - 1, endColumnIndex: l4dSpendCol },
-            cell: { userEnteredFormat: { numberFormat: { type: 'CURRENCY', pattern: '"$"#,##0.00' } } },
-            fields: 'userEnteredFormat.numberFormat',
-          },
-        },
-        // L4D CPL: currency
-        {
-          repeatCell: {
-            range: { sheetId: numericId, startRowIndex: 1, startColumnIndex: l4dCplCol - 1, endColumnIndex: l4dCplCol },
-            cell: { userEnteredFormat: { numberFormat: { type: 'CURRENCY', pattern: '"$"#,##0.00' } } },
-            fields: 'userEnteredFormat.numberFormat',
-          },
-        },
+        // Column widths
+        { updateDimensionProperties: { range: { sheetId: homeId, dimension: 'COLUMNS', startIndex: 0, endIndex: 1 }, properties: { pixelSize: 160 }, fields: 'pixelSize' } },
+        { updateDimensionProperties: { range: { sheetId: homeId, dimension: 'COLUMNS', startIndex: 1, endIndex: 2 }, properties: { pixelSize: 180 }, fields: 'pixelSize' } },
+        { updateDimensionProperties: { range: { sheetId: homeId, dimension: 'COLUMNS', startIndex: 2, endIndex: 3 }, properties: { pixelSize: 380 }, fields: 'pixelSize' } },
       ],
     },
   });
@@ -447,28 +527,14 @@ async function runSync() {
     )};
 
     // 4. Group adsets by campaign — active only
+    // Include all adsets — inactive ones will be hidden in the sheet, not excluded
     const byCampaign = {}; // campaignTabName → adset[]
     for (const id of allAdsetIds) {
-      const info   = adsetInfo[id];
-      const status = info?.status || 'UNKNOWN';
-      if (status !== 'ACTIVE') continue; // skip paused/deleted/inactive
+      const info    = adsetInfo[id];
+      const status  = info?.status || 'UNKNOWN';
       const tabName = safeTabName(info?.campaignName || 'Unknown Campaign');
       if (!byCampaign[tabName]) byCampaign[tabName] = [];
-      byCampaign[tabName].push({
-        id,
-        name: info?.name || id,
-        status,
-      });
-    }
-
-    // Sort adsets within each campaign: active first, then alpha
-    for (const adsets of Object.values(byCampaign)) {
-      adsets.sort((a, b) => {
-        const aA = a.status === 'ACTIVE', bA = b.status === 'ACTIVE';
-        if (aA && !bA) return -1;
-        if (!aA && bA) return  1;
-        return a.name.localeCompare(b.name);
-      });
+      byCampaign[tabName].push({ id, name: info?.name || id, status });
     }
 
     // 5. Get or create tabs
@@ -500,7 +566,10 @@ async function runSync() {
       tabMap[s.properties.title] = s.properties.sheetId;
     }
 
-    // 6. Write each campaign tab
+    // 6. Write Home tab
+    await writeHomeTab(sheets, tabMap);
+
+    // 7. Write each campaign tab
     for (const [tabName, adsets] of Object.entries(byCampaign)) {
       console.log(`  Writing tab: ${tabName} (${adsets.length} adsets)`);
       await writeCampaignTab(sheets, tabName, tabMap[tabName], adsets, dailyData, dates, today, l4dDates);
