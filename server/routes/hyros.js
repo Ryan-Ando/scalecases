@@ -1065,7 +1065,7 @@ async function fetchAllHyrosLeadsUnfiltered(fromDate, toDate) {
 async function fetchLeadClickData(email) {
   const key    = process.env.HYROS_API_KEY;
   const p      = new URLSearchParams({ email, pageSize: 50 });
-  const result = { hasNextSteps: false, fbclids: [], adsetId: '', lastClickDate: '' };
+  const result = { hasNextSteps: false, fbclids: [], adsetId: '', conversionDate: '' };
   try {
     const r    = await fetch(`${HYROS_BASE}/leads/clicks?${p}`, { headers: { 'API-Key': key } });
     const text = await r.text();
@@ -1074,13 +1074,16 @@ async function fetchLeadClickData(email) {
     for (const click of data.result || []) {
       const fbclid = click.parsedParameters?.fbclid;
       if (fbclid) result.fbclids.push(fbclid);
-      if ((click.trackedUrl || '').includes('/next-steps')) result.hasNextSteps = true;
-      // Keep updating — clicks are chronological so last one wins (last-click date + adset)
-      // click.date format: "Sun Apr 26 06:24:48 UTC 2026"
+      // Keep updating adsetId — clicks are chronological so last one wins (last-click attribution)
       const clickAdset = click.parsedParameters?.fbc_id || click.adSpendId || '';
       if (clickAdset) result.adsetId = clickAdset;
-      if (click.date) {
-        try { result.lastClickDate = new Date(click.date).toISOString().slice(0, 10); } catch { /* ignore */ }
+      // Capture the date of the /next-steps click itself — this is the conversion session date
+      // (post-conversion ad clicks must not shift the lead to a later day)
+      if ((click.trackedUrl || '').includes('/next-steps')) {
+        result.hasNextSteps = true;
+        if (click.date) {
+          try { result.conversionDate = new Date(click.date).toISOString().slice(0, 10); } catch { /* ignore */ }
+        }
       }
     }
   } catch { /* ignore */ }
@@ -1408,7 +1411,7 @@ async function runBackfillNextSteps(append = false) {
 
         toInsert.push([
           new Date().toISOString(),
-          clickData.lastClickDate || lead.date, // last click date = how Hyros dates the lead
+          clickData.conversionDate || lead.date, // date of /next-steps visit = Hyros conversion date
           adsetId,    // lastSource adset ID
           lead.state, // parsed from firstSource.category (e.g. "wa", "tx")
           '',           // campaign name
