@@ -73,6 +73,53 @@ function isValidEmail(email) {
   return true;
 }
 
+// Domain typo correction map — bad domain → likely intended domain
+const DOMAIN_CORRECTIONS = {
+  'gmaill.com':  'gmail.com',
+  'gamil.com':   'gmail.com',
+  'gmial.com':   'gmail.com',
+  'gnail.com':   'gmail.com',
+  'gmai.com':    'gmail.com',
+  'gmali.com':   'gmail.com',
+  'gmal.com':    'gmail.com',
+  'gmail.con':   'gmail.com',
+  'gmail.cmo':   'gmail.com',
+  'gmail.comm':  'gmail.com',
+  'hotmial.com': 'hotmail.com',
+  'hotmail.con': 'hotmail.com',
+  'hotmai.com':  'hotmail.com',
+  'yaho.com':    'yahoo.com',
+  'yhoo.com':    'yahoo.com',
+  'yahoo.con':   'yahoo.com',
+  'outlok.com':  'outlook.com',
+};
+// TLD typo correction map — bad TLD → corrected TLD (same domain base)
+const TLD_CORRECTIONS = {
+  'comf': 'com',
+  'cmo':  'com',
+  'con':  'com',
+  'comm': 'com',
+  'cpm':  'com',
+  'ocm':  'com',
+};
+
+function correctEmail(email) {
+  if (!email || !email.includes('@')) return null;
+  const [local, domain] = email.split('@');
+  if (!local || !domain) return null;
+  // Try full domain correction first
+  const domainFixed = DOMAIN_CORRECTIONS[domain.toLowerCase()];
+  if (domainFixed) return `${local}@${domainFixed}`;
+  // Try TLD correction
+  const dot = domain.lastIndexOf('.');
+  if (dot < 1) return null;
+  const base = domain.slice(0, dot);
+  const tld  = domain.slice(dot + 1).toLowerCase();
+  const tldFixed = TLD_CORRECTIONS[tld];
+  if (tldFixed) return `${local}@${base}.${tldFixed}`;
+  return null;
+}
+
 function hasNameEmailMismatch(firstName, lastName, email) {
   if (!firstName && !lastName) return false;
   const nameParts = [
@@ -522,11 +569,36 @@ async function deduplicateLeadEvents(sheets) {
   const noEmail   = []; // rows without a real email (keep as-is)
   let invalidCount = 0;
 
+  let correctedCount = 0;
+
   for (const row of dataRows) {
     let email = (row[8] || '').toLowerCase().trim();
     if (email.startsWith('email:')) email = email.slice(6);
     if (!email || !email.includes('@')) { noEmail.push(row); continue; }
-    if (!isValidEmail(email)) { invalidCount++; continue; } // drop invalid emails
+
+    if (!isValidEmail(email)) {
+      const corrected = correctEmail(email);
+      if (corrected) {
+        // Keep the row with the corrected email; clear verified so re-attribution re-checks it
+        const fixed = [...row];
+        fixed[8] = corrected;
+        fixed[9] = 'NO';
+        email = corrected;
+        correctedCount++;
+        console.log(`Dedup: corrected email typo ${row[8]} → ${corrected}`);
+        if (!emailBest[email]) {
+          emailBest[email] = fixed;
+        } else {
+          // Prefer any existing YES-verified row over the corrected one
+          const prev = emailBest[email];
+          if ((prev[9] || '') !== 'YES') emailBest[email] = fixed;
+        }
+      } else {
+        invalidCount++;
+        console.log(`Dedup: dropped uncorrectable email ${row[8]}`);
+      }
+      continue;
+    }
 
     if (!emailBest[email]) {
       emailBest[email] = row;
@@ -544,9 +616,10 @@ async function deduplicateLeadEvents(sheets) {
   }
 
   const deduped = [...Object.values(emailBest), ...noEmail];
-  const removed = dataRows.length - deduped.length - invalidCount;
-  if (!removed && !invalidCount) return;
-  if (invalidCount) console.log(`Dedup: removed ${invalidCount} row(s) with invalid emails`);
+  const removed = dataRows.length - deduped.length - invalidCount - correctedCount;
+  if (!removed && !invalidCount && !correctedCount) return;
+  if (invalidCount)   console.log(`Dedup: dropped ${invalidCount} row(s) with uncorrectable emails`);
+  if (correctedCount) console.log(`Dedup: corrected ${correctedCount} email typo(s) — re-attribution will verify`);
 
   await sheets.spreadsheets.values.clear({ spreadsheetId: SHEET_ID, range: `${EVENTS_TAB}!A2:J` });
   if (deduped.length) {
@@ -1064,17 +1137,16 @@ router.post('/backfill-csv', async (req, res) => {
 
   const contacts = [], invalidEmailRows = [];
   for (const row of rows.slice(1)) {
-    const email  = (row[emailIdx]  || '').toLowerCase().trim();
-    const state  = (row[stateIdx]  || '').toLowerCase().trim();
-    const fbclid = (row[fbclidIdx] || '').trim();
-    const raw    = (row[dateIdx]   || '').trim();
-    const date   = raw.slice(0, 10);
+    const rawEmail = (row[emailIdx]  || '').toLowerCase().trim();
+    const state    = (row[stateIdx]  || '').toLowerCase().trim();
+    const fbclid   = (row[fbclidIdx] || '').trim();
+    const raw      = (row[dateIdx]   || '').trim();
+    const date     = raw.slice(0, 10);
     const firstName = firstIdx >= 0 ? (row[firstIdx] || '').trim() : '';
     const lastName  = lastIdx  >= 0 ? (row[lastIdx]  || '').trim() : '';
-    if (!email || !state || !date) continue;
-    if (!isValidEmail(email)) { invalidEmailRows.push(email); continue; }
+    if (!rawEmail || !state || !date) continue;
 
-    // Parse URL for adset/ad/campaign IDs
+    // Parse URL for adset/ad/campaign IDs (needed for all contacts, valid or corrected)
     let adsetId = '', adId = '', campaignId = '', campaign = '';
     const rawUrl = urlIdx >= 0 ? (row[urlIdx] || '').trim() : '';
     if (rawUrl) {
@@ -1087,7 +1159,18 @@ router.post('/backfill-csv', async (req, res) => {
       } catch { /* malformed URL */ }
     }
 
-    contacts.push({ email, state, fbclid, date, adsetId, adId, campaignId, campaign, firstName, lastName });
+    if (!isValidEmail(rawEmail)) {
+      const corrected = correctEmail(rawEmail);
+      if (corrected) {
+        contacts.push({ email: corrected, state, fbclid, date, adsetId, adId, campaignId, campaign, firstName, lastName, correctedFrom: rawEmail });
+        invalidEmailRows.push(`${rawEmail} → ${corrected}`);
+      } else {
+        invalidEmailRows.push(rawEmail);
+      }
+      continue;
+    }
+
+    contacts.push({ email: rawEmail, state, fbclid, date, adsetId, adId, campaignId, campaign, firstName, lastName });
   }
 
   if (!contacts.length) {
