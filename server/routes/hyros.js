@@ -972,12 +972,27 @@ async function hyrosAdsetsByEmail(emails) {
   return emailToAdset;
 }
 
+// Extract the Facebook adset ID from Hyros attribution tags.
+// Hyros encodes attribution as "@<adset-name>-<adsetId>" where adsetId is a long numeric string.
+function adsetFromTags(tags) {
+  for (const tag of tags || []) {
+    if (!tag.startsWith('@')) continue;
+    const m = tag.match(/-(\d{15,})$/);
+    if (m) return m[1];
+  }
+  return '';
+}
+
 // Fetch all Hyros leads from a date range (paginated, up to 5000 leads).
+// Only returns leads tagged "!qualified-lead" — this is exactly what Hyros UI counts.
+// Adset ID is read from the "@<name>-<id>" attribution tag, matching Hyros's own display logic.
 async function fetchAllHyrosLeads(fromDate, toDate) {
-  const key   = process.env.HYROS_API_KEY;
-  const leads = [];
-  let pageId  = null;
-  let page    = 0;
+  const key        = process.env.HYROS_API_KEY;
+  const QUAL_TAG   = process.env.HYROS_LEAD_TAG || '!qualified-lead';
+  const leads      = [];
+  let pageId       = null;
+  let page         = 0;
+  let totalFetched = 0;
   do {
     page++;
     const params = new URLSearchParams({ fromDate, toDate, pageSize: 100 });
@@ -986,20 +1001,21 @@ async function fetchAllHyrosLeads(fromDate, toDate) {
       const r    = await fetch(`${HYROS_BASE}/leads?${params}`, { headers: { 'API-Key': key } });
       const data = await r.json();
       if (!Array.isArray(data.result)) { console.warn('fetchAllHyrosLeads page error:', data.message); break; }
+      totalFetched += data.result.length;
       for (const lead of data.result) {
         const email = (lead.email || '').toLowerCase().trim();
         if (!email) continue;
-        leads.push({
-          email,
-          leadId:  lead.id   || '',
-          adsetId: lead.firstSource?.adSource?.adSourceId || '',
-        });
+        // Only count leads Hyros has marked as qualified (filters out click-only pixel captures)
+        if (!( lead.tags || []).includes(QUAL_TAG)) continue;
+        // Read adset from attribution tag — matches exactly what Hyros UI shows per adset
+        const adsetId = adsetFromTags(lead.tags) || lead.firstSource?.adSource?.adSourceId || '';
+        leads.push({ email, leadId: lead.id || '', adsetId });
       }
       pageId = data.nextPageId || null;
       if (pageId) await delay(400);
     } catch (e) { console.warn('fetchAllHyrosLeads error:', e.message); break; }
   } while (pageId && page < 50);
-  console.log(`fetchAllHyrosLeads: ${leads.length} leads (${page} page(s))`);
+  console.log(`fetchAllHyrosLeads: ${leads.length} qualified leads out of ${totalFetched} total (${page} page(s))`);
   return leads;
 }
 
