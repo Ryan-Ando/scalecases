@@ -1020,9 +1020,10 @@ async function fetchAllHyrosLeads(fromDate, toDate) {
   return leads;
 }
 
-// Extract US state abbreviation from a Hyros category string (e.g. "LSS WA 2" → "wa").
+// Extract US state abbreviation from a Hyros category (string or {name} object).
 function stateFromCategory(category) {
-  const m = (category || '').toUpperCase().match(/\b(WA|TX|CA|FL|NY|IL|PA|OH|GA|NC|MI|NJ|VA|AZ|TN|AL|LA|CO|IN|MO|MD|WI|MN|SC|KY|OR|OK|CT|NV|NM|MS|AR|IA|UT|KS|NE|WV|ID|HI|NH|ME|MT|RI|DE|SD|ND|AK|VT|WY|DC)\b/);
+  const str = (typeof category === 'object' ? (category?.name || '') : (category || ''));
+  const m   = str.toUpperCase().match(/\b(WA|TX|CA|FL|NY|IL|PA|OH|GA|NC|MI|NJ|VA|AZ|TN|AL|LA|CO|IN|MO|MD|WI|MN|SC|KY|OR|OK|CT|NV|NM|MS|AR|IA|UT|KS|NE|WV|ID|HI|NH|ME|MT|RI|DE|SD|ND|AK|VT|WY|DC)\b/);
   return m ? m[1].toLowerCase() : '';
 }
 
