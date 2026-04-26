@@ -1372,6 +1372,9 @@ async function runBackfillNextSteps(append = false) {
       } catch { /* tab may not exist */ }
     }
 
+    // Load webhook cache so fbclids from click data can be resolved to adset IDs
+    await loadFbclidCache(sheets);
+
     const CONCURRENCY = 5;
     const toInsert = [];
     let nextStepsCount = 0, skippedCount = 0, noAdsetCount = 0;
@@ -1387,7 +1390,13 @@ async function runBackfillNextSteps(append = false) {
         if (!clickData.hasNextSteps) continue;
         nextStepsCount++;
 
-        const adsetId = lead.adsetId || clickData.adsetId;
+        // Attribution priority:
+        //   1. Hyros @tag (most reliable — matches Hyros UI)
+        //   2. firstSource/lastSource adSource from lead object
+        //   3. fbc_id / adSpendId from click URL params
+        //   4. Webhook cache: fbclid → adsetId (Hyros resolves fbclid at webhook time)
+        const webhookAdset = clickData.fbclids.reduce((found, fc) => found || _fbclidCache.get(fc) || '', '');
+        const adsetId = lead.adsetId || clickData.adsetId || webhookAdset;
         if (!adsetId) { noAdsetCount++; continue; }
 
         // Prefer first fbclid as dedup key; fall back to email: prefix
