@@ -520,10 +520,13 @@ async function deduplicateLeadEvents(sheets) {
   const dataRows = rows.slice(1);
   const emailBest = {}; // email → best row
   const noEmail   = []; // rows without a real email (keep as-is)
+  let invalidCount = 0;
 
   for (const row of dataRows) {
-    const email = (row[8] || '').toLowerCase().trim();
+    let email = (row[8] || '').toLowerCase().trim();
+    if (email.startsWith('email:')) email = email.slice(6);
     if (!email || !email.includes('@')) { noEmail.push(row); continue; }
+    if (!isValidEmail(email)) { invalidCount++; continue; } // drop invalid emails
 
     if (!emailBest[email]) {
       emailBest[email] = row;
@@ -541,8 +544,9 @@ async function deduplicateLeadEvents(sheets) {
   }
 
   const deduped = [...Object.values(emailBest), ...noEmail];
-  const removed = dataRows.length - deduped.length;
-  if (!removed) return;
+  const removed = dataRows.length - deduped.length - invalidCount;
+  if (!removed && !invalidCount) return;
+  if (invalidCount) console.log(`Dedup: removed ${invalidCount} row(s) with invalid emails`);
 
   await sheets.spreadsheets.values.clear({ spreadsheetId: SHEET_ID, range: `${EVENTS_TAB}!A2:J` });
   if (deduped.length) {
