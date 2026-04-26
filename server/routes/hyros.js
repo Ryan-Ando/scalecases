@@ -653,12 +653,17 @@ async function reattributeLeadEvents(sheets) {
 
   const dataRows = rows.slice(1).map(row => [...row]); // deep copy
 
-  // Build email → [row indices] map (column I = index 8)
-  // Also handle legacy "email:someone@example.com" format from old backfill route
+  // Build email → [row indices] map — only for rows that have NO adset yet.
+  // Rows that already have an adset (set from GHL's fbc_id at backfill time) are
+  // intentionally left alone. Hyros's UI counts leads by the adset they originally
+  // submitted through (GHL fbc_id), not by their current last-click — overwriting
+  // these would move leads between adsets and cause counts to diverge from Hyros.
   const emailRows = {};
   for (let i = 0; i < dataRows.length; i++) {
+    const adset = (dataRows[i][2] || '').trim();
+    if (adset) continue; // already attributed — do not overwrite
     let raw = (dataRows[i][8] || '').toLowerCase().trim();
-    if (raw.startsWith('email:')) raw = raw.slice(6); // strip legacy prefix
+    if (raw.startsWith('email:')) raw = raw.slice(6);
     if (raw && raw.includes('@')) {
       if (!emailRows[raw]) emailRows[raw] = [];
       emailRows[raw].push(i);
@@ -666,25 +671,23 @@ async function reattributeLeadEvents(sheets) {
   }
 
   const emails = Object.keys(emailRows);
-  if (!emails.length) return;
+  if (!emails.length) {
+    console.log('Re-attribution: all rows already have adsets, nothing to fill');
+    return;
+  }
 
-  console.log(`Re-attribution: querying Hyros for ${emails.length} known lead emails…`);
+  console.log(`Re-attribution: querying Hyros for ${emails.length} unattributed lead emails…`);
   const freshAdsets = await hyrosAdsetsByEmail(emails);
 
-  // Update rows where Hyros returns a (possibly different) adset ID.
-  // We do NOT mark DROPPED when Hyros returns nothing — the API can miss leads
-  // temporarily, and marking them would cause false undercounts.
   let changed = 0;
   for (const [email, indices] of Object.entries(emailRows)) {
     const newAdsetId = freshAdsets[email];
-    if (!newAdsetId) continue; // Hyros returned nothing — leave row unchanged
+    if (!newAdsetId) continue;
     for (const idx of indices) {
       while (dataRows[idx].length < 10) dataRows[idx].push('');
-      if (dataRows[idx][2] !== newAdsetId) {
-        dataRows[idx][2] = newAdsetId;
-        dataRows[idx][9] = 'YES';
-        changed++;
-      }
+      dataRows[idx][2] = newAdsetId;
+      dataRows[idx][9] = 'YES';
+      changed++;
     }
   }
 
