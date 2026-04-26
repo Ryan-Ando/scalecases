@@ -1229,24 +1229,29 @@ router.post('/backfill-csv', async (req, res) => {
 
 router.get('/backfill-status', (_req, res) => res.json(_backfill));
 
-// GET /api/hyros/hyros-probe?email=someone@gmail.com — show raw Hyros lead record
+// GET /api/hyros/hyros-probe?email=x&fbclid=y — probe Hyros lookup methods
 router.get('/hyros-probe', async (req, res) => {
-  const key   = process.env.HYROS_API_KEY;
-  const email = req.query.email;
-  if (!email) return res.json({ error: 'Pass ?email=...' });
+  const key = process.env.HYROS_API_KEY;
+  const headers = { 'API-Key': key };
+  const out = {};
   try {
-    const params = new URLSearchParams({ emails: `"${email}"` });
-    const r    = await fetch(`${HYROS_BASE}/leads?${params}`, { headers: { 'API-Key': key } });
-    const data = await r.json();
-    // Also try phones param if provided
-    const phone = req.query.phone;
-    let phoneData = null;
-    if (phone) {
-      const pp = new URLSearchParams({ phones: `"${phone}"` });
-      const pr = await fetch(`${HYROS_BASE}/leads?${pp}`, { headers: { 'API-Key': key } });
-      phoneData = await pr.json();
+    if (req.query.email) {
+      const p = new URLSearchParams({ emails: `"${req.query.email}"` });
+      out.emailResult = await (await fetch(`${HYROS_BASE}/leads?${p}`, { headers })).json();
     }
-    res.json({ emailResult: data, phoneResult: phoneData });
+    if (req.query.fbclid) {
+      // Try every plausible Hyros parameter name for fbclid lookup
+      for (const param of ['fbclids', 'fbclid', 'clickIds', 'click_ids', 'fbc']) {
+        const p = new URLSearchParams({ [param]: `"${req.query.fbclid}"` });
+        const r = await fetch(`${HYROS_BASE}/leads?${p}`, { headers });
+        out[`fbclid_as_${param}`] = await r.json();
+      }
+      // Also try the clicks endpoint if it exists
+      const p2 = new URLSearchParams({ fbclid: req.query.fbclid });
+      const r2 = await fetch(`${HYROS_BASE}/clicks?${p2}`, { headers });
+      out.clicksEndpoint = await r2.json();
+    }
+    res.json(out);
   } catch (e) { res.json({ error: String(e) }); }
 });
 
