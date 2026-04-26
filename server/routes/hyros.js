@@ -1048,7 +1048,8 @@ async function fetchAllHyrosLeadsUnfiltered(fromDate, toDate) {
         const adsetId = lead.lastSource?.adSource?.adSourceId   // last-click — matches Hyros UI
           || lead.firstSource?.adSource?.adSourceId  // first-click fallback only
           || '';
-        const date    = (lead.creationDate || lead.dateAdded || '').slice(0, 10) || fromDate;
+        // Use last-click date so the lead lands on the same day Hyros credits it
+        const date    = (lead.lastSource?.UTCClickDate || lead.lastSource?.clickDate || lead.creationDate || lead.dateAdded || '').slice(0, 10) || fromDate;
         const state   = stateFromCategory(lead.lastSource?.category || lead.firstSource?.category || '');
         leads.push({ email, leadId: lead.id || '', adsetId, date, state });
       }
