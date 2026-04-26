@@ -1239,26 +1239,15 @@ router.get('/hyros-probe', async (req, res) => {
       const p = new URLSearchParams({ emails: `"${req.query.email}"` });
       out.emailResult = await (await fetch(`${HYROS_BASE}/leads?${p}`, { headers })).json();
     }
-    if (req.query.fbclid) {
-      const fbc = req.query.fbclid;
-      const safeJson = async (r) => { try { return await r.json(); } catch { return { raw: (await r.text().catch(() => '?')).slice(0, 200) }; } };
-      // Try every plausible clicks/lead-clicks endpoint and param combination
-      const clickEndpoints = [
-        `/lead-clicks?fbclid=${fbc}`,
-        `/lead-clicks?fbc=${fbc}`,
-        `/lead-clicks?fbclids="${fbc}"`,
-        `/lead-clicks?clickId=${fbc}`,
-        `/lead-clicks`,
-        `/clicks?fbclid=${fbc}`,
-        `/clicks?fbc=${fbc}`,
-        `/tracking/clicks?fbclid=${fbc}`,
-        `/leads?fbclids="${fbc}"`,
-        `/leads?fbc="${fbc}"`,
-      ];
-      for (const path of clickEndpoints) {
-        const r = await fetch(`${HYROS_BASE}${path}`, { headers });
-        const key = path.replace(/[^a-zA-Z0-9]/g, '_').slice(0, 60);
-        out[key] = await safeJson(r);
+    if (req.query.email) {
+      // Get click history for this lead — each click has adSourceClickId = fbclid
+      const p = new URLSearchParams({ email: req.query.email, pageSize: 10 });
+      const safeJson = async (r) => { try { return await r.json(); } catch { return { raw: (await r.text().catch(() => '?')).slice(0, 300) }; } };
+      out.leadClicks = await safeJson(await fetch(`${HYROS_BASE}/leads/clicks?${p}`, { headers }));
+      // Also get lead journey
+      if (out.emailResult?.result?.[0]?.id) {
+        const id = out.emailResult.result[0].id;
+        out.journey = await safeJson(await fetch(`${HYROS_BASE}/leads/journey?ids=${id}`, { headers }));
       }
     }
     res.json(out);
