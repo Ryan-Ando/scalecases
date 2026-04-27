@@ -1071,7 +1071,10 @@ async function fetchLeadClickData(email) {
   const p      = new URLSearchParams({ email, pageSize: 50 });
   // sessionDates: adsetId → date of first /next-steps in that adset's session
   // conversionDate: fallback — first /next-steps overall
-  const result = { hasNextSteps: false, fbclids: [], adsetId: '', conversionDate: '', sessionDates: {} };
+  // sessionDates: adsetId → date of first /next-steps in that adset's session
+  // conversionDate: first /next-steps overall (clicks are oldest-first)
+  // lastConversionDate: most recent /next-steps overall (used when adsetId key mismatches)
+  const result = { hasNextSteps: false, fbclids: [], adsetId: '', conversionDate: '', lastConversionDate: '', sessionDates: {} };
   try {
     const r    = await fetch(`${HYROS_BASE}/leads/clicks?${p}`, { headers: { 'API-Key': key } });
     const text = await r.text();
@@ -1083,20 +1086,19 @@ async function fetchLeadClickData(email) {
       if (fbclid) result.fbclids.push(fbclid);
       const clickAdset = click.parsedParameters?.fbc_id || click.adSpendId || '';
       if (clickAdset) {
-        result.adsetId = clickAdset;        // last click wins for attribution
-        currentSessionAdset = clickAdset;   // track which session we're in
+        result.adsetId = clickAdset;
+        currentSessionAdset = clickAdset;
       }
       if ((click.trackedUrl || '').includes('/next-steps')) {
         result.hasNextSteps = true;
         if (click.date) {
           try {
             const dateStr = isoDatePT(new Date(click.date));
-            // Record the first /next-steps date for this adset's session
             if (currentSessionAdset && !result.sessionDates[currentSessionAdset]) {
               result.sessionDates[currentSessionAdset] = dateStr;
             }
-            // Fallback: overall first /next-steps date
             if (!result.conversionDate) result.conversionDate = dateStr;
+            result.lastConversionDate = dateStr; // always overwrite → most recent (clicks are oldest-first)
           } catch { /* ignore */ }
         }
       }
@@ -1424,8 +1426,11 @@ async function runBackfillNextSteps(append = false) {
         const dedupKey = clickData.fbclids[0] || `email:${lead.email}`;
         if (append && existingKeys.has(dedupKey)) { skippedCount++; continue; }
 
-        // Use the /next-steps date from the attributed adset's own session — never predates the adset
-        const conversionDate = clickData.sessionDates?.[adsetId] || clickData.conversionDate || lead.date;
+        // Use the /next-steps date for the attributed session.
+        // sessionDates[adsetId] is exact if the click URL fbc_id matches lead.adsetId.
+        // Fallback: lastConversionDate = most recent /next-steps (clicks are oldest-first, so this
+        // is the session Hyros is attributing to). conversionDate (first ever) only as last resort.
+        const conversionDate = clickData.sessionDates?.[adsetId] || clickData.lastConversionDate || clickData.conversionDate || lead.date;
         toInsert.push([
           new Date().toISOString(),
           conversionDate,
