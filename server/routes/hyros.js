@@ -2169,4 +2169,58 @@ function runDailySchedule() {
 }
 setInterval(runDailySchedule, 60 * 1000);
 
+// GET /api/hyros/probe-adsets?ids=id1,id2 — return all Lead Events rows for given adset IDs, grouped by date
+router.get('/probe-adsets', async (req, res) => {
+  const ids    = (req.query.ids || '').split(',').map(s => s.trim()).filter(Boolean);
+  const key    = process.env.HYROS_API_KEY;
+  const auth   = await getAuthClient();
+  const sheets = google.sheets({ version: 'v4', auth });
+
+  const data = await sheets.spreadsheets.values.get({
+    spreadsheetId: SHEET_ID, range: `${EVENTS_TAB}!A:J`,
+  });
+  const rows = (data.data.values || []).slice(1);
+
+  // Group by adsetId → date → list of dedup keys
+  const byAdset = {};
+  for (const row of rows) {
+    const [, date, adsetId, , , , , , dedup] = row;
+    if (!ids.includes(adsetId)) continue;
+    if (!byAdset[adsetId]) byAdset[adsetId] = {};
+    if (!byAdset[adsetId][date]) byAdset[adsetId][date] = [];
+    byAdset[adsetId][date].push(dedup || '');
+  }
+
+  // For each dedup key that's an fbclid (not email:...), resolve to email via Hyros
+  const fbclidToEmail = {};
+  const allFbclids = [];
+  for (const dates of Object.values(byAdset))
+    for (const keys of Object.values(dates))
+      for (const k of keys)
+        if (!k.startsWith('email:')) allFbclids.push(k);
+
+  for (const fbclid of [...new Set(allFbclids)].slice(0, 40)) {
+    try {
+      const p = new URLSearchParams({ fbclid });
+      const r = await fetch(`${HYROS_BASE}/leads/by-click?${p}`, { headers: { 'API-Key': key } });
+      const d = await r.json();
+      if (d.result?.email) fbclidToEmail[fbclid] = d.result.email;
+    } catch { /* ignore */ }
+    await delay(150);
+  }
+
+  // Annotate with resolved emails
+  const result = {};
+  for (const [adsetId, dates] of Object.entries(byAdset)) {
+    result[adsetId] = {};
+    for (const [date, keys] of Object.entries(dates)) {
+      result[adsetId][date] = keys.map(k => ({
+        dedup: k,
+        email: k.startsWith('email:') ? k.slice(6) : (fbclidToEmail[k] || null),
+      }));
+    }
+  }
+  res.json(result);
+});
+
 export default router;
