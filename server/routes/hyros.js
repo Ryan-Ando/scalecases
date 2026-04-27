@@ -503,13 +503,13 @@ async function writeHomeTab(sheets, tabMap) {
     ['Scale Cases — Ad Intelligence'],
     [''],
     ['Action', 'Link', 'Description'],
-    ['Sync Now',        `=HYPERLINK("${serverUrl}/api/hyros/sync","▶ Run Sync")`,          'Refresh all campaign tabs with latest spend + leads'],
-    ['Sync Status',     `=HYPERLINK("${serverUrl}/api/hyros/status","◉ Check Status")`,    'See last sync time and whether a sync is running'],
-    ['Backfill Status', `=HYPERLINK("${serverUrl}/api/hyros/backfill-status","◉ Backfill Status")`, 'Check status of last CSV backfill'],
-    ['Open Sheet',      `=HYPERLINK("${sheetUrl}","📊 Open")`,                             'Link to this spreadsheet'],
+    ['Run Backfill + Sync', `=HYPERLINK("${serverUrl}/api/hyros/run-all","▶ Run All")`,         'Backfill leads then refresh all campaign tabs (runs in sequence)'],
+    ['Check Status',        `=HYPERLINK("${serverUrl}/api/hyros/run-all-status","◉ Status")`,   'Poll every 15s — shows phase: backfill → sync → done'],
+    ['Sync Only',           `=HYPERLINK("${serverUrl}/api/hyros/sync","▶ Sync Only")`,          'Refresh campaign tabs without re-running backfill'],
+    ['Open Sheet',          `=HYPERLINK("${sheetUrl}","📊 Open")`,                              'Link to this spreadsheet'],
     [''],
     ['Notes'],
-    ['• Sheet auto-syncs every 30 minutes'],
+    ['• Runs automatically at 8:15am PT daily'],
     ['• Inactive adsets are hidden — use filters to show them'],
     ['• L4D = last 4 days excluding today'],
     ['• Day columns are newest-first (left to right)'],
@@ -711,6 +711,30 @@ async function reattributeLeadEvents(sheets) {
     requestBody: { values: dataRows },
   });
   console.log(`Re-attribution: updated ${changed} lead row(s)`);
+}
+
+// ── Run-all state (backfill → sync in sequence) ───────────────────────────────
+
+let _runAll = { phase: 'idle', startedAt: null, backfillResult: null, syncDoneAt: null, error: null };
+
+async function runAll() {
+  if (_runAll.phase !== 'idle' && _runAll.phase !== 'done' && _runAll.phase !== 'error') return;
+  _runAll = { phase: 'backfill', startedAt: new Date().toISOString(), backfillResult: null, syncDoneAt: null, error: null };
+  try {
+    console.log('[run-all] starting backfill…');
+    await runBackfillNextSteps(false);
+    _runAll.backfillResult = _backfill.result;
+    console.log('[run-all] backfill done, starting sync…');
+    _runAll.phase = 'sync';
+    await runSync();
+    _runAll.syncDoneAt = new Date().toISOString();
+    _runAll.phase = 'done';
+    console.log('[run-all] complete');
+  } catch (e) {
+    _runAll.phase = 'error';
+    _runAll.error = e.message;
+    console.error('[run-all] error:', e.message);
+  }
 }
 
 // ── Core sync ─────────────────────────────────────────────────────────────────
@@ -1509,6 +1533,31 @@ router.get('/status', (_req, res) => {
   });
 });
 
+// POST /api/hyros/run-all — backfill then sync in sequence; non-blocking, poll /run-all-status
+router.post('/run-all', (req, res) => {
+  if (_runAll.phase !== 'idle' && _runAll.phase !== 'done' && _runAll.phase !== 'error') {
+    return res.json({ ok: false, error: 'already running', phase: _runAll.phase });
+  }
+  res.json({ ok: true, status: 'started', pollUrl: '/api/hyros/run-all-status' });
+  runAll();
+});
+
+// GET /api/hyros/run-all-status — poll every 15s to track backfill → sync progress
+router.get('/run-all-status', (_req, res) => {
+  res.json({
+    phase:          _runAll.phase,           // idle | backfill | sync | done | error
+    startedAt:      _runAll.startedAt,
+    backfillResult: _runAll.backfillResult,  // populated after backfill completes
+    syncDoneAt:     _runAll.syncDoneAt,      // populated after sync completes
+    error:          _runAll.error,
+    // Live sub-status while running
+    backfillRunning: _backfill.running,
+    backfillDone:    _backfill.done,
+    syncRunning:     _syncRunning,
+    lastSync:        _lastSync,
+  });
+});
+
 // Simple CSV parser — handles quoted fields with embedded commas/newlines
 function parseCsv(text) {
   const rows = [];
@@ -2301,7 +2350,7 @@ router.get('/investigate', async (req, res) => {
     summary: { totalRows: rows.length, templateRowCount: templateRows.length } });
 });
 
-// Daily backfill + sync at 8:15am PT
+// Daily backfill → sync at 8:15am PT
 let _lastDailyRunDate = '';
 function runDailySchedule() {
   const now = new Date();
@@ -2311,10 +2360,7 @@ function runDailySchedule() {
   const todayPT = isoToday();
   if (parseInt(pt[0], 10) === 8 && parseInt(pt[1], 10) === 15 && todayPT !== _lastDailyRunDate) {
     _lastDailyRunDate = todayPT;
-    (async () => {
-      await runBackfillNextSteps(false);
-      if (!_syncRunning) runSync();
-    })().catch(e => console.error('[daily] error:', e.message));
+    runAll().catch(e => console.error('[daily] error:', e.message));
   }
 }
 setInterval(runDailySchedule, 60 * 1000);
