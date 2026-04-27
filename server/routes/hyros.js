@@ -1721,6 +1721,25 @@ router.get('/probe-leads', async (req, res) => {
   } catch (e) { res.json({ error: String(e) }); }
 });
 
+// GET /api/hyros/debug-adset-info?ids=id1,id2 — get FB creation time + status for adset IDs
+router.get('/debug-adset-info', async (req, res) => {
+  const token = process.env.FB_ACCESS_TOKEN;
+  const ids   = (req.query.ids || '').split(',').map(s => s.trim()).filter(Boolean);
+  if (!ids.length) return res.status(400).json({ error: 'ids required' });
+  const result = {};
+  for (let i = 0; i < ids.length; i += 50) {
+    const chunk  = ids.slice(i, i + 50);
+    const params = new URLSearchParams({ ids: chunk.join(','), fields: 'name,created_time,effective_status,campaign{name,id}', access_token: token });
+    try {
+      const r    = await fetch(`${FB_API}/?${params}`);
+      const data = await r.json();
+      if (!data.error) Object.assign(result, data);
+      else result._error = data.error;
+    } catch (e) { result._error = e.message; }
+  }
+  res.json(result);
+});
+
 // GET /api/hyros/debug-click-data?email=X
 // Returns full fetchLeadClickData result + all raw click objects for an email.
 router.get('/debug-click-data', async (req, res) => {
