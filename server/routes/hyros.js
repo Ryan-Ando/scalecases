@@ -2026,4 +2026,22 @@ router.get('/probe-hyros-endpoints', async (req, res) => {
 // Auto-sync every 30 minutes
 setInterval(() => { if (!_syncRunning) runSync(); }, 30 * 60 * 1000);
 
+// Hourly append backfill (picks up new leads); full rebuild at 2am PT daily
+let _lastFullBackfillDate = '';
+function runScheduledBackfill() {
+  if (_backfill?.running) return;
+  const todayPT = isoToday();
+  const hourPT  = parseInt(
+    new Intl.DateTimeFormat('en-US', { timeZone: 'America/Los_Angeles', hour: 'numeric', hour12: false }).format(new Date()),
+    10
+  );
+  const doFull = (hourPT === 2 && todayPT !== _lastFullBackfillDate);
+  if (doFull) _lastFullBackfillDate = todayPT;
+  (async () => {
+    await runBackfillNextSteps(!doFull); // append unless full rebuild
+    if (!_syncRunning) runSync();
+  })().catch(e => console.error('[scheduler] backfill error:', e.message));
+}
+setInterval(runScheduledBackfill, 60 * 60 * 1000);
+
 export default router;
