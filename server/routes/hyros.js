@@ -345,7 +345,9 @@ async function writeCampaignTab(sheets, tabName, numericId, adsets, dailyData, d
   const l4dCplCol   = 8;
   const firstDayCol = 9;
   const lastDayCol  = firstDayCol + dates.length - 1;
-  const l4dEndCol   = firstDayCol + Math.min(l4dDates.length, dates.length) - 1;
+  // L4D sums the 4 days BEFORE today (dates are newest-first, so skip col 0 = today)
+  const l4dStartCol = firstDayCol + 1;
+  const l4dEndCol   = firstDayCol + Math.min(l4dDates.length, dates.length - 1);
 
   const headers = [
     'Adset Name', 'Status', 'Total Spend', 'Total Leads', 'CPL',
@@ -395,7 +397,7 @@ async function writeCampaignTab(sheets, tabName, numericId, adsets, dailyData, d
       Number(totCost.toFixed(2)),
       `=SUM(${colLetter(firstDayCol)}${row}:${colLetter(lastDayCol)}${row})`,
       `=IF(${colLetter(leadsCol)}${row}=0,"—",${colLetter(spendCol)}${row}/${colLetter(leadsCol)}${row})`,
-      `=SUM(${colLetter(firstDayCol)}${row}:${colLetter(l4dEndCol)}${row})`,
+      `=SUM(${colLetter(l4dStartCol)}${row}:${colLetter(l4dEndCol)}${row})`,
       Number(l4dCost.toFixed(2)),
       `=IF(${colLetter(l4dLeadsCol)}${row}=0,"—",${colLetter(l4dSpendCol)}${row}/${colLetter(l4dLeadsCol)}${row})`,
       ...dayCells,
@@ -470,7 +472,8 @@ async function writeCampaignTab(sheets, tabName, numericId, adsets, dailyData, d
         fields: 'gridProperties.frozenRowCount,gridProperties.frozenColumnCount',
       },
     },
-    { setBasicFilter: { filter: { range: { sheetId: numericId } } } },
+    // Filter starts at row 2 (totals row) so sort/filter only affects data rows 3+
+    { setBasicFilter: { filter: { range: { sheetId: numericId, startRowIndex: 1 } } } },
     currencyFmt(spendCol,    spendCol),
     currencyFmt(cplCol,      cplCol),
     currencyFmt(l4dSpendCol, l4dSpendCol),
