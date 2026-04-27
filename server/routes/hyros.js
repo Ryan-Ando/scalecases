@@ -1052,8 +1052,10 @@ async function fetchAllHyrosLeadsUnfiltered(fromDate, toDate) {
         const adsetId = lead.lastSource?.adSource?.adSourceId   // last-click — matches Hyros UI
           || lead.firstSource?.adSource?.adSourceId  // first-click fallback only
           || '';
-        // Use last-click date so the lead lands on the same day Hyros credits it
-        const date    = (lead.lastSource?.UTCClickDate || lead.lastSource?.clickDate || lead.creationDate || lead.dateAdded || '').slice(0, 10) || fromDate;
+        // UTCClickDate is unreliable (Hyros API bug — sometimes returns query time).
+        // clickDate is the actual last-click date stored in Hyros → use as attribution date.
+        const rawDate = lead.lastSource?.clickDate || lead.creationDate || lead.dateAdded || '';
+        const date    = rawDate ? isoDatePT(new Date(rawDate)) : fromDate;
         const state   = stateFromCategory(lead.lastSource?.category || lead.firstSource?.category || '');
         leads.push({ email, leadId: lead.id || '', adsetId, date, state });
       }
@@ -1426,11 +1428,13 @@ async function runBackfillNextSteps(append = false) {
         const dedupKey = clickData.fbclids[0] || `email:${lead.email}`;
         if (append && existingKeys.has(dedupKey)) { skippedCount++; continue; }
 
-        // Use the /next-steps date for the attributed session.
-        // sessionDates[adsetId] is exact if the click URL fbc_id matches lead.adsetId.
-        // Fallback: lastConversionDate = most recent /next-steps (clicks are oldest-first, so this
-        // is the session Hyros is attributing to). conversionDate (first ever) only as last resort.
-        const conversionDate = clickData.sessionDates?.[adsetId] || clickData.lastConversionDate || clickData.conversionDate || lead.date;
+        // Date priority:
+        // 1. sessionDates[adsetId] — exact: /next-steps hit in the attributed adset's own session
+        // 2. lead.date — lastSource.clickDate (reliable; covers re-attributed leads where no
+        //    /next-steps exists in the new session — clickDate = the actual attribution click date)
+        // 3. lastConversionDate — most recent /next-steps overall (re-submitters)
+        // 4. conversionDate — first /next-steps ever (last resort)
+        const conversionDate = clickData.sessionDates?.[adsetId] || lead.date || clickData.lastConversionDate || clickData.conversionDate;
         toInsert.push([
           new Date().toISOString(),
           conversionDate,
