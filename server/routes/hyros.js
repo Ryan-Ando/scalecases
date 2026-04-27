@@ -1085,7 +1085,8 @@ async function fetchLeadClickData(email) {
       // (post-conversion ad clicks must not shift the lead to a later day)
       if ((click.trackedUrl || '').includes('/next-steps')) {
         result.hasNextSteps = true;
-        if (click.date) {
+        // Use the FIRST /next-steps date — Hyros dates leads by first opt-in, not most recent
+        if (click.date && !result.conversionDate) {
           try { result.conversionDate = isoDatePT(new Date(click.date)); } catch { /* ignore */ }
         }
       }
