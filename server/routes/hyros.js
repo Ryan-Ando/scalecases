@@ -1740,27 +1740,39 @@ router.get('/debug-click-data', async (req, res) => {
 
 // GET /api/hyros/debug-sheet-search?adsetNameContains=X&date=Y
 // Finds Lead Events rows whose adset name contains the given string (FB lookup) on the given date.
+// Also cross-references fbclid dedup keys against Webhook Cache to surface actual emails.
 router.get('/debug-sheet-search', async (req, res) => {
   const nameHint = (req.query.adsetNameContains || '').toLowerCase();
   const dateHint = req.query.date || '';
   try {
     const auth   = await getAuthClient();
     const sheets = google.sheets({ version: 'v4', auth });
+    // Load events tab
     const r = await sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: `${EVENTS_TAB}!A:J` });
     const rows = (r.data.values || []).slice(1);
-    // Collect unique adset IDs
+    // Load webhook cache: fbclid → email
+    const fbclidToEmail = {};
+    try {
+      const wc = await sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: `${WEBHOOK_TAB}!C:E` });
+      for (const [fbclid, , email] of (wc.data.values || []).slice(1)) {
+        if (fbclid && email && !fbclidToEmail[fbclid]) fbclidToEmail[fbclid] = email;
+      }
+    } catch { /* webhook cache may not exist */ }
+    // Collect unique adset IDs and look up names
     const adsetIds = [...new Set(rows.map(row => row[2]).filter(Boolean))];
     const info = await getAdsetInfo(adsetIds);
     const matches = [];
     for (const row of rows) {
       const rowDate   = row[1] || '';
       const adsetId   = row[2] || '';
-      const email     = row[8] || '';
+      const dedupKey  = row[8] || '';
       const verified  = row[9] || '';
       if (dateHint && rowDate !== dateHint) continue;
       const adsetName = info[adsetId]?.name || '';
       if (nameHint && !adsetName.toLowerCase().includes(nameHint)) continue;
-      matches.push({ date: rowDate, adsetId, adsetName, email, verified });
+      const email = dedupKey.startsWith('email:') ? dedupKey.slice(6)
+                  : (fbclidToEmail[dedupKey] || '');
+      matches.push({ date: rowDate, adsetId, adsetName, email, dedupKey, verified });
     }
     res.json({ matches });
   } catch (e) { res.json({ error: e.message }); }
