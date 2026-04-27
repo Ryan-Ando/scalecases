@@ -2025,6 +2025,99 @@ router.get('/probe-hyros-endpoints', async (req, res) => {
 });
 
 
+// GET /api/hyros/investigate — audit Lead Events for bad rows, phantom adsets, missing leads
+router.get('/investigate', async (req, res) => {
+  const key    = process.env.HYROS_API_KEY;
+  const auth   = await getAuthClient();
+  const sheets = google.sheets({ version: 'v4', auth });
+
+  // ── 1. Read Lead Events ────────────────────────────────────────────────────
+  const sheetData = await sheets.spreadsheets.values.get({
+    spreadsheetId: SHEET_ID, range: `${EVENTS_TAB}!A:J`,
+  });
+  const rows = (sheetData.data.values || []).slice(1); // skip header
+
+  // ── 2. Find template rows + build adset→emails map ────────────────────────
+  const templateRows = [];
+  const adsetEmails  = {}; // adsetId → [{ date, email }]
+  for (let i = 0; i < rows.length; i++) {
+    const [, date, adsetId, , , , , , dedup] = rows[i];
+    const email = (dedup || '').replace(/^email:/, '');
+    if ((adsetId || '').includes('{{')) {
+      templateRows.push({ sheetRow: i + 2, date, adsetId, email });
+      continue;
+    }
+    if (!adsetEmails[adsetId]) adsetEmails[adsetId] = [];
+    adsetEmails[adsetId].push({ date, email });
+  }
+
+  // ── 3. Phantom adset probe (our sheet has, Hyros won't know about) ─────────
+  const PHANTOM_IDS = [
+    '120244242304590070','120247680992620558','120244166158410070',
+    '120246691916110558','120247147218960558','120247147759000558',
+    '120244700465100070','120247679363450558','120247681013030558',
+    '120247681752650558',
+  ];
+  const phantomProbe = {};
+  for (const id of PHANTOM_IDS) {
+    const entries = adsetEmails[id] || [];
+    const probeResults = [];
+    for (const { date, email } of entries.slice(0, 3)) {
+      if (!email || email.startsWith('email:')) { probeResults.push({ date, email, hyrosAdset: 'no-email-key' }); continue; }
+      try {
+        const p = new URLSearchParams({ emails: `"${email}"` });
+        const r = await fetch(`${HYROS_BASE}/leads?${p}`, { headers: { 'API-Key': key } });
+        const d = await r.json();
+        const lead = d.result?.[0];
+        probeResults.push({
+          date,
+          email,
+          hyrosLastAdset: lead?.lastSource?.adSource?.adSourceId || 'none',
+          hyrosFirstAdset: lead?.firstSource?.adSource?.adSourceId || 'none',
+          hyrosLastSourceName: lead?.lastSource?.name || '',
+        });
+      } catch { probeResults.push({ date, email, error: true }); }
+      await delay(200);
+    }
+    phantomProbe[id] = probeResults;
+  }
+
+  // ── 4. Missing adset probe (Hyros has, we don't) ──────────────────────────
+  const MISSING_IDS = [
+    { id: '120243264294520070', date: '2026-04-14' },
+    { id: '120246233317420558', date: '2026-04-14' },
+    { id: '120246832674280558', date: '2026-04-14' },
+    { id: '120243999587790070', date: '2026-04-15' },
+    { id: '120246445934420558', date: '2026-04-15' },
+    { id: '120244048636620070', date: '2026-04-17' },
+    { id: '120247039691420558', date: '2026-04-18' },
+  ];
+  const missingProbe = [];
+  for (const { id, date } of MISSING_IDS) {
+    try {
+      const p = new URLSearchParams({ fromDate: date, toDate: date, pageSize: 50 });
+      const r = await fetch(`${HYROS_BASE}/leads?${p}`, { headers: { 'API-Key': key } });
+      const d = await r.json();
+      const matches = (d.result || []).filter(l =>
+        l.lastSource?.adSource?.adSourceId === id || l.firstSource?.adSource?.adSourceId === id
+      );
+      for (const lead of matches.slice(0, 3)) {
+        const clicks = await fetch(`${HYROS_BASE}/leads/clicks?${new URLSearchParams({ email: lead.email, pageSize: 20 })}`, { headers: { 'API-Key': key } });
+        const cd = await clicks.json();
+        const hasNS = (cd.result || []).some(c => (c.trackedUrl || '').includes('/next-steps'));
+        missingProbe.push({ id, date, email: lead.email, hasNextSteps: hasNS,
+          lastAdset: lead.lastSource?.adSource?.adSourceId, firstAdset: lead.firstSource?.adSource?.adSourceId });
+        await delay(200);
+      }
+      if (!matches.length) missingProbe.push({ id, date, email: null, note: 'no leads found on this date' });
+    } catch (e) { missingProbe.push({ id, date, error: String(e) }); }
+    await delay(300);
+  }
+
+  res.json({ templateRows, phantomProbe, missingProbe,
+    summary: { totalRows: rows.length, templateRowCount: templateRows.length } });
+});
+
 // Daily backfill + sync at 8:15am PT
 let _lastDailyRunDate = '';
 function runDailySchedule() {
