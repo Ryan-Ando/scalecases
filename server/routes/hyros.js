@@ -1725,6 +1725,51 @@ router.get('/probe-leads', async (req, res) => {
   } catch (e) { res.json({ error: String(e) }); }
 });
 
+// GET /api/hyros/debug-lead-by-adset?adsetId=X — find a Hyros lead attributed to given adset, show raw fields
+router.get('/debug-lead-by-adset', async (req, res) => {
+  const adsetId = (req.query.adsetId || '').trim();
+  if (!adsetId) return res.status(400).json({ error: 'adsetId required' });
+  const key = process.env.HYROS_API_KEY;
+  const today = isoToday();
+  let pageId = null, page = 0;
+  do {
+    page++;
+    const params = new URLSearchParams({ fromDate: START_DATE, toDate: today, pageSize: 100 });
+    if (pageId) params.set('pageId', pageId);
+    try {
+      const r    = await fetch(`${HYROS_BASE}/leads?${params}`, { headers: { 'API-Key': key } });
+      const data = await r.json();
+      if (!Array.isArray(data.result)) return res.json({ error: data.message });
+      for (const lead of data.result) {
+        const ls = lead.lastSource?.adSource?.adSourceId || '';
+        const fs = lead.firstSource?.adSource?.adSourceId || '';
+        if (ls === adsetId || fs === adsetId) {
+          return res.json({
+            email:            lead.email,
+            creationDate:     lead.creationDate,
+            dateAdded:        lead.dateAdded,
+            lastSource: {
+              adSourceId:   lead.lastSource?.adSource?.adSourceId,
+              clickDate:    lead.lastSource?.clickDate,
+              UTCClickDate: lead.lastSource?.UTCClickDate,
+              name:         lead.lastSource?.name,
+            },
+            firstSource: {
+              adSourceId:   lead.firstSource?.adSource?.adSourceId,
+              clickDate:    lead.firstSource?.clickDate,
+              UTCClickDate: lead.firstSource?.UTCClickDate,
+            },
+            tags: lead.tags,
+          });
+        }
+      }
+      pageId = data.nextPageId || null;
+      if (pageId) await delay(300);
+    } catch (e) { return res.json({ error: e.message }); }
+  } while (pageId && page < 50);
+  res.json({ found: false, message: 'No lead found for this adset ID in range' });
+});
+
 // GET /api/hyros/debug-adset-info?ids=id1,id2 — get FB creation time + status for adset IDs
 router.get('/debug-adset-info', async (req, res) => {
   const token = process.env.FB_ACCESS_TOKEN;
