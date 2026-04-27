@@ -1069,16 +1069,23 @@ async function fetchAllHyrosLeadsUnfiltered(fromDate, toDate) {
   return leads;
 }
 
-// Returns click data for a Hyros lead: fbclids, /next-steps presence, last click date, adset ID.
+// Returns click data for a Hyros lead.
+// conversionAdsetId: fbc_id from the LAST /next-steps click (the adset on the thank-you page at submission)
+// lastConversionDate: date of the LAST /next-steps click
+// firstConversionDate: date of the FIRST /next-steps click (fallback)
 async function fetchLeadClickData(email) {
-  const key    = process.env.HYROS_API_KEY;
-  const p      = new URLSearchParams({ email, pageSize: 50 });
-  // sessionDates: adsetId → date of first /next-steps in that adset's session
-  // conversionDate: fallback — first /next-steps overall
-  // sessionDates: adsetId → date of first /next-steps in that adset's session
-  // conversionDate: first /next-steps overall (clicks are oldest-first)
-  // lastConversionDate: most recent /next-steps overall (used when adsetId key mismatches)
-  const result = { hasNextSteps: false, fbclids: [], adsetId: '', conversionDate: '', lastConversionDate: '', sessionDates: {} };
+  const key = process.env.HYROS_API_KEY;
+  const p   = new URLSearchParams({ email, pageSize: 50 });
+  const result = {
+    hasNextSteps:        false,
+    fbclids:             [],
+    conversionAdsetId:   '',  // fbc_id from the last /next-steps click — primary attribution
+    lastConversionDate:  '',  // date of the last /next-steps click — primary date
+    firstConversionDate: '',  // date of the first /next-steps click — fallback
+    adsetId:             '',  // last fbc_id from any click — fallback attribution
+    conversionDate:      '',  // alias for firstConversionDate (backward compat)
+    sessionDates:        {},  // kept for backward compat
+  };
   try {
     const r    = await fetch(`${HYROS_BASE}/leads/clicks?${p}`, { headers: { 'API-Key': key } });
     const text = await r.text();
@@ -1095,14 +1102,19 @@ async function fetchLeadClickData(email) {
       }
       if ((click.trackedUrl || '').includes('/next-steps')) {
         result.hasNextSteps = true;
+        // Primary: adset from this /next-steps click's own URL params (the thank-you page adset)
+        // Fallback: the most recent fbc_id seen in this session's prior clicks
+        const nsAdset = click.parsedParameters?.fbc_id || click.adSpendId || currentSessionAdset || '';
+        if (nsAdset) result.conversionAdsetId = nsAdset; // overwrite → latest /next-steps wins
         if (click.date) {
           try {
             const dateStr = isoDatePT(new Date(click.date));
-            if (currentSessionAdset && !result.sessionDates[currentSessionAdset]) {
-              result.sessionDates[currentSessionAdset] = dateStr;
+            if (!result.firstConversionDate) {
+              result.firstConversionDate = dateStr;
+              result.conversionDate = dateStr; // backward compat alias
             }
-            if (!result.conversionDate) result.conversionDate = dateStr;
-            result.lastConversionDate = dateStr; // always overwrite → most recent (clicks are oldest-first)
+            result.lastConversionDate = dateStr; // overwrite → latest /next-steps
+            if (nsAdset && !result.sessionDates[nsAdset]) result.sessionDates[nsAdset] = dateStr;
           } catch { /* ignore */ }
         }
       }
@@ -1402,7 +1414,7 @@ async function runBackfillNextSteps(append = false) {
     // Load webhook cache so fbclids from click data can be resolved to adset IDs
     await loadFbclidCache(sheets);
 
-    const CONCURRENCY = 5;
+    const CONCURRENCY = 10;
     const toInsert = [];
     let nextStepsCount = 0, skippedCount = 0, noAdsetCount = 0;
 
@@ -1417,25 +1429,17 @@ async function runBackfillNextSteps(append = false) {
         if (!clickData.hasNextSteps) continue;
         nextStepsCount++;
 
-        // Attribution priority:
-        //   1. Hyros @tag (most reliable — matches Hyros UI)
-        //   2. firstSource/lastSource adSource from lead object
-        //   3. fbc_id / adSpendId from click URL params
-        //   4. Webhook cache: fbclid → adsetId (Hyros resolves fbclid at webhook time)
+        // Attribution: adset from the LAST /next-steps URL (fbc_id on the thank-you page).
+        // Fallback chain: Hyros @tag → last fbc_id from any click → webhook cache fbclid lookup.
         const webhookAdset = clickData.fbclids.reduce((found, fc) => found || _fbclidCache.get(fc) || '', '');
-        const adsetId = lead.adsetId || clickData.adsetId || webhookAdset;
+        const adsetId = clickData.conversionAdsetId || lead.adsetId || clickData.adsetId || webhookAdset;
         if (!adsetId) { noAdsetCount++; continue; }
 
-        // Prefer first fbclid as dedup key; fall back to email: prefix
         const dedupKey = clickData.fbclids[0] || `email:${lead.email}`;
         if (append && existingKeys.has(dedupKey)) { skippedCount++; continue; }
 
-        // Date priority:
-        // 1. sessionDates[adsetId] — exact: /next-steps in the conversion adset's session
-        // 2. lastConversionDate — most recent /next-steps overall (oldest-first iteration)
-        // 3. conversionDate — first /next-steps ever
-        // 4. lead.date — lastSource.clickDate, last resort only (may be from post-conversion session)
-        const conversionDate = clickData.sessionDates?.[adsetId] || clickData.lastConversionDate || clickData.conversionDate || lead.date;
+        // Date: last /next-steps click date → first /next-steps → Hyros clickDate
+        const conversionDate = clickData.lastConversionDate || clickData.firstConversionDate || lead.date;
         toInsert.push([
           new Date().toISOString(),
           conversionDate,
@@ -1451,8 +1455,8 @@ async function runBackfillNextSteps(append = false) {
         existingKeys.add(dedupKey);
       }
 
-      if ((i + CONCURRENCY) % 50 === 0) console.log(`  /next-steps backfill: checked ${Math.min(i + CONCURRENCY, hyrosLeads.length)}/${hyrosLeads.length} leads, ${nextStepsCount} real so far`);
-      if (i + CONCURRENCY < hyrosLeads.length) await delay(500);
+      if ((i + CONCURRENCY) % 100 === 0) console.log(`  /next-steps backfill: checked ${Math.min(i + CONCURRENCY, hyrosLeads.length)}/${hyrosLeads.length} leads, ${nextStepsCount} real so far`);
+      if (i + CONCURRENCY < hyrosLeads.length) await delay(200);
     }
 
     if (!append) {
