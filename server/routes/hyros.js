@@ -1890,6 +1890,8 @@ router.post('/stage-event', async (req, res) => {
   if (!lead_stage || !fbclid) {
     return res.status(400).json({ ok: false, error: 'Missing lead_stage or fbclid' });
   }
+  // Reject unresolved GHL template variables (e.g. {{adset.id}})
+  const rawFbcId = (fbc_id || '').includes('{{') ? '' : (fbc_id || '');
 
   const now     = new Date();
   const dateStr = isoDatePT(now);
@@ -1903,7 +1905,7 @@ router.post('/stage-event', async (req, res) => {
 
     // Resolve adset ID — prefer Hyros-verified lookup, fall back to URL fbc_id
     const hyrosAdsetId = _fbclidCache.get(fbclid);
-    const adsetId      = hyrosAdsetId || fbc_id || '';
+    const adsetId      = hyrosAdsetId || rawFbcId;
     const verified     = !!hyrosAdsetId;
 
     if (!adsetId) {
@@ -2024,6 +2026,37 @@ router.get('/probe-hyros-endpoints', async (req, res) => {
   res.json(results);
 });
 
+
+// DELETE /api/hyros/cleanup-template-rows — remove rows where adset ID is an unresolved template variable
+router.delete('/cleanup-template-rows', async (req, res) => {
+  const auth   = await getAuthClient();
+  const sheets = google.sheets({ version: 'v4', auth });
+  const meta   = await sheets.spreadsheets.get({ spreadsheetId: SHEET_ID });
+  const tab    = meta.data.sheets.find(s => s.properties.title === EVENTS_TAB);
+  if (!tab) return res.json({ ok: false, error: 'Lead Events tab not found' });
+  const sheetId = tab.properties.sheetId;
+
+  const data = await sheets.spreadsheets.values.get({
+    spreadsheetId: SHEET_ID, range: `${EVENTS_TAB}!A:J`,
+  });
+  const rows = (data.data.values || []).slice(1);
+  // Collect row indices (0-based from row 2) where adset ID contains '{{'
+  const badIndices = rows
+    .map((r, i) => ({ idx: i, adset: r[2] || '' }))
+    .filter(({ adset }) => adset.includes('{{'))
+    .map(({ idx }) => idx + 1); // +1 because sheet rows are 1-indexed after header
+
+  if (!badIndices.length) return res.json({ ok: true, deleted: 0 });
+
+  // Delete from bottom to top so row indices stay valid
+  const requests = [...badIndices].reverse().map(rowIdx => ({
+    deleteDimension: {
+      range: { sheetId, dimension: 'ROWS', startIndex: rowIdx, endIndex: rowIdx + 1 },
+    },
+  }));
+  await sheets.spreadsheets.batchUpdate({ spreadsheetId: SHEET_ID, requestBody: { requests } });
+  res.json({ ok: true, deleted: badIndices.length, rows: badIndices });
+});
 
 // GET /api/hyros/investigate — audit Lead Events for bad rows, phantom adsets, missing leads
 router.get('/investigate', async (req, res) => {
