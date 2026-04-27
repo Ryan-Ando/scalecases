@@ -1069,25 +1069,35 @@ async function fetchAllHyrosLeadsUnfiltered(fromDate, toDate) {
 async function fetchLeadClickData(email) {
   const key    = process.env.HYROS_API_KEY;
   const p      = new URLSearchParams({ email, pageSize: 50 });
-  const result = { hasNextSteps: false, fbclids: [], adsetId: '', conversionDate: '' };
+  // sessionDates: adsetId → date of first /next-steps in that adset's session
+  // conversionDate: fallback — first /next-steps overall
+  const result = { hasNextSteps: false, fbclids: [], adsetId: '', conversionDate: '', sessionDates: {} };
   try {
     const r    = await fetch(`${HYROS_BASE}/leads/clicks?${p}`, { headers: { 'API-Key': key } });
     const text = await r.text();
     let data;
     try { data = JSON.parse(text); } catch { return result; }
+    let currentSessionAdset = '';
     for (const click of data.result || []) {
       const fbclid = click.parsedParameters?.fbclid;
       if (fbclid) result.fbclids.push(fbclid);
-      // Keep updating adsetId — clicks are chronological so last one wins (last-click attribution)
       const clickAdset = click.parsedParameters?.fbc_id || click.adSpendId || '';
-      if (clickAdset) result.adsetId = clickAdset;
-      // Capture the date of the /next-steps click itself — this is the conversion session date
-      // (post-conversion ad clicks must not shift the lead to a later day)
+      if (clickAdset) {
+        result.adsetId = clickAdset;        // last click wins for attribution
+        currentSessionAdset = clickAdset;   // track which session we're in
+      }
       if ((click.trackedUrl || '').includes('/next-steps')) {
         result.hasNextSteps = true;
-        // Use the FIRST /next-steps date — Hyros dates leads by first opt-in, not most recent
-        if (click.date && !result.conversionDate) {
-          try { result.conversionDate = isoDatePT(new Date(click.date)); } catch { /* ignore */ }
+        if (click.date) {
+          try {
+            const dateStr = isoDatePT(new Date(click.date));
+            // Record the first /next-steps date for this adset's session
+            if (currentSessionAdset && !result.sessionDates[currentSessionAdset]) {
+              result.sessionDates[currentSessionAdset] = dateStr;
+            }
+            // Fallback: overall first /next-steps date
+            if (!result.conversionDate) result.conversionDate = dateStr;
+          } catch { /* ignore */ }
         }
       }
     }
@@ -1414,9 +1424,11 @@ async function runBackfillNextSteps(append = false) {
         const dedupKey = clickData.fbclids[0] || `email:${lead.email}`;
         if (append && existingKeys.has(dedupKey)) { skippedCount++; continue; }
 
+        // Use the /next-steps date from the attributed adset's own session — never predates the adset
+        const conversionDate = clickData.sessionDates?.[adsetId] || clickData.conversionDate || lead.date;
         toInsert.push([
           new Date().toISOString(),
-          clickData.conversionDate || lead.date, // date of /next-steps visit = Hyros conversion date
+          conversionDate,
           adsetId,    // lastSource adset ID
           lead.state, // parsed from firstSource.category (e.g. "wa", "tx")
           '',           // campaign name
