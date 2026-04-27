@@ -19,7 +19,11 @@ let   _cacheLoaded = false;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function isoToday() { return new Date().toISOString().slice(0, 10); }
+// Returns YYYY-MM-DD in America/Los_Angeles (handles PST/PDT automatically)
+function isoDatePT(d) {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Los_Angeles' }).format(d instanceof Date ? d : new Date(d));
+}
+function isoToday() { return isoDatePT(new Date()); }
 
 function buildDateRange(start, end) {
   const dates = [];
@@ -1082,7 +1086,7 @@ async function fetchLeadClickData(email) {
       if ((click.trackedUrl || '').includes('/next-steps')) {
         result.hasNextSteps = true;
         if (click.date) {
-          try { result.conversionDate = new Date(click.date).toISOString().slice(0, 10); } catch { /* ignore */ }
+          try { result.conversionDate = isoDatePT(new Date(click.date)); } catch { /* ignore */ }
         }
       }
     }
@@ -1887,7 +1891,7 @@ router.post('/stage-event', async (req, res) => {
   }
 
   const now     = new Date();
-  const dateStr = now.toISOString().slice(0, 10);
+  const dateStr = isoDatePT(now);
 
   try {
     const auth   = await getAuthClient();
