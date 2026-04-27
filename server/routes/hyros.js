@@ -1533,14 +1533,16 @@ router.get('/status', (_req, res) => {
   });
 });
 
-// POST /api/hyros/run-all — backfill then sync in sequence; non-blocking, poll /run-all-status
-router.post('/run-all', (req, res) => {
+// GET or POST /api/hyros/run-all — backfill then sync in sequence; non-blocking
+function handleRunAll(req, res) {
   if (_runAll.phase !== 'idle' && _runAll.phase !== 'done' && _runAll.phase !== 'error') {
     return res.json({ ok: false, error: 'already running', phase: _runAll.phase });
   }
   res.json({ ok: true, status: 'started', pollUrl: '/api/hyros/run-all-status' });
   runAll();
-});
+}
+router.get('/run-all', handleRunAll);
+router.post('/run-all', handleRunAll);
 
 // GET /api/hyros/run-all-status — poll every 15s to track backfill → sync progress
 router.get('/run-all-status', (_req, res) => {
