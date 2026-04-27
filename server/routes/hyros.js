@@ -1721,6 +1721,51 @@ router.get('/probe-leads', async (req, res) => {
   } catch (e) { res.json({ error: String(e) }); }
 });
 
+// GET /api/hyros/debug-click-data?email=X
+// Returns full fetchLeadClickData result + all raw click objects for an email.
+router.get('/debug-click-data', async (req, res) => {
+  const email = (req.query.email || '').trim();
+  if (!email) return res.status(400).json({ error: 'email required' });
+  const key = process.env.HYROS_API_KEY;
+  const p   = new URLSearchParams({ email, pageSize: 50 });
+  let rawClicks = [];
+  try {
+    const r    = await fetch(`${HYROS_BASE}/leads/clicks?${p}`, { headers: { 'API-Key': key } });
+    const data = await r.json();
+    rawClicks  = data.result || [];
+  } catch (e) { return res.json({ error: e.message }); }
+  const parsed = await fetchLeadClickData(email);
+  res.json({ parsed, rawClicks });
+});
+
+// GET /api/hyros/debug-sheet-search?adsetNameContains=X&date=Y
+// Finds Lead Events rows whose adset name contains the given string (FB lookup) on the given date.
+router.get('/debug-sheet-search', async (req, res) => {
+  const nameHint = (req.query.adsetNameContains || '').toLowerCase();
+  const dateHint = req.query.date || '';
+  try {
+    const auth   = await getAuthClient();
+    const sheets = google.sheets({ version: 'v4', auth });
+    const r = await sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: `${EVENTS_TAB}!A:J` });
+    const rows = (r.data.values || []).slice(1);
+    // Collect unique adset IDs
+    const adsetIds = [...new Set(rows.map(row => row[2]).filter(Boolean))];
+    const info = await getAdsetInfo(adsetIds);
+    const matches = [];
+    for (const row of rows) {
+      const rowDate   = row[1] || '';
+      const adsetId   = row[2] || '';
+      const email     = row[8] || '';
+      const verified  = row[9] || '';
+      if (dateHint && rowDate !== dateHint) continue;
+      const adsetName = info[adsetId]?.name || '';
+      if (nameHint && !adsetName.toLowerCase().includes(nameHint)) continue;
+      matches.push({ date: rowDate, adsetId, adsetName, email, verified });
+    }
+    res.json({ matches });
+  } catch (e) { res.json({ error: e.message }); }
+});
+
 // GET /api/hyros/ghl-probe — raw GHL API responses to identify correct structure
 router.get('/ghl-probe', async (req, res) => {
   const key = process.env.GHL_API_KEY;
