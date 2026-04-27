@@ -2025,4 +2025,22 @@ router.get('/probe-hyros-endpoints', async (req, res) => {
 });
 
 
+// Daily backfill + sync at 8:15am PT
+let _lastDailyRunDate = '';
+function runDailySchedule() {
+  const now = new Date();
+  const pt  = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Los_Angeles', hour: 'numeric', minute: 'numeric', hour12: false,
+  }).format(now).split(':');
+  const todayPT = isoToday();
+  if (parseInt(pt[0], 10) === 8 && parseInt(pt[1], 10) === 15 && todayPT !== _lastDailyRunDate) {
+    _lastDailyRunDate = todayPT;
+    (async () => {
+      await runBackfillNextSteps(false);
+      if (!_syncRunning) runSync();
+    })().catch(e => console.error('[daily] error:', e.message));
+  }
+}
+setInterval(runDailySchedule, 60 * 1000);
+
 export default router;
