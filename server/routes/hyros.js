@@ -815,6 +815,12 @@ async function runSync() {
       [...allAdsetIds].filter(id => !allAccountAdsets[id]) // only look up unknowns
     )};
 
+    // Safety: if FB returned no adsets at all (expired token / API error), abort before
+    // touching any tabs — otherwise the delete step below would wipe every campaign tab.
+    if (Object.keys(allAccountAdsets).length === 0) {
+      throw new Error('FB API returned 0 adsets — token may be expired. Sync aborted to protect sheet tabs.');
+    }
+
     // 4. Group adsets by campaign — all statuses (active first, inactive hidden in tab)
     const byCampaign = {}; // campaignTabName → adset[]
     for (const id of allAdsetIds) {
