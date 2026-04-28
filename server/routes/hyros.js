@@ -1911,6 +1911,32 @@ router.get('/debug-sheet-search', async (req, res) => {
   } catch (e) { res.json({ error: e.message }); }
 });
 
+// GET /api/hyros/debug-hyros-attribution?date=YYYY-MM-DD — dump raw Hyros attribution rows for one day
+router.get('/debug-hyros-attribution', async (req, res) => {
+  const key      = process.env.HYROS_API_KEY;
+  const dateStr  = req.query.date || isoToday();
+  const accounts = (process.env.HYROS_AD_ACCOUNTS || '1125965718442560,758516163121709')
+    .split(',').map(s => s.trim()).filter(Boolean);
+  const rows = [];
+  for (const accountId of accounts) {
+    const params = new URLSearchParams({
+      startDate: dateStr, endDate: dateStr,
+      level: 'facebook_adset',
+      attributionModel: 'last_click',
+      fields: 'cost,name,parentId,parentName,campaignName',
+      isAdAccountId: 'true',
+      ids: accountId,
+    });
+    try {
+      const r    = await fetch(`${HYROS_BASE}/attribution?${params}`, { headers: { 'API-Key': key } });
+      const data = await r.json();
+      if (Array.isArray(data.result)) rows.push(...data.result.slice(0, 5)); // first 5 rows only
+      else rows.push({ _error: data.message, accountId });
+    } catch (e) { rows.push({ _error: e.message, accountId }); }
+  }
+  res.json({ date: dateStr, sampleRows: rows });
+});
+
 // GET /api/hyros/ghl-probe — raw GHL API responses to identify correct structure
 router.get('/ghl-probe', async (req, res) => {
   const key = process.env.GHL_API_KEY;
