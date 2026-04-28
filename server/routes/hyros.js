@@ -1923,7 +1923,7 @@ router.get('/debug-hyros-attribution', async (req, res) => {
       startDate: dateStr, endDate: dateStr,
       level: 'facebook_adset',
       attributionModel: 'last_click',
-      fields: 'cost,name,parentId,parentName,campaignName',
+      fields: 'cost,name',
       isAdAccountId: 'true',
       ids: accountId,
     });
