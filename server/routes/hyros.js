@@ -815,11 +815,10 @@ async function runSync() {
       [...allAdsetIds].filter(id => !allAccountAdsets[id]) // only look up unknowns
     )};
 
-    // Safety: if FB returned no adsets at all (expired token / API error), abort before
-    // touching any tabs — otherwise the delete step below would wipe every campaign tab.
-    if (Object.keys(allAccountAdsets).length === 0) {
-      throw new Error('FB API returned 0 adsets — token may be expired. Sync aborted to protect sheet tabs.');
-    }
+    // If FB returned nothing (expired token / API error), skip the tab deletion step later
+    // so we don't wipe campaign tabs — Hyros data still writes fine without FB names.
+    const fbAvailable = Object.keys(allAccountAdsets).length > 0;
+    if (!fbAvailable) console.warn('[sync] FB returned 0 adsets — skipping stale-tab deletion this run');
 
     // 4. Group adsets by campaign — all statuses (active first, inactive hidden in tab)
     const byCampaign = {}; // campaignTabName → adset[]
@@ -870,13 +869,14 @@ async function runSync() {
       await delay(300);
     }
 
-    // 7. Remove stale campaign tabs + legacy "Daily Leads", never touch protected tabs or Home
-    const toDelete = metaAfter.data.sheets.filter(s => {
+    // 7. Remove stale campaign tabs + legacy "Daily Leads", never touch protected tabs or Home.
+    //    Skip entirely if FB was unavailable — we can't safely determine which tabs are stale.
+    const toDelete = fbAvailable ? metaAfter.data.sheets.filter(s => {
       const title = s.properties.title;
       if (PROTECTED_TABS.has(title)) return false;
       if (title === 'Home') return false;
       return title === 'Daily Leads' || !campaignTabNames.has(title);
-    });
+    }) : [];
     if (toDelete.length && Object.keys(tabMap).length > 1) {
       await sheets.spreadsheets.batchUpdate({
         spreadsheetId: SHEET_ID,
