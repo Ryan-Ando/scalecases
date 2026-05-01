@@ -1043,15 +1043,11 @@ async function fetchAllHyrosLeads(fromDate, toDate) {
       for (const lead of data.result) {
         const email = (lead.email || '').toLowerCase().trim();
         if (!email) continue;
-        // Only count leads Hyros has marked as qualified — this is exactly what Hyros UI counts
+        // Only count leads Hyros has marked as qualified (filters out click-only pixel captures)
         if (!(lead.tags || []).includes(QUAL_TAG)) continue;
         // Read adset from attribution tag — matches exactly what Hyros UI shows per adset
         const adsetId = adsetFromTags(lead.tags) || lead.firstSource?.adSource?.adSourceId || '';
-        // creationDate = when Hyros pixel fired (conversion page) — reliable conversion date
-        const rawDate = lead.creationDate || lead.dateAdded || '';
-        const date    = rawDate ? isoDatePT(new Date(rawDate)) : fromDate;
-        const state   = stateFromCategory(lead.lastSource?.category || lead.firstSource?.category || '');
-        leads.push({ email, leadId: lead.id || '', adsetId, date, state });
+        leads.push({ email, leadId: lead.id || '', adsetId });
       }
       pageId = data.nextPageId || null;
       if (pageId) await delay(400);
@@ -1428,9 +1424,8 @@ async function runBackfillNextSteps(append = false) {
   try {
     const today = isoToday();
 
-    // Use Hyros's own !qualified-lead tag as the filter — this is exactly what Hyros UI counts.
-    // No per-lead click API calls needed; adset comes from @attribution tags, date from creationDate.
-    const hyrosLeads = await fetchAllHyrosLeads(START_DATE, today);
+    // Fetch all Hyros leads without any tag filter
+    const hyrosLeads = await fetchAllHyrosLeadsUnfiltered(START_DATE, today);
     if (!hyrosLeads.length) {
       _backfill = { running: false, done: true, error: null, result: { ok: true, inserted: 0, hyrosLeads: 0, message: 'No Hyros leads found in date range' } };
       return;
@@ -1449,25 +1444,49 @@ async function runBackfillNextSteps(append = false) {
       } catch { /* tab may not exist */ }
     }
 
+    // Load webhook cache so fbclids from click data can be resolved to adset IDs
+    await loadFbclidCache(sheets);
+
+    const CONCURRENCY = 10;
     const toInsert = [];
-    let skippedCount = 0, noAdsetCount = 0;
+    let nextStepsCount = 0, skippedCount = 0, noAdsetCount = 0;
 
-    for (const lead of hyrosLeads) {
-      if (!lead.adsetId) { noAdsetCount++; continue; }
+    for (let i = 0; i < hyrosLeads.length; i += CONCURRENCY) {
+      const batch          = hyrosLeads.slice(i, i + CONCURRENCY);
+      const batchClickData = await Promise.all(batch.map(lead => fetchLeadClickData(lead.email)));
 
-      const dedupKey = `email:${lead.email}`;
-      if (append && existingKeys.has(dedupKey)) { skippedCount++; continue; }
+      for (let j = 0; j < batch.length; j++) {
+        const lead      = batch[j];
+        const clickData = batchClickData[j];
 
-      toInsert.push([
-        new Date().toISOString(),
-        lead.date,
-        lead.adsetId,
-        lead.state,
-        '', '', '', '',
-        dedupKey,
-        'YES',
-      ]);
-      existingKeys.add(dedupKey);
+        if (!clickData.hasNextSteps) continue;
+        nextStepsCount++;
+
+        // Attribution: adset from the LAST /next-steps URL (fbc_id on the thank-you page).
+        // Fallback chain: Hyros @tag → last fbc_id from any click → webhook cache fbclid lookup.
+        const webhookAdset = clickData.fbclids.reduce((found, fc) => found || _fbclidCache.get(fc) || '', '');
+        const adsetId = clickData.conversionAdsetId || lead.adsetId || clickData.adsetId || webhookAdset;
+        if (!adsetId) { noAdsetCount++; continue; }
+
+        const dedupKey = clickData.fbclids[0] || `email:${lead.email}`;
+        if (append && existingKeys.has(dedupKey)) { skippedCount++; continue; }
+
+        // Date: last /next-steps click date → first /next-steps → Hyros clickDate
+        const conversionDate = clickData.lastConversionDate || clickData.firstConversionDate || lead.date;
+        toInsert.push([
+          new Date().toISOString(),
+          conversionDate,
+          adsetId,
+          lead.state,
+          '', '', '', '',
+          dedupKey,
+          'YES',
+        ]);
+        existingKeys.add(dedupKey);
+      }
+
+      if ((i + CONCURRENCY) % 100 === 0) console.log(`  /next-steps backfill: checked ${Math.min(i + CONCURRENCY, hyrosLeads.length)}/${hyrosLeads.length} leads, ${nextStepsCount} real so far`);
+      if (i + CONCURRENCY < hyrosLeads.length) await delay(200);
     }
 
     if (!append) {
@@ -1485,12 +1504,13 @@ async function runBackfillNextSteps(append = false) {
       result: {
         ok:               true,
         hyrosLeads:       hyrosLeads.length,
+        realLeads:        nextStepsCount,
         inserted:         toInsert.length,
         skippedDuplicate: skippedCount,
         noAdset:          noAdsetCount,
       },
     };
-    console.log(`Backfill done: ${toInsert.length} inserted out of ${hyrosLeads.length} qualified leads`);
+    console.log(`Backfill next-steps done: ${toInsert.length} inserted (${nextStepsCount} real leads found out of ${hyrosLeads.length} total)`);
   } catch (e) {
     console.error('runBackfillNextSteps error:', e.message);
     _backfill = { running: false, done: true, result: null, error: String(e) };
