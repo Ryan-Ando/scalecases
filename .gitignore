@@ -25,3 +25,6 @@ yarn-error.log*
 
 # OS
 Thumbs.db
+
+# CPL lead storage (server-side, not committed)
+leads.json

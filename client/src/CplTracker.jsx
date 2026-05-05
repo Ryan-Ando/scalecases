@@ -5,7 +5,6 @@ import {
 } from 'recharts';
 
 const BASE = import.meta.env.VITE_API_URL || 'http://localhost:3001';
-const LS_KEY = 'cpl_leads_v2';
 const COLORS = [
   '#2563eb','#dc2626','#16a34a','#d97706','#7c3aed',
   '#0891b2','#be123c','#15803d','#b45309','#6d28d9',
@@ -13,13 +12,6 @@ const COLORS = [
 ];
 
 const fmt$ = v => v == null ? '—' : `$${v.toFixed(2)}`;
-
-function loadLeads() {
-  try { return JSON.parse(localStorage.getItem(LS_KEY) || '{}'); } catch { return {}; }
-}
-function saveLeads(obj) {
-  try { localStorage.setItem(LS_KEY, JSON.stringify(obj)); } catch {}
-}
 
 function CplTooltip({ active, payload, label }) {
   if (!active || !payload?.length) return null;
@@ -38,26 +30,26 @@ function CplTooltip({ active, payload, label }) {
 }
 
 export default function CplTracker() {
-  const [data, setData]     = useState(null);
-  const [leads, setLeads]   = useState(loadLeads);
-  const [hidden, setHidden] = useState(new Set());
-  const [days, setDays]     = useState(14);
-  const [phase, setPhase]   = useState('loading'); // 'loading' | 'ready' | 'syncing' | 'error'
-  const [error, setError]   = useState(null);
+  const [cplData, setCplData] = useState(null);
+  const [leads, setLeads]     = useState({});
+  const [hidden, setHidden]   = useState(new Set());
+  const [days, setDays]       = useState(14);
+  const [phase, setPhase]     = useState('loading'); // 'loading' | 'ready' | 'syncing' | 'error'
+  const [error, setError]     = useState(null);
 
+  // Load both spend data and leads from server on mount
   const fetchData = useCallback(async () => {
     setPhase('loading');
     setError(null);
     try {
-      const r = await fetch(`${BASE}/api/hyros/cpl-data`);
-      const j = await r.json();
-      if (j.ok) {
-        setData(j.data);
-        setPhase('ready');
-      } else {
-        setError(j.error || 'No data yet');
-        setPhase('error');
-      }
+      const [dataRes, leadsRes] = await Promise.all([
+        fetch(`${BASE}/api/hyros/cpl-data`).then(r => r.json()),
+        fetch(`${BASE}/api/hyros/cpl-leads`).then(r => r.json()),
+      ]);
+      if (dataRes.ok)  setCplData(dataRes.data);
+      if (leadsRes.ok) setLeads(leadsRes.leads);
+      setPhase(dataRes.ok ? 'ready' : 'error');
+      if (!dataRes.ok) setError(dataRes.error || 'No data yet');
     } catch (e) {
       setError(e.message);
       setPhase('error');
@@ -88,17 +80,24 @@ export default function CplTracker() {
       await fetchData();
     } catch (e) {
       setError(e.message);
-      setPhase(data ? 'ready' : 'error');
+      setPhase(cplData ? 'ready' : 'error');
     }
-  }, [fetchData, data]);
+  }, [fetchData, cplData]);
 
+  // Save a lead to server; optimistically update local state
   const setLead = useCallback((camp, date, raw) => {
     const val = Math.max(0, parseInt(raw, 10) || 0);
+    const key = `${camp}|${date}`;
     setLeads(prev => {
-      const next = { ...prev, [`${camp}|${date}`]: val };
-      saveLeads(next);
+      const next = { ...prev, [key]: val };
+      if (val === 0) delete next[key];
       return next;
     });
+    fetch(`${BASE}/api/hyros/cpl-leads`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key, value: val }),
+    }).catch(() => {});
   }, []);
 
   const toggle = useCallback(name => {
@@ -110,22 +109,22 @@ export default function CplTracker() {
   }, []);
 
   const visDates = useMemo(() => {
-    if (!data) return [];
-    return days > 0 ? data.dates.slice(0, days) : data.dates;
-  }, [data, days]);
+    if (!cplData) return [];
+    return days > 0 ? cplData.dates.slice(0, days) : cplData.dates;
+  }, [cplData, days]);
 
   const chartData = useMemo(() => {
-    if (!data) return [];
+    if (!cplData) return [];
     return [...visDates].reverse().map(date => {
       const pt = { date };
-      for (const c of data.campaigns) {
-        const spend = data.spend[c]?.[date] || 0;
+      for (const c of cplData.campaigns) {
+        const spend = cplData.spend[c]?.[date] || 0;
         const l = leads[`${c}|${date}`] || 0;
         pt[c] = l > 0 ? +(spend / l).toFixed(2) : null;
       }
       return pt;
     });
-  }, [data, leads, visDates]);
+  }, [cplData, leads, visDates]);
 
   const syncing = phase === 'syncing';
 
@@ -133,7 +132,7 @@ export default function CplTracker() {
     return <div style={{ padding: 40, color: 'var(--text-muted)' }}>Loading CPL data…</div>;
   }
 
-  if (!data) {
+  if (!cplData) {
     return (
       <div style={{ padding: 40 }}>
         <p style={{ color: 'var(--text-muted)', marginBottom: 16 }}>
@@ -155,8 +154,8 @@ export default function CplTracker() {
         <button onClick={runSync} disabled={syncing} className="cpl-sync-btn">
           {syncing ? 'Syncing…' : '↻ Sync CPL'}
         </button>
-        {data.lastSync && (
-          <span className="cpl-lastsync">Last synced: {new Date(data.lastSync).toLocaleString()}</span>
+        {cplData.lastSync && (
+          <span className="cpl-lastsync">Last synced: {new Date(cplData.lastSync).toLocaleString()}</span>
         )}
         {error && <span style={{ fontSize: 12, color: '#dc2626' }}>{error}</span>}
         <div className="cpl-days">
@@ -188,8 +187,8 @@ export default function CplTracker() {
             </tr>
           </thead>
           <tbody>
-            {data.campaigns.map((camp, ci) => {
-              const totSpend = visDates.reduce((s, d) => s + (data.spend[camp]?.[d] || 0), 0);
+            {cplData.campaigns.map((camp, ci) => {
+              const totSpend = visDates.reduce((s, d) => s + (cplData.spend[camp]?.[d] || 0), 0);
               const totLeads = visDates.reduce((s, d) => s + (leads[`${camp}|${d}`] || 0), 0);
               const totCpl   = totLeads > 0 ? totSpend / totLeads : null;
               const alt = ci % 2 === 1;
@@ -197,7 +196,7 @@ export default function CplTracker() {
                 <tr key={camp} className={alt ? 'cpl-row-alt' : ''}>
                   <td className={`cpl-td-camp${alt ? ' alt' : ''}`} title={camp}>{camp}</td>
                   {visDates.map(date => {
-                    const spend = data.spend[camp]?.[date] || 0;
+                    const spend = cplData.spend[camp]?.[date] || 0;
                     const l = leads[`${camp}|${date}`] || 0;
                     const cpl = l > 0 ? spend / l : null;
                     return (
@@ -232,7 +231,7 @@ export default function CplTracker() {
           <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Click a campaign to toggle</span>
         </div>
         <div className="cpl-legend">
-          {data.campaigns.map((c, i) => {
+          {cplData.campaigns.map((c, i) => {
             const off = hidden.has(c);
             const color = COLORS[i % COLORS.length];
             return (
@@ -257,7 +256,7 @@ export default function CplTracker() {
             <XAxis dataKey="date" tick={{ fontSize: 11, fill: 'var(--text-muted)' }} />
             <YAxis tickFormatter={v => `$${v}`} tick={{ fontSize: 11, fill: 'var(--text-muted)' }} width={64} />
             <Tooltip content={<CplTooltip />} />
-            {data.campaigns.map((c, i) => (
+            {cplData.campaigns.map((c, i) => (
               <Line
                 key={c} type="monotone" dataKey={c}
                 stroke={COLORS[i % COLORS.length]}

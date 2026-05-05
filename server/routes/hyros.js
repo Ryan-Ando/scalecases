@@ -1,6 +1,12 @@
 import { Router } from 'express';
 import fetch from 'node-fetch';
 import { google } from 'googleapis';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname  = path.dirname(__filename);
 
 const router = Router();
 
@@ -748,6 +754,14 @@ let _lastSyncData = null;
 // Standalone CPL sync state (independent of full sync)
 let _cplSync    = { running: false, startedAt: null, lastSync: null, error: null };
 let _lastCplData = null; // { campaigns, dates, spend, lastSync } — served to React CPL tab
+
+// ── CPL lead storage (server-side, survives browser refreshes) ────────────────
+const LEADS_FILE = path.join(__dirname, '../../leads.json');
+let _leads = {};
+try { _leads = JSON.parse(fs.readFileSync(LEADS_FILE, 'utf8')); } catch {}
+function persistLeads() {
+  try { fs.writeFileSync(LEADS_FILE, JSON.stringify(_leads)); } catch {}
+}
 
 function aggregateCplData(adsetInfo, dailyData, dates) {
   const spend = {};
@@ -1862,6 +1876,24 @@ router.get('/sync-cpl-status', (_req, res) => {
     lastSync:  _cplSync.lastSync,
     error:     _cplSync.error,
   });
+});
+
+// GET /api/hyros/cpl-leads — return all stored lead counts
+router.get('/cpl-leads', (_req, res) => {
+  res.json({ ok: true, leads: _leads });
+});
+
+// POST /api/hyros/cpl-leads — save a lead count { key: 'CampName|MM-DD', value: number }
+router.post('/cpl-leads', (req, res) => {
+  const { key, value } = req.body;
+  if (!key) return res.status(400).json({ ok: false, error: 'key required' });
+  if (!value || value <= 0) {
+    delete _leads[key];
+  } else {
+    _leads[key] = value;
+  }
+  persistLeads();
+  res.json({ ok: true });
 });
 
 // GET /api/hyros/cpl-data — serve aggregated spend data to the React CPL Tracker tab
