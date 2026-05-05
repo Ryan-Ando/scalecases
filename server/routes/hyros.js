@@ -11,7 +11,7 @@ const START_DATE = '2026-04-14';
 const SHEET_ID   = process.env.HYROS_SHEET_ID || '16c7rc3LmPcRRMpw5u4lbk5wq8Mwizma8ynNB1nu9Prw';
 const EVENTS_TAB  = 'Lead Events';
 const WEBHOOK_TAB = 'Webhook Cache';
-const PROTECTED_TABS = new Set([EVENTS_TAB, WEBHOOK_TAB]);
+const PROTECTED_TABS = new Set([EVENTS_TAB, WEBHOOK_TAB, 'CPL']);
 
 // In-memory fbclid → adsetId map, populated from Webhook Cache sheet + live webhooks
 const _fbclidCache = new Map();
@@ -743,6 +743,175 @@ let _syncRunning = false;
 let _lastSync    = null;
 let _lastError   = null;
 
+// ── CPL tab ───────────────────────────────────────────────────────────────────
+// Layout:
+//   Row 1  : Header — Campaign | MM-DD … | Total Spend | Leads | CPL
+//   Row 2  : Totals (SUM formulas)
+//   Row 3+ : One row per campaign, sorted by total spend desc
+//   Chart  : Line chart anchored below the table, one series per campaign
+//
+// "Leads" column has a yellow background so it's obvious it's manual input.
+// CPL = Total Spend / Leads (formula, shows "—" when leads = 0).
+
+async function writeCplTab(sheets, numericId, adsetInfo, dailyData, dates) {
+  // 1. Aggregate spend by campaign per day
+  const campaignDays = {};
+  for (const [dateStr, adsetMap] of Object.entries(dailyData)) {
+    for (const [adsetId, { cost }] of Object.entries(adsetMap)) {
+      const name = adsetInfo[adsetId]?.campaignName || 'Unknown Campaign';
+      if (!campaignDays[name]) campaignDays[name] = {};
+      campaignDays[name][dateStr] = (campaignDays[name][dateStr] || 0) + cost;
+    }
+  }
+
+  const campaigns = Object.keys(campaignDays).sort((a, b) => {
+    const ta = Object.values(campaignDays[a]).reduce((s, v) => s + v, 0);
+    const tb = Object.values(campaignDays[b]).reduce((s, v) => s + v, 0);
+    return tb - ta;
+  });
+
+  const nDates       = dates.length;
+  // Column indices (1-based for colLetter, 0-based for API ranges)
+  const firstDateCol = 2;                    // col B
+  const lastDateCol  = firstDateCol + nDates - 1;
+  const totalSpendC  = lastDateCol + 1;
+  const leadsC       = totalSpendC + 1;
+  const cplC         = leadsC + 1;
+  const lastDataRow  = campaigns.length + 2; // header=1, totals=2, data=3..N+2
+
+  // 2. Build grid values
+  const headers  = ['Campaign', ...dates.map(d => d.slice(5)), 'Total Spend', 'Leads', 'CPL'];
+  const gridRows = [headers];
+
+  // Totals row (row 2)
+  const totalsRow = ['TOTALS'];
+  for (let i = 0; i < nDates; i++) {
+    totalsRow.push(`=SUM(${colLetter(firstDateCol + i)}3:${colLetter(firstDateCol + i)}${lastDataRow})`);
+  }
+  totalsRow.push(`=SUM(${colLetter(totalSpendC)}3:${colLetter(totalSpendC)}${lastDataRow})`);
+  totalsRow.push(`=SUM(${colLetter(leadsC)}3:${colLetter(leadsC)}${lastDataRow})`);
+  totalsRow.push(`=IF(${colLetter(leadsC)}2=0,"—",${colLetter(totalSpendC)}2/${colLetter(leadsC)}2)`);
+  gridRows.push(totalsRow);
+
+  // Campaign rows (row 3+)
+  for (let r = 0; r < campaigns.length; r++) {
+    const row     = r + 3;
+    const name    = campaigns[r];
+    const dayCols = dates.map(d => +(campaignDays[name][d] || 0).toFixed(2));
+    const totalF  = `=SUM(${colLetter(firstDateCol)}${row}:${colLetter(lastDateCol)}${row})`;
+    const cplF    = `=IF(${colLetter(leadsC)}${row}=0,"—",${colLetter(totalSpendC)}${row}/${colLetter(leadsC)}${row})`;
+    gridRows.push([name, ...dayCols, totalF, '', cplF]);
+  }
+
+  // 3. Write values (USER_ENTERED so formulas evaluate)
+  await sheets.spreadsheets.values.clear({ spreadsheetId: SHEET_ID, range: 'CPL!A:ZZ' });
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: SHEET_ID, range: 'CPL!A1',
+    valueInputOption: 'USER_ENTERED',
+    requestBody: { values: gridRows },
+  });
+
+  // 4. Formatting + chart
+  // First, delete any existing charts on this sheet so re-syncing doesn't stack them
+  const meta        = await sheets.spreadsheets.get({ spreadsheetId: SHEET_ID });
+  const cplSheet    = meta.data.sheets.find(s => s.properties.sheetId === numericId);
+  const deleteCharts = (cplSheet?.charts || []).map(c => ({
+    deleteEmbeddedObject: { objectId: c.chartId },
+  }));
+
+  const chartAnchorRow = lastDataRow + 2; // a couple rows below the data
+  const nSeries = campaigns.length;
+
+  const requests = [
+    ...deleteCharts,
+
+    // Freeze header + campaign name column
+    { updateSheetProperties: { properties: { sheetId: numericId, gridProperties: { frozenRowCount: 2, frozenColumnCount: 1 } }, fields: 'gridProperties.frozenRowCount,gridProperties.frozenColumnCount' } },
+
+    // Header row: green background, white bold text
+    { repeatCell: { range: { sheetId: numericId, startRowIndex: 0, endRowIndex: 1 },
+        cell: { userEnteredFormat: { backgroundColor: { red: 0.23, green: 0.56, blue: 0.36 }, textFormat: { bold: true, foregroundColor: { red: 1, green: 1, blue: 1 }, fontSize: 10 } } },
+        fields: 'userEnteredFormat(backgroundColor,textFormat)' } },
+
+    // Totals row: light grey bold
+    { repeatCell: { range: { sheetId: numericId, startRowIndex: 1, endRowIndex: 2 },
+        cell: { userEnteredFormat: { backgroundColor: { red: 0.93, green: 0.93, blue: 0.93 }, textFormat: { bold: true } } },
+        fields: 'userEnteredFormat(backgroundColor,textFormat)' } },
+
+    // Currency format: date spend columns + Total Spend + CPL
+    { repeatCell: { range: { sheetId: numericId, startRowIndex: 1, endRowIndex: lastDataRow, startColumnIndex: firstDateCol - 1, endColumnIndex: totalSpendC },
+        cell: { userEnteredFormat: { numberFormat: { type: 'CURRENCY', pattern: '$#,##0.00' } } },
+        fields: 'userEnteredFormat.numberFormat' } },
+    { repeatCell: { range: { sheetId: numericId, startRowIndex: 1, endRowIndex: lastDataRow, startColumnIndex: cplC - 1, endColumnIndex: cplC },
+        cell: { userEnteredFormat: { numberFormat: { type: 'CURRENCY', pattern: '$#,##0.00' } } },
+        fields: 'userEnteredFormat.numberFormat' } },
+
+    // Leads column: yellow background to signal manual input
+    { repeatCell: { range: { sheetId: numericId, startRowIndex: 2, endRowIndex: lastDataRow, startColumnIndex: leadsC - 1, endColumnIndex: leadsC },
+        cell: { userEnteredFormat: { backgroundColor: { red: 1, green: 0.98, blue: 0.8 } } },
+        fields: 'userEnteredFormat.backgroundColor' } },
+
+    // Column widths: campaign name wide, date cols narrow
+    { updateDimensionProperties: { range: { sheetId: numericId, dimension: 'COLUMNS', startIndex: 0, endIndex: 1 },
+        properties: { pixelSize: 220 }, fields: 'pixelSize' } },
+    { updateDimensionProperties: { range: { sheetId: numericId, dimension: 'COLUMNS', startIndex: 1, endIndex: lastDateCol },
+        properties: { pixelSize: 68 }, fields: 'pixelSize' } },
+    { updateDimensionProperties: { range: { sheetId: numericId, dimension: 'COLUMNS', startIndex: totalSpendC - 1, endIndex: cplC },
+        properties: { pixelSize: 90 }, fields: 'pixelSize' } },
+
+    // Filter on header row
+    { setBasicFilter: { filter: { range: { sheetId: numericId, startRowIndex: 0 } } } },
+
+    // Line chart anchored below the data
+    ...(nSeries > 0 ? [{
+      addChart: {
+        chart: {
+          spec: {
+            title: 'Daily Spend by Campaign',
+            basicChart: {
+              chartType: 'LINE',
+              legendPosition: 'BOTTOM_LEGEND',
+              axis: [
+                { position: 'BOTTOM_AXIS' },
+                { position: 'LEFT_AXIS', title: 'Spend ($)' },
+              ],
+              domains: [{
+                domain: {
+                  sourceRange: { sources: [{
+                    sheetId: numericId,
+                    startRowIndex: 0, endRowIndex: 1,
+                    startColumnIndex: firstDateCol - 1, endColumnIndex: lastDateCol,
+                  }] },
+                },
+              }],
+              series: campaigns.map((_, i) => ({
+                series: {
+                  sourceRange: { sources: [{
+                    sheetId: numericId,
+                    startRowIndex: i + 2, endRowIndex: i + 3,
+                    startColumnIndex: firstDateCol - 1, endColumnIndex: lastDateCol,
+                  }] },
+                },
+                targetAxis: 'LEFT_AXIS',
+              })),
+              headerCount: 1,
+            },
+          },
+          position: {
+            overlayPosition: {
+              anchorCell: { sheetId: numericId, rowIndex: chartAnchorRow, columnIndex: 0 },
+              widthPixels: 1100,
+              heightPixels: 380,
+            },
+          },
+        },
+      },
+    }] : []),
+  ];
+
+  await sheets.spreadsheets.batchUpdate({ spreadsheetId: SHEET_ID, requestBody: { requests } });
+}
+
 async function runSync() {
   if (_syncRunning) return;
   _syncRunning = true;
@@ -839,8 +1008,8 @@ async function runSync() {
 
     const campaignTabNames = new Set(Object.keys(byCampaign));
 
-    // Create any missing tabs
-    const tabsToCreate = [...campaignTabNames].filter(
+    // Create any missing tabs (campaign tabs + CPL)
+    const tabsToCreate = [...campaignTabNames, 'CPL'].filter(
       name => !existingTabs.some(t => t.title === name)
     );
     if (tabsToCreate.length) {
@@ -869,7 +1038,13 @@ async function runSync() {
       await delay(300);
     }
 
-    // 7. Remove stale campaign tabs + legacy "Daily Leads", never touch protected tabs or Home.
+    // 8. Write CPL tab
+    if (tabMap['CPL'] != null) {
+      console.log('  Writing CPL tab…');
+      await writeCplTab(sheets, tabMap['CPL'], adsetInfo, dailyData, dates);
+    }
+
+    // 9. Remove stale campaign tabs + legacy "Daily Leads", never touch protected tabs or Home.
     //    Skip entirely if FB was unavailable — we can't safely determine which tabs are stale.
     const toDelete = fbAvailable ? metaAfter.data.sheets.filter(s => {
       const title = s.properties.title;
@@ -1526,6 +1701,75 @@ async function handleSync(req, res) {
 }
 router.get('/sync',  handleSync);
 router.post('/sync', handleSync);
+
+// ── CPL data endpoint ─────────────────────────────────────────────────────────
+// Returns daily spend per campaign for a date range.
+// Cached in memory for 30 min to avoid hammering Hyros + FB APIs.
+let _cplCache = { key: '', data: null, at: 0 };
+
+router.get('/cpl-data', async (req, res) => {
+  const from = req.query.from || START_DATE;
+  const to   = req.query.to   || isoToday();
+  const cacheKey = `${from}:${to}`;
+
+  if (_cplCache.key === cacheKey && Date.now() - _cplCache.at < 30 * 60 * 1000) {
+    return res.json(_cplCache.data);
+  }
+
+  try {
+    // Build list of dates in range
+    const dates = [];
+    const cur = new Date(from + 'T00:00:00Z');
+    const end = new Date(to   + 'T00:00:00Z');
+    while (cur <= end) {
+      dates.push(cur.toISOString().slice(0, 10));
+      cur.setUTCDate(cur.getUTCDate() + 1);
+    }
+
+    // Fetch spend per adset per day from Hyros
+    const rawByAdsetDay = {}; // adsetId → { date → cost }
+    const allAdsetIds   = new Set();
+    for (const dateStr of dates) {
+      const attrByAdset = await fetchCostForDay(dateStr);
+      for (const [id, data] of Object.entries(attrByAdset)) {
+        if (!rawByAdsetDay[id]) rawByAdsetDay[id] = {};
+        rawByAdsetDay[id][dateStr] = (rawByAdsetDay[id][dateStr] || 0) + (data.cost || 0);
+        allAdsetIds.add(id);
+      }
+    }
+
+    // Get campaign names for all adsets
+    const adsetInfo = await getAllAccountAdsets();
+    const unknown   = [...allAdsetIds].filter(id => !adsetInfo[id]);
+    if (unknown.length) Object.assign(adsetInfo, await getAdsetInfo(unknown));
+
+    // Aggregate spend by campaign name
+    const byCampaign = {}; // campaignName → { date → cost }
+    for (const [adsetId, dayMap] of Object.entries(rawByAdsetDay)) {
+      const campaignName = adsetInfo[adsetId]?.campaignName || 'Unknown Campaign';
+      if (!byCampaign[campaignName]) byCampaign[campaignName] = {};
+      for (const [date, cost] of Object.entries(dayMap)) {
+        byCampaign[campaignName][date] = (byCampaign[campaignName][date] || 0) + cost;
+      }
+    }
+
+    const result = {
+      dates,
+      campaigns: Object.entries(byCampaign)
+        .map(([name, spend]) => ({ name, spend }))
+        .sort((a, b) => {
+          const totalA = Object.values(a.spend).reduce((s, v) => s + v, 0);
+          const totalB = Object.values(b.spend).reduce((s, v) => s + v, 0);
+          return totalB - totalA;
+        }),
+    };
+
+    _cplCache = { key: cacheKey, data: result, at: Date.now() };
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
 
 router.get('/status', (_req, res) => {
   res.json({
