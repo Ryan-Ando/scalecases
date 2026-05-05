@@ -503,10 +503,11 @@ async function writeHomeTab(sheets, tabMap) {
     ['Scale Cases — Ad Intelligence'],
     [''],
     ['Action', 'Link', 'Description'],
-    ['Run Backfill + Sync', `=HYPERLINK("${serverUrl}/api/hyros/run-all","▶ Run All")`,         'Backfill leads then refresh all campaign tabs (runs in sequence)'],
-    ['Check Status',        `=HYPERLINK("${serverUrl}/api/hyros/run-all-status","◉ Status")`,   'Poll every 15s — shows phase: backfill → sync → done'],
-    ['Sync Only',           `=HYPERLINK("${serverUrl}/api/hyros/sync","▶ Sync Only")`,          'Refresh campaign tabs without re-running backfill'],
-    ['Open Sheet',          `=HYPERLINK("${sheetUrl}","📊 Open")`,                              'Link to this spreadsheet'],
+    ['Run Backfill + Sync', `=HYPERLINK("${serverUrl}/api/hyros/run-all","▶ Run All")`,              'Backfill leads then refresh all campaign tabs (runs in sequence)'],
+    ['Check Status',        `=HYPERLINK("${serverUrl}/api/hyros/run-all-status","◉ Status")`,      'Poll every 15s — shows phase: backfill → sync → done'],
+    ['Sync Only',           `=HYPERLINK("${serverUrl}/api/hyros/sync","▶ Sync Only")`,             'Refresh campaign tabs without re-running backfill'],
+    ['Refresh CPL Tab',     `=HYPERLINK("${serverUrl}/api/hyros/refresh-cpl","↻ Refresh CPL")`,   'Rewrite only the CPL tab using last sync data (fast)'],
+    ['Open Sheet',          `=HYPERLINK("${sheetUrl}","📊 Open")`,                                 'Link to this spreadsheet'],
     [''],
     ['Notes'],
     ['• Runs automatically at 8:15am PT daily'],
@@ -740,8 +741,9 @@ async function runAll() {
 // ── Core sync ─────────────────────────────────────────────────────────────────
 
 let _syncRunning = false;
-let _lastSync    = null;
-let _lastError   = null;
+let _lastSync     = null;
+let _lastError    = null;
+let _lastSyncData = null; // cached { adsetInfo, dailyData, dates, tabMap } for CPL refresh
 
 // ── CPL tab ───────────────────────────────────────────────────────────────────
 // Layout:
@@ -1031,6 +1033,7 @@ async function runSync() {
       });
     }
 
+    _lastSyncData = { adsetInfo, dailyData, dates, tabMap };
     _lastSync = new Date().toISOString();
     const total = Object.values(byCampaign).reduce((s, a) => s + a.length, 0);
     console.log(`Hyros sync complete: ${total} adsets across ${Object.keys(byCampaign).length} campaigns`);
@@ -1738,6 +1741,22 @@ router.get('/cpl-data', async (req, res) => {
     res.json(result);
   } catch (e) {
     res.status(500).json({ error: e.message });
+  }
+});
+
+// GET /api/hyros/refresh-cpl — rewrite the CPL tab using data from the last sync
+router.get('/refresh-cpl', async (req, res) => {
+  if (!_lastSyncData) return res.status(400).json({ ok: false, error: 'No sync data available — run a full sync first' });
+  if (_syncRunning)   return res.status(400).json({ ok: false, error: 'Sync currently running — try again shortly' });
+  try {
+    const { adsetInfo, dailyData, dates, tabMap } = _lastSyncData;
+    if (tabMap['CPL'] === undefined) return res.status(400).json({ ok: false, error: 'CPL tab not found — run a full sync first' });
+    const auth   = await getAuthClient();
+    const sheets = google.sheets({ version: 'v4', auth });
+    await writeCplTab(sheets, tabMap['CPL'], adsetInfo, dailyData, dates, tabMap);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
   }
 });
 
