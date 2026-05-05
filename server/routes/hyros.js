@@ -753,7 +753,7 @@ let _lastError   = null;
 // "Leads" column has a yellow background so it's obvious it's manual input.
 // CPL = Total Spend / Leads (formula, shows "—" when leads = 0).
 
-async function writeCplTab(sheets, numericId, adsetInfo, dailyData, dates) {
+async function writeCplTab(sheets, numericId, adsetInfo, dailyData, dates, tabMap) {
   // 1. Aggregate spend by campaign per day
   const campaignDays = {};
   for (const [dateStr, adsetMap] of Object.entries(dailyData)) {
@@ -861,6 +861,9 @@ async function writeCplTab(sheets, numericId, adsetInfo, dailyData, dates) {
 
     // Filter on header row
     { setBasicFilter: { filter: { range: { sheetId: numericId, startRowIndex: 0 } } } },
+
+    // Position CPL right after Home (index 1)
+    { updateSheetProperties: { properties: { sheetId: numericId, index: 1 }, fields: 'index' } },
 
     // Line chart anchored below the data
     ...(nSeries > 0 ? [{
@@ -1039,9 +1042,9 @@ async function runSync() {
     }
 
     // 8. Write CPL tab
-    if (tabMap['CPL'] != null) {
+    if (tabMap['CPL'] !== undefined) {
       console.log('  Writing CPL tab…');
-      await writeCplTab(sheets, tabMap['CPL'], adsetInfo, dailyData, dates);
+      await writeCplTab(sheets, tabMap['CPL'], adsetInfo, dailyData, dates, tabMap);
     }
 
     // 9. Remove stale campaign tabs + legacy "Daily Leads", never touch protected tabs or Home.
