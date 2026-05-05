@@ -756,7 +756,9 @@ let _cplSync    = { running: false, startedAt: null, lastSync: null, error: null
 let _lastCplData = null; // { campaigns, dates, spend, lastSync } — served to React CPL tab
 
 // ── CPL lead storage (server-side, survives browser refreshes) ────────────────
-const LEADS_FILE = path.join(__dirname, '../../leads.json');
+const LEADS_FILE = process.env.DATA_DIR
+  ? path.join(process.env.DATA_DIR, 'leads.json')
+  : path.join(__dirname, '../../leads.json');
 let _leads = {};
 try { _leads = JSON.parse(fs.readFileSync(LEADS_FILE, 'utf8')); } catch {}
 function persistLeads() {
