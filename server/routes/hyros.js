@@ -1816,74 +1816,7 @@ async function handleSync(req, res) {
 router.get('/sync',  handleSync);
 router.post('/sync', handleSync);
 
-// ── CPL data endpoint ─────────────────────────────────────────────────────────
-// Returns daily spend per campaign for a date range.
-// Cached in memory for 30 min to avoid hammering Hyros + FB APIs.
-let _cplCache = { key: '', data: null, at: 0 };
 
-router.get('/cpl-data', async (req, res) => {
-  const from = req.query.from || START_DATE;
-  const to   = req.query.to   || isoToday();
-  const cacheKey = `${from}:${to}`;
-
-  if (_cplCache.key === cacheKey && Date.now() - _cplCache.at < 30 * 60 * 1000) {
-    return res.json(_cplCache.data);
-  }
-
-  try {
-    // Build list of dates in range
-    const dates = [];
-    const cur = new Date(from + 'T00:00:00Z');
-    const end = new Date(to   + 'T00:00:00Z');
-    while (cur <= end) {
-      dates.push(cur.toISOString().slice(0, 10));
-      cur.setUTCDate(cur.getUTCDate() + 1);
-    }
-
-    // Fetch spend per adset per day from Hyros
-    const rawByAdsetDay = {}; // adsetId → { date → cost }
-    const allAdsetIds   = new Set();
-    for (const dateStr of dates) {
-      const attrByAdset = await fetchCostForDay(dateStr);
-      for (const [id, data] of Object.entries(attrByAdset)) {
-        if (!rawByAdsetDay[id]) rawByAdsetDay[id] = {};
-        rawByAdsetDay[id][dateStr] = (rawByAdsetDay[id][dateStr] || 0) + (data.cost || 0);
-        allAdsetIds.add(id);
-      }
-    }
-
-    // Get campaign names for all adsets
-    const adsetInfo = await getAllAccountAdsets();
-    const unknown   = [...allAdsetIds].filter(id => !adsetInfo[id]);
-    if (unknown.length) Object.assign(adsetInfo, await getAdsetInfo(unknown));
-
-    // Aggregate spend by campaign name
-    const byCampaign = {}; // campaignName → { date → cost }
-    for (const [adsetId, dayMap] of Object.entries(rawByAdsetDay)) {
-      const campaignName = adsetInfo[adsetId]?.campaignName || 'Unknown Campaign';
-      if (!byCampaign[campaignName]) byCampaign[campaignName] = {};
-      for (const [date, cost] of Object.entries(dayMap)) {
-        byCampaign[campaignName][date] = (byCampaign[campaignName][date] || 0) + cost;
-      }
-    }
-
-    const result = {
-      dates,
-      campaigns: Object.entries(byCampaign)
-        .map(([name, spend]) => ({ name, spend }))
-        .sort((a, b) => {
-          const totalA = Object.values(a.spend).reduce((s, v) => s + v, 0);
-          const totalB = Object.values(b.spend).reduce((s, v) => s + v, 0);
-          return totalB - totalA;
-        }),
-    };
-
-    _cplCache = { key: cacheKey, data: result, at: Date.now() };
-    res.json(result);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
 
 // Standalone CPL sync — fetches Hyros + FB data only, no Sheets writes
 async function runCplSync() {
