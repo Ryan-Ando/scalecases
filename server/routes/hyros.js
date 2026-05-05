@@ -867,15 +867,7 @@ async function writeCplTab(sheets, numericId, adsetInfo, dailyData, dates, tabMa
   });
   await delay(500);
 
-  // 5. Formatting — unmerge first (previous layout may have had merges), then re-apply
-  try {
-    await sheets.spreadsheets.batchUpdate({
-      spreadsheetId: SHEET_ID,
-      requestBody: { requests: [{ unmergeCells: { range: { sheetId: numericId, startRowIndex: 0, endRowIndex: 1 } } }] },
-    });
-  } catch { /* no prior merges, fine */ }
-  await delay(200);
-
+  // 5. Formatting
   const green   = { red: 0.23, green: 0.56, blue: 0.36 };
   const white   = { red: 1, green: 1, blue: 1 };
   const yellow  = { red: 1, green: 0.98, blue: 0.80 };
@@ -922,28 +914,27 @@ async function writeCplTab(sheets, numericId, adsetInfo, dailyData, dates, tabMa
   await sheets.spreadsheets.batchUpdate({ spreadsheetId: SHEET_ID, requestBody: { requests: fmtReqs } });
   await delay(500);
 
-  // Column groups: one collapsible group per date (3 cols: Spend|Leads|CPL)
-  try {
-    const groupReqs = Array.from({ length: nDates }, (_, i) => ({
-      addDimensionGroup: { range: { sheetId: numericId, dimension: 'COLUMNS', startIndex: spC(i), endIndex: cpC(i) + 1 } },
-    }));
-    await sheets.spreadsheets.batchUpdate({ spreadsheetId: SHEET_ID, requestBody: { requests: groupReqs } });
-  } catch (e) {
-    console.warn('[CPL] column groups failed (non-fatal):', e.message);
-  }
-  await delay(400);
-
-  // 6. Chart — CPL per campaign, anchored below the table
+  // 6. Column groups (toggleable) + chart in one batchUpdate to stay under quota
   try {
     const meta     = await sheets.spreadsheets.get({ spreadsheetId: SHEET_ID });
     const cplSheet = meta.data.sheets.find(s => s.properties.sheetId === numericId);
     const deleteCharts = (cplSheet?.charts || []).map(c => ({ deleteEmbeddedObject: { objectId: c.chartId } }));
+    // Delete existing column groups then re-add so we don't accumulate nested levels
+    const existingGroups = cplSheet?.columnGroups || [];
+    const deleteGroups = existingGroups.map(g => ({
+      deleteDimensionGroup: { range: { sheetId: numericId, dimension: 'COLUMNS', startIndex: g.range.startIndex, endIndex: g.range.endIndex } },
+    }));
+    const addGroups = Array.from({ length: nDates }, (_, i) => ({
+      addDimensionGroup: { range: { sheetId: numericId, dimension: 'COLUMNS', startIndex: spC(i), endIndex: cpC(i) + 1 } },
+    }));
     await delay(300);
 
     await sheets.spreadsheets.batchUpdate({
       spreadsheetId: SHEET_ID,
       requestBody: {
         requests: [
+          ...deleteGroups,
+          ...addGroups,
           ...deleteCharts,
           {
             addChart: {
