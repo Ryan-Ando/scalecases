@@ -1110,6 +1110,7 @@ tfoot .td-name { font-family: var(--sans); font-weight: 700; font-size: 13px; }
 .cpl-bold { font-weight: 600; }
 .cpl-row-totals td { background: #1e293b !important; color: #f1f5f9 !important; font-weight: 700; border-top: 2px solid #334155; }
 .cpl-td-totals-label { position: sticky; left: 0; z-index: 2; }
+.cpl-drag-handle { display: inline-block; width: 16px; margin-right: 4px; color: #9ca3af; font-size: 13px; cursor: grab; user-select: none; }
 
 .cpl-input {
   width: 48px; text-align: center; border: 1px solid #d1d5db;

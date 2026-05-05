@@ -1,17 +1,34 @@
-import { useState, useEffect, useMemo, useCallback, Fragment } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef, Fragment } from 'react';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer,
 } from 'recharts';
 
-const BASE = import.meta.env.VITE_API_URL || 'http://localhost:3001';
-const COLORS = [
+const BASE    = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+const LS_ORDER = 'cpl_row_order';
+const COLORS  = [
   '#2563eb','#dc2626','#16a34a','#d97706','#7c3aed',
   '#0891b2','#be123c','#15803d','#b45309','#6d28d9',
   '#0e7490','#db2777','#65a30d','#ea580c','#4f46e5',
 ];
 
 const fmt$ = v => v == null ? '—' : `$${v.toFixed(2)}`;
+
+function loadOrder() {
+  try { return JSON.parse(localStorage.getItem(LS_ORDER) || 'null'); } catch { return null; }
+}
+function saveOrder(arr) {
+  try { localStorage.setItem(LS_ORDER, JSON.stringify(arr)); } catch {}
+}
+
+// Merge saved order with current campaigns: keep saved order, append new, drop removed
+function mergeOrder(saved, current) {
+  if (!saved) return [...current];
+  return [
+    ...saved.filter(c => current.includes(c)),
+    ...current.filter(c => !saved.includes(c)),
+  ];
+}
 
 function CplTooltip({ active, payload, label }) {
   if (!active || !payload?.length) return null;
@@ -32,12 +49,16 @@ function CplTooltip({ active, payload, label }) {
 export default function CplTracker() {
   const [cplData, setCplData] = useState(null);
   const [leads, setLeads]     = useState({});
+  const [rowOrder, setRowOrder] = useState([]);
   const [hidden, setHidden]   = useState(new Set());
   const [days, setDays]       = useState(14);
-  const [phase, setPhase]     = useState('loading'); // 'loading' | 'ready' | 'syncing' | 'error'
+  const [phase, setPhase]     = useState('loading');
   const [error, setError]     = useState(null);
 
-  // Load both spend data and leads from server on mount
+  // drag state (refs to avoid re-renders mid-drag)
+  const dragIdx  = useRef(null);
+  const dragOver = useRef(null);
+
   const fetchData = useCallback(async () => {
     setPhase('loading');
     setError(null);
@@ -46,7 +67,14 @@ export default function CplTracker() {
         fetch(`${BASE}/api/hyros/cpl-data`).then(r => r.json()),
         fetch(`${BASE}/api/hyros/cpl-leads`).then(r => r.json()),
       ]);
-      if (dataRes.ok)  setCplData(dataRes.data);
+      if (dataRes.ok) {
+        setCplData(dataRes.data);
+        setRowOrder(prev => {
+          const merged = mergeOrder(prev.length ? prev : loadOrder(), dataRes.data.campaigns);
+          saveOrder(merged);
+          return merged;
+        });
+      }
       if (leadsRes.ok) setLeads(leadsRes.leads);
       setPhase(dataRes.ok ? 'ready' : 'error');
       if (!dataRes.ok) setError(dataRes.error || 'No data yet');
@@ -84,7 +112,6 @@ export default function CplTracker() {
     }
   }, [fetchData, cplData]);
 
-  // Save a lead to server; optimistically update local state
   const setLead = useCallback((camp, date, raw) => {
     const val = Math.max(0, parseInt(raw, 10) || 0);
     const key = `${camp}|${date}`;
@@ -106,6 +133,23 @@ export default function CplTracker() {
       s.has(name) ? s.delete(name) : s.add(name);
       return s;
     });
+  }, []);
+
+  // Drag-and-drop handlers
+  const onDragStart = useCallback((i) => { dragIdx.current = i; }, []);
+  const onDragEnter = useCallback((i) => { dragOver.current = i; }, []);
+  const onDragEnd   = useCallback(() => {
+    const from = dragIdx.current;
+    const to   = dragOver.current;
+    if (from == null || to == null || from === to) { dragIdx.current = null; dragOver.current = null; return; }
+    setRowOrder(prev => {
+      const next = [...prev];
+      next.splice(to, 0, next.splice(from, 1)[0]);
+      saveOrder(next);
+      return next;
+    });
+    dragIdx.current  = null;
+    dragOver.current = null;
   }, []);
 
   const visDates = useMemo(() => {
@@ -172,7 +216,7 @@ export default function CplTracker() {
         <table className="cpl-table">
           <thead>
             <tr>
-              <th rowSpan={2} className="cpl-th-camp">Campaign</th>
+              <th rowSpan={2} className="cpl-th-camp" style={{ paddingLeft: 28 }}>Campaign</th>
               {visDates.map(d => <th key={d} colSpan={3} className="cpl-th-date">{d}</th>)}
               <th colSpan={3} className="cpl-th-total">TOTAL</th>
             </tr>
@@ -187,14 +231,26 @@ export default function CplTracker() {
             </tr>
           </thead>
           <tbody>
-            {cplData.campaigns.map((camp, ci) => {
+            {rowOrder.map((camp, ci) => {
               const totSpend = visDates.reduce((s, d) => s + (cplData.spend[camp]?.[d] || 0), 0);
               const totLeads = visDates.reduce((s, d) => s + (leads[`${camp}|${d}`] || 0), 0);
               const totCpl   = totLeads > 0 ? totSpend / totLeads : null;
               const alt = ci % 2 === 1;
               return (
-                <tr key={camp} className={alt ? 'cpl-row-alt' : ''}>
-                  <td className={`cpl-td-camp${alt ? ' alt' : ''}`} title={camp}>{camp}</td>
+                <tr
+                  key={camp}
+                  className={alt ? 'cpl-row-alt' : ''}
+                  draggable
+                  onDragStart={() => onDragStart(ci)}
+                  onDragEnter={() => onDragEnter(ci)}
+                  onDragEnd={onDragEnd}
+                  onDragOver={e => e.preventDefault()}
+                  style={{ cursor: 'grab' }}
+                >
+                  <td className={`cpl-td-camp${alt ? ' alt' : ''}`} title={camp}>
+                    <span className="cpl-drag-handle">⠿</span>
+                    {camp}
+                  </td>
                   {visDates.map(date => {
                     const spend = cplData.spend[camp]?.[date] || 0;
                     const l = leads[`${camp}|${date}`] || 0;
