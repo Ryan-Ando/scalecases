@@ -506,7 +506,7 @@ async function writeHomeTab(sheets, tabMap) {
     ['Run Backfill + Sync', `=HYPERLINK("${serverUrl}/api/hyros/run-all","▶ Run All")`,              'Backfill leads then refresh all campaign tabs (runs in sequence)'],
     ['Check Status',        `=HYPERLINK("${serverUrl}/api/hyros/run-all-status","◉ Status")`,      'Poll every 15s — shows phase: backfill → sync → done'],
     ['Sync Only',           `=HYPERLINK("${serverUrl}/api/hyros/sync","▶ Sync Only")`,             'Refresh campaign tabs without re-running backfill'],
-    ['Refresh CPL Tab',     `=HYPERLINK("${serverUrl}/api/hyros/refresh-cpl","↻ Refresh CPL")`,   'Rewrite only the CPL tab using last sync data (fast)'],
+    ['Sync CPL Tab',        `=HYPERLINK("${serverUrl}/api/hyros/sync-cpl","↻ Sync CPL")`,         'Fetch fresh spend from Hyros and rewrite CPL tab (no full sync needed)'],
     ['Open Sheet',          `=HYPERLINK("${sheetUrl}","📊 Open")`,                                 'Link to this spreadsheet'],
     [''],
     ['Notes'],
@@ -743,15 +743,13 @@ async function runAll() {
 let _syncRunning = false;
 let _lastSync     = null;
 let _lastError    = null;
-let _lastSyncData = null; // cached { adsetInfo, dailyData, dates, tabMap } for CPL refresh
+let _lastSyncData = null;
+
+// Standalone CPL sync state (independent of full sync)
+let _cplSync = { running: false, startedAt: null, lastSync: null, error: null };
 
 // ── CPL tab ───────────────────────────────────────────────────────────────────
-// Three stacked sections, all sharing the same date columns:
-//
-//   SECTION 1 — LEADS (yellow): manual input, one cell per campaign per day
-//   SECTION 2 — SPEND (grey):   auto-filled from Hyros attribution API
-//   SECTION 3 — CPL  (green):   formula = spend / leads per cell
-//   CHART: line chart of CPL section, one series per campaign
+// One unified table: Campaign × (per-date Spend|Leads|CPL) + TOTAL.
 //
 // One unified table: Campaign × (per-date Spend|Leads|CPL groups) + TOTAL.
 // Each date group is a collapsible column group for toggleable viewing.
@@ -1855,13 +1853,76 @@ router.get('/cpl-data', async (req, res) => {
   }
 });
 
-// GET /api/hyros/refresh-cpl — rewrite the CPL tab using data from the last sync
+// Standalone CPL sync — fetches its own data, no full sync required
+async function runCplSync() {
+  _cplSync.running   = true;
+  _cplSync.startedAt = new Date().toISOString();
+  _cplSync.error     = null;
+  try {
+    const today = isoToday();
+    const dates = buildDateRange(START_DATE, today).reverse();
+
+    const auth   = await getAuthClient();
+    const sheets = google.sheets({ version: 'v4', auth });
+
+    // Get or create CPL tab
+    const meta = await sheets.spreadsheets.get({ spreadsheetId: SHEET_ID });
+    const tabMap = {};
+    for (const s of meta.data.sheets) tabMap[s.properties.title] = s.properties.sheetId;
+    if (tabMap['CPL'] === undefined) {
+      const r = await sheets.spreadsheets.batchUpdate({
+        spreadsheetId: SHEET_ID,
+        requestBody: { requests: [{ addSheet: { properties: { title: 'CPL' } } }] },
+      });
+      tabMap['CPL'] = r.data.replies[0].addSheet.properties.sheetId;
+    }
+
+    // Adset → campaign names from FB
+    const adsetInfo = await getAllAccountAdsets();
+
+    // Spend per adset per day from Hyros (no delay needed — Hyros reads don't hit Sheets quota)
+    const dailyData = {};
+    for (const dateStr of dates) {
+      const attrByAdset = await fetchCostForDay(dateStr);
+      dailyData[dateStr] = {};
+      for (const [id, data] of Object.entries(attrByAdset)) {
+        dailyData[dateStr][id] = { cost: data.cost || 0 };
+      }
+    }
+
+    await writeCplTab(sheets, tabMap['CPL'], adsetInfo, dailyData, dates, tabMap);
+    _cplSync.lastSync = new Date().toISOString();
+    console.log('[sync-cpl] complete');
+  } catch (e) {
+    _cplSync.error = e.message;
+    console.error('[sync-cpl] error:', e.message);
+  } finally {
+    _cplSync.running = false;
+  }
+}
+
+router.get('/sync-cpl', (req, res) => {
+  if (_cplSync.running) return res.json({ ok: false, error: 'CPL sync already running' });
+  res.json({ ok: true, status: 'started', pollUrl: '/api/hyros/sync-cpl-status' });
+  runCplSync();
+});
+
+router.get('/sync-cpl-status', (_req, res) => {
+  res.json({
+    running:   _cplSync.running,
+    startedAt: _cplSync.startedAt,
+    lastSync:  _cplSync.lastSync,
+    error:     _cplSync.error,
+  });
+});
+
+// GET /api/hyros/refresh-cpl — legacy: rewrite CPL using last full-sync cache
 router.get('/refresh-cpl', async (req, res) => {
-  if (!_lastSyncData) return res.status(400).json({ ok: false, error: 'No sync data available — run a full sync first' });
+  if (!_lastSyncData) return res.status(400).json({ ok: false, error: 'No sync data — use /sync-cpl instead' });
   if (_syncRunning)   return res.status(400).json({ ok: false, error: 'Sync currently running — try again shortly' });
   try {
     const { adsetInfo, dailyData, dates, tabMap } = _lastSyncData;
-    if (tabMap['CPL'] === undefined) return res.status(400).json({ ok: false, error: 'CPL tab not found — run a full sync first' });
+    if (tabMap['CPL'] === undefined) return res.status(400).json({ ok: false, error: 'CPL tab not found' });
     const auth   = await getAuthClient();
     const sheets = google.sheets({ version: 'v4', auth });
     await writeCplTab(sheets, tabMap['CPL'], adsetInfo, dailyData, dates, tabMap);
