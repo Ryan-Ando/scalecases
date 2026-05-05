@@ -302,7 +302,7 @@ async function getAllAccountAdsets() {
   if (!token || !accounts.length) return info;
 
   for (const account of accounts) {
-    let url = `${FB_API}/${account}/adsets?fields=id,name,effective_status,campaign{name,id}&effective_status=["ACTIVE"]&limit=200&access_token=${token}`;
+    let url = `${FB_API}/${account}/adsets?fields=id,name,effective_status,campaign{name,id}&effective_status=["ACTIVE","PAUSED","CAMPAIGN_PAUSED","ADSET_PAUSED"]&limit=200&access_token=${token}`;
     while (url) {
       try {
         const r    = await fetch(url);
@@ -1852,6 +1852,15 @@ async function runCplSync() {
       for (const [id, data] of Object.entries(attrByAdset)) {
         dailyData[dateStr][id] = { cost: data.cost || 0 };
       }
+    }
+
+    // Back-fill campaign names for any adsets Hyros returned that FB bulk fetch missed
+    // (deleted adsets, adsets from accounts not in FB_AD_ACCOUNTS, etc.)
+    const allSeenIds = new Set(Object.values(dailyData).flatMap(dm => Object.keys(dm)));
+    const missing    = [...allSeenIds].filter(id => !adsetInfo[id]);
+    if (missing.length) {
+      console.log(`[sync-cpl] looking up ${missing.length} missing adset(s) from FB`);
+      Object.assign(adsetInfo, await getAdsetInfo(missing));
     }
 
     _lastCplData      = aggregateCplData(adsetInfo, dailyData, dates);
