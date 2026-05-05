@@ -221,6 +221,35 @@ export default function CplTracker() {
               );
             })}
           </tbody>
+          <tfoot>
+            <tr className="cpl-row-totals">
+              <td className="cpl-td-camp cpl-td-totals-label">TOTAL</td>
+              {visDates.map(date => {
+                const daySpend = cplData.campaigns.reduce((s, c) => s + (cplData.spend[c]?.[date] || 0), 0);
+                const dayLeads = cplData.campaigns.reduce((s, c) => s + (leads[`${c}|${date}`] || 0), 0);
+                const dayCpl   = dayLeads > 0 ? daySpend / dayLeads : null;
+                return (
+                  <Fragment key={date}>
+                    <td className="cpl-td cpl-td-spend cpl-bold">{daySpend > 0 ? fmt$(daySpend) : '—'}</td>
+                    <td className="cpl-td cpl-td-leads cpl-bold">{dayLeads || '—'}</td>
+                    <td className="cpl-td cpl-td-cpl cpl-bold">{fmt$(dayCpl)}</td>
+                  </Fragment>
+                );
+              })}
+              {(() => {
+                const totSpend = visDates.reduce((s, d) => s + cplData.campaigns.reduce((ss, c) => ss + (cplData.spend[c]?.[d] || 0), 0), 0);
+                const totLeads = visDates.reduce((s, d) => s + cplData.campaigns.reduce((ss, c) => ss + (leads[`${c}|${d}`] || 0), 0), 0);
+                const totCpl   = totLeads > 0 ? totSpend / totLeads : null;
+                return (
+                  <>
+                    <td className="cpl-td cpl-td-spend cpl-bold">{fmt$(totSpend)}</td>
+                    <td className="cpl-td cpl-td-leads cpl-bold">{totLeads || '—'}</td>
+                    <td className="cpl-td cpl-td-cpl cpl-bold">{fmt$(totCpl)}</td>
+                  </>
+                );
+              })()}
+            </tr>
+          </tfoot>
         </table>
       </div>
 
@@ -258,7 +287,7 @@ export default function CplTracker() {
             <Tooltip content={<CplTooltip />} />
             {cplData.campaigns.map((c, i) => (
               <Line
-                key={c} type="monotone" dataKey={c}
+                key={c} type="linear" dataKey={c}
                 stroke={COLORS[i % COLORS.length]}
                 hide={hidden.has(c)}
                 dot={false} strokeWidth={1.5}
