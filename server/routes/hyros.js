@@ -746,7 +746,25 @@ let _lastError    = null;
 let _lastSyncData = null;
 
 // Standalone CPL sync state (independent of full sync)
-let _cplSync = { running: false, startedAt: null, lastSync: null, error: null };
+let _cplSync    = { running: false, startedAt: null, lastSync: null, error: null };
+let _lastCplData = null; // { campaigns, dates, spend, lastSync } — served to React CPL tab
+
+function aggregateCplData(adsetInfo, dailyData, dates) {
+  const spend = {};
+  for (const [dateStr, adsetMap] of Object.entries(dailyData)) {
+    const label = dateStr.slice(5);
+    for (const [id, { cost }] of Object.entries(adsetMap)) {
+      const name = adsetInfo[id]?.campaignName || 'Unknown Campaign';
+      if (!spend[name]) spend[name] = {};
+      spend[name][label] = (spend[name][label] || 0) + (cost || 0);
+    }
+  }
+  const campaigns = Object.keys(spend).sort((a, b) => {
+    return Object.values(spend[b]).reduce((s, v) => s + v, 0)
+         - Object.values(spend[a]).reduce((s, v) => s + v, 0);
+  });
+  return { campaigns, dates: dates.map(d => d.slice(5)), spend, lastSync: new Date().toISOString() };
+}
 
 // ── CPL tab ───────────────────────────────────────────────────────────────────
 // One unified table: Campaign × (per-date Spend|Leads|CPL) + TOTAL.
@@ -1155,6 +1173,7 @@ async function runSync() {
     }
 
     _lastSyncData = { adsetInfo, dailyData, dates, tabMap };
+    _lastCplData  = aggregateCplData(adsetInfo, dailyData, dates);
     _lastSync = new Date().toISOString();
     const total = Object.values(byCampaign).reduce((s, a) => s + a.length, 0);
     console.log(`Hyros sync complete: ${total} adsets across ${Object.keys(byCampaign).length} campaigns`);
@@ -1902,6 +1921,7 @@ async function runCplSync() {
       }
     }
 
+    _lastCplData = aggregateCplData(adsetInfo, dailyData, dates);
     await writeCplTab(sheets, tabMap['CPL'], adsetInfo, dailyData, dates, tabMap);
     _cplSync.lastSync = new Date().toISOString();
     console.log('[sync-cpl] complete');
@@ -1926,6 +1946,12 @@ router.get('/sync-cpl-status', (_req, res) => {
     lastSync:  _cplSync.lastSync,
     error:     _cplSync.error,
   });
+});
+
+// GET /api/hyros/cpl-data — serve aggregated spend data to the React CPL Tracker tab
+router.get('/cpl-data', (_req, res) => {
+  if (!_lastCplData) return res.status(503).json({ ok: false, error: 'No data yet — click "Sync CPL" to load' });
+  res.json({ ok: true, data: _lastCplData });
 });
 
 // GET /api/hyros/refresh-cpl — legacy: rewrite CPL using last full-sync cache
