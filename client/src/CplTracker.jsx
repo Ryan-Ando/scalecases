@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useCallback, useRef, Fragment } from 'react';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid,
-  Tooltip, ResponsiveContainer,
+  Tooltip, ReferenceLine, ResponsiveContainer,
 } from 'recharts';
 
 const BASE    = import.meta.env.VITE_API_URL || 'http://localhost:3001';
@@ -38,7 +38,9 @@ function CplTooltip({ active, payload, label }) {
       <div style={{ fontWeight: 600, marginBottom: 6 }}>{label}</div>
       {rows.map(p => (
         <div key={p.dataKey} style={{ display: 'flex', justifyContent: 'space-between', gap: 20, marginBottom: 2 }}>
-          <span style={{ color: 'var(--text)' }}>{p.dataKey}</span>
+          <span style={{ color: 'var(--text)', fontWeight: p.dataKey === '__avg__' ? 700 : 400 }}>
+            {p.dataKey === '__avg__' ? 'Avg CPL' : p.dataKey}
+          </span>
           <span style={{ fontWeight: 600, color: p.stroke }}>{fmt$(p.value)}</span>
         </div>
       ))}
@@ -161,14 +163,28 @@ export default function CplTracker() {
     if (!cplData) return [];
     return [...visDates].reverse().map(date => {
       const pt = { date };
+      let totalSpend = 0, totalLeads = 0;
       for (const c of cplData.campaigns) {
         const spend = cplData.spend[c]?.[date] || 0;
         const l = leads[`${c}|${date}`] || 0;
         pt[c] = l > 0 ? +(spend / l).toFixed(2) : null;
+        totalSpend += spend;
+        totalLeads += l;
       }
+      pt.__avg__ = totalLeads > 0 ? +(totalSpend / totalLeads).toFixed(2) : null;
       return pt;
     });
   }, [cplData, leads, visDates]);
+
+  const yTicks = useMemo(() => {
+    if (!chartData.length) return [0, 300, 600, 900];
+    const allVals = chartData.flatMap(d =>
+      [...(cplData?.campaigns || []), '__avg__'].map(k => d[k] || 0)
+    );
+    const maxVal  = Math.max(0, ...allVals);
+    const maxTick = Math.max(300, Math.ceil(maxVal / 300) * 300);
+    return Array.from({ length: maxTick / 300 + 1 }, (_, i) => i * 300);
+  }, [chartData, cplData]);
 
   const syncing = phase === 'syncing';
 
@@ -339,8 +355,15 @@ export default function CplTracker() {
           <LineChart data={chartData} margin={{ top: 4, right: 24, bottom: 4, left: 10 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
             <XAxis dataKey="date" tick={{ fontSize: 11, fill: 'var(--text-muted)' }} />
-            <YAxis tickFormatter={v => `$${v}`} tick={{ fontSize: 11, fill: 'var(--text-muted)' }} width={64} />
+            <YAxis
+              tickFormatter={v => `$${v}`}
+              tick={{ fontSize: 11, fill: 'var(--text-muted)' }}
+              ticks={yTicks}
+              domain={[0, yTicks[yTicks.length - 1]]}
+              width={64}
+            />
             <Tooltip content={<CplTooltip />} />
+            <ReferenceLine y={300} stroke="#dc2626" strokeDasharray="5 4" strokeWidth={1.5} />
             {cplData.campaigns.map((c, i) => (
               <Line
                 key={c} type="linear" dataKey={c}
@@ -350,6 +373,12 @@ export default function CplTracker() {
                 connectNulls={false}
               />
             ))}
+            <Line
+              type="linear" dataKey="__avg__"
+              name="Avg CPL"
+              stroke="#000000" strokeWidth={3}
+              dot={false} connectNulls={false}
+            />
           </LineChart>
         </ResponsiveContainer>
       </div>
