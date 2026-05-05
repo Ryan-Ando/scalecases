@@ -855,13 +855,23 @@ async function writeCplTab(sheets, numericId, adsetInfo, dailyData, dates, tabMa
     return row;
   });
 
-  // 4. Clear + write
+  // Compact helper block for the chart — contiguous range so Sheets detects campaign names.
+  // Two blank rows gap after data, then: header row (dates) + one row per campaign (name + CPL refs).
+  const chartHdr1      = dataEnd1 + 3; // 1-indexed sheet row for helper header
+  const chartHdr0      = chartHdr1 - 1; // 0-indexed
+  const helperHdrRow   = ['', ...Array.from({ length: nDates }, (_, i) => `=${colLetter(spC(i) + 1)}$1`)];
+  const helperDataRows = campaigns.map((name, ci) => {
+    const mainRow1 = dataStart1 + ci;
+    return [name, ...Array.from({ length: nDates }, (_, i) => `=${colLetter(cpC(i) + 1)}${mainRow1}`)];
+  });
+
+  // 4. Clear + write (main table + helper block in one call)
   await sheets.spreadsheets.values.clear({ spreadsheetId: SHEET_ID, range: 'CPL!A:ZZ' });
   await delay(400);
   await sheets.spreadsheets.values.update({
     spreadsheetId: SHEET_ID, range: 'CPL!A1',
     valueInputOption: 'USER_ENTERED',
-    requestBody: { values: [dateHdrRow, metricHdrRow, ...dataRows] },
+    requestBody: { values: [dateHdrRow, metricHdrRow, ...dataRows, [], [], helperHdrRow, ...helperDataRows] },
   });
   await delay(500);
 
@@ -907,6 +917,8 @@ async function writeCplTab(sheets, numericId, adsetInfo, dailyData, dates, tabMa
     { repeatCell: { range: { sheetId: numericId, startRowIndex: d0, endRowIndex: dEnd, startColumnIndex: tCpC, endColumnIndex: tCpC + 1 }, cell: { userEnteredFormat: { backgroundColor: ltGreen, numberFormat: currency, textFormat: { bold: true } } }, fields: 'userEnteredFormat(backgroundColor,numberFormat,textFormat)' } },
     { mergeCells: { range: { sheetId: numericId, startRowIndex: 0, endRowIndex: 1, startColumnIndex: tSpC, endColumnIndex: tCpC + 1 }, mergeType: 'MERGE_ALL' } },
     { updateDimensionProperties: { range: { sheetId: numericId, dimension: 'COLUMNS', startIndex: tSpC, endIndex: tCpC + 1 }, properties: { pixelSize: 80 }, fields: 'pixelSize' } },
+    // Helper block — subtle grey so it doesn't distract from main table
+    { repeatCell: { range: { sheetId: numericId, startRowIndex: chartHdr0, endRowIndex: chartHdr0 + 1 + nCamp }, cell: { userEnteredFormat: { backgroundColor: { red: 0.96, green: 0.96, blue: 0.96 }, textFormat: { fontSize: 9, foregroundColor: { red: 0.5, green: 0.5, blue: 0.5 } } } }, fields: 'userEnteredFormat(backgroundColor,textFormat)' } },
   );
 
   await sheets.spreadsheets.batchUpdate({ spreadsheetId: SHEET_ID, requestBody: { requests: fmtReqs } });
@@ -946,38 +958,38 @@ async function writeCplTab(sheets, numericId, adsetInfo, dailyData, dates, tabMa
                       { position: 'BOTTOM_AXIS', title: 'Date' },
                       { position: 'LEFT_AXIS',   title: 'CPL ($)' },
                     ],
-                    // Domain: date labels from row 1 (spC cols hold the date label after merge)
+                    // Domain: date labels from helper block header row (cols 1..nDates)
                     domains: [{
                       domain: {
                         sourceRange: {
-                          sources: Array.from({ length: nDates }, (_, i) => ({
+                          sources: [{
                             sheetId: numericId,
-                            startRowIndex: 0, endRowIndex: 1,
-                            startColumnIndex: spC(i), endColumnIndex: spC(i) + 1,
-                          })),
+                            startRowIndex: chartHdr0, endRowIndex: chartHdr0 + 1,
+                            startColumnIndex: 1, endColumnIndex: 1 + nDates,
+                          }],
                         },
                       },
                     }],
-                    // Series: one per campaign, CPL value per date (non-contiguous cols)
+                    // Series: one row per campaign from helper block (col A = name, B..= CPL values)
                     series: campaigns.map((_, ci) => ({
                       series: {
                         sourceRange: {
-                          sources: Array.from({ length: nDates }, (_, i) => ({
+                          sources: [{
                             sheetId: numericId,
-                            startRowIndex: dataStart1 - 1 + ci,
-                            endRowIndex:   dataStart1 + ci,
-                            startColumnIndex: cpC(i), endColumnIndex: cpC(i) + 1,
-                          })),
+                            startRowIndex: chartHdr0 + 1 + ci,
+                            endRowIndex:   chartHdr0 + 2 + ci,
+                            startColumnIndex: 0, endColumnIndex: 1 + nDates,
+                          }],
                         },
                       },
                       targetAxis: 'LEFT_AXIS',
                     })),
-                    headerCount: 0,
+                    headerCount: 1,
                   },
                 },
                 position: {
                   overlayPosition: {
-                    anchorCell: { sheetId: numericId, rowIndex: dataEnd1 + 1, columnIndex: 0 },
+                    anchorCell: { sheetId: numericId, rowIndex: chartHdr0 + nCamp + 3, columnIndex: 0 },
                     widthPixels: 1000,
                     heightPixels: 450,
                   },
