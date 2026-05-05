@@ -803,116 +803,83 @@ async function writeCplTab(sheets, numericId, adsetInfo, dailyData, dates, tabMa
     gridRows.push([name, ...dayCols, totalF, '', cplF]);
   }
 
-  // 3. Write values (USER_ENTERED so formulas evaluate)
+  // 3. Write values
   await sheets.spreadsheets.values.clear({ spreadsheetId: SHEET_ID, range: 'CPL!A:ZZ' });
+  await delay(500);
   await sheets.spreadsheets.values.update({
     spreadsheetId: SHEET_ID, range: 'CPL!A1',
     valueInputOption: 'USER_ENTERED',
     requestBody: { values: gridRows },
   });
+  await delay(500);
 
-  // 4. Formatting + chart
-  // First, delete any existing charts on this sheet so re-syncing doesn't stack them
-  const meta        = await sheets.spreadsheets.get({ spreadsheetId: SHEET_ID });
-  const cplSheet    = meta.data.sheets.find(s => s.properties.sheetId === numericId);
-  const deleteCharts = (cplSheet?.charts || []).map(c => ({
-    deleteEmbeddedObject: { objectId: c.chartId },
-  }));
-
-  const chartAnchorRow = lastDataRow + 2; // a couple rows below the data
-  const nSeries = campaigns.length;
-
-  const requests = [
-    ...deleteCharts,
-
-    // Freeze header + campaign name column
+  // 4. Formatting (separate batchUpdate from chart to isolate quota errors)
+  const formatRequests = [
     { updateSheetProperties: { properties: { sheetId: numericId, gridProperties: { frozenRowCount: 2, frozenColumnCount: 1 } }, fields: 'gridProperties.frozenRowCount,gridProperties.frozenColumnCount' } },
-
-    // Header row: green background, white bold text
+    { updateSheetProperties: { properties: { sheetId: numericId, index: 1 }, fields: 'index' } },
     { repeatCell: { range: { sheetId: numericId, startRowIndex: 0, endRowIndex: 1 },
         cell: { userEnteredFormat: { backgroundColor: { red: 0.23, green: 0.56, blue: 0.36 }, textFormat: { bold: true, foregroundColor: { red: 1, green: 1, blue: 1 }, fontSize: 10 } } },
         fields: 'userEnteredFormat(backgroundColor,textFormat)' } },
-
-    // Totals row: light grey bold
     { repeatCell: { range: { sheetId: numericId, startRowIndex: 1, endRowIndex: 2 },
         cell: { userEnteredFormat: { backgroundColor: { red: 0.93, green: 0.93, blue: 0.93 }, textFormat: { bold: true } } },
         fields: 'userEnteredFormat(backgroundColor,textFormat)' } },
-
-    // Currency format: date spend columns + Total Spend + CPL
     { repeatCell: { range: { sheetId: numericId, startRowIndex: 1, endRowIndex: lastDataRow, startColumnIndex: firstDateCol - 1, endColumnIndex: totalSpendC },
         cell: { userEnteredFormat: { numberFormat: { type: 'CURRENCY', pattern: '$#,##0.00' } } },
         fields: 'userEnteredFormat.numberFormat' } },
     { repeatCell: { range: { sheetId: numericId, startRowIndex: 1, endRowIndex: lastDataRow, startColumnIndex: cplC - 1, endColumnIndex: cplC },
         cell: { userEnteredFormat: { numberFormat: { type: 'CURRENCY', pattern: '$#,##0.00' } } },
         fields: 'userEnteredFormat.numberFormat' } },
-
-    // Leads column: yellow background to signal manual input
     { repeatCell: { range: { sheetId: numericId, startRowIndex: 2, endRowIndex: lastDataRow, startColumnIndex: leadsC - 1, endColumnIndex: leadsC },
         cell: { userEnteredFormat: { backgroundColor: { red: 1, green: 0.98, blue: 0.8 } } },
         fields: 'userEnteredFormat.backgroundColor' } },
-
-    // Column widths: campaign name wide, date cols narrow
-    { updateDimensionProperties: { range: { sheetId: numericId, dimension: 'COLUMNS', startIndex: 0, endIndex: 1 },
-        properties: { pixelSize: 220 }, fields: 'pixelSize' } },
-    { updateDimensionProperties: { range: { sheetId: numericId, dimension: 'COLUMNS', startIndex: 1, endIndex: lastDateCol },
-        properties: { pixelSize: 68 }, fields: 'pixelSize' } },
-    { updateDimensionProperties: { range: { sheetId: numericId, dimension: 'COLUMNS', startIndex: totalSpendC - 1, endIndex: cplC },
-        properties: { pixelSize: 90 }, fields: 'pixelSize' } },
-
-    // Filter on header row
+    { updateDimensionProperties: { range: { sheetId: numericId, dimension: 'COLUMNS', startIndex: 0, endIndex: 1 }, properties: { pixelSize: 220 }, fields: 'pixelSize' } },
+    { updateDimensionProperties: { range: { sheetId: numericId, dimension: 'COLUMNS', startIndex: 1, endIndex: lastDateCol }, properties: { pixelSize: 68 }, fields: 'pixelSize' } },
+    { updateDimensionProperties: { range: { sheetId: numericId, dimension: 'COLUMNS', startIndex: totalSpendC - 1, endIndex: cplC }, properties: { pixelSize: 90 }, fields: 'pixelSize' } },
     { setBasicFilter: { filter: { range: { sheetId: numericId, startRowIndex: 0 } } } },
-
-    // Position CPL right after Home (index 1)
-    { updateSheetProperties: { properties: { sheetId: numericId, index: 1 }, fields: 'index' } },
-
-    // Line chart anchored below the data
-    ...(nSeries > 0 ? [{
-      addChart: {
-        chart: {
-          spec: {
-            title: 'Daily Spend by Campaign',
-            basicChart: {
-              chartType: 'LINE',
-              legendPosition: 'BOTTOM_LEGEND',
-              axis: [
-                { position: 'BOTTOM_AXIS' },
-                { position: 'LEFT_AXIS', title: 'Spend ($)' },
-              ],
-              domains: [{
-                domain: {
-                  sourceRange: { sources: [{
-                    sheetId: numericId,
-                    startRowIndex: 0, endRowIndex: 1,
-                    startColumnIndex: firstDateCol - 1, endColumnIndex: lastDateCol,
-                  }] },
-                },
-              }],
-              series: campaigns.map((_, i) => ({
-                series: {
-                  sourceRange: { sources: [{
-                    sheetId: numericId,
-                    startRowIndex: i + 2, endRowIndex: i + 3,
-                    startColumnIndex: firstDateCol - 1, endColumnIndex: lastDateCol,
-                  }] },
-                },
-                targetAxis: 'LEFT_AXIS',
-              })),
-              headerCount: 1,
-            },
-          },
-          position: {
-            overlayPosition: {
-              anchorCell: { sheetId: numericId, rowIndex: chartAnchorRow, columnIndex: 0 },
-              widthPixels: 1100,
-              heightPixels: 380,
-            },
-          },
-        },
-      },
-    }] : []),
   ];
+  await sheets.spreadsheets.batchUpdate({ spreadsheetId: SHEET_ID, requestBody: { requests: formatRequests } });
+  await delay(500);
 
-  await sheets.spreadsheets.batchUpdate({ spreadsheetId: SHEET_ID, requestBody: { requests } });
+  // 5. Chart — separate call so a quota error here doesn't abort the data write
+  if (campaigns.length > 0) {
+    try {
+      const meta     = await sheets.spreadsheets.get({ spreadsheetId: SHEET_ID });
+      const cplSheet = meta.data.sheets.find(s => s.properties.sheetId === numericId);
+      const deleteCharts = (cplSheet?.charts || []).map(c => ({ deleteEmbeddedObject: { objectId: c.chartId } }));
+      await delay(300);
+      await sheets.spreadsheets.batchUpdate({
+        spreadsheetId: SHEET_ID,
+        requestBody: {
+          requests: [
+            ...deleteCharts,
+            {
+              addChart: {
+                chart: {
+                  spec: {
+                    title: 'Daily Spend by Campaign',
+                    basicChart: {
+                      chartType: 'LINE',
+                      legendPosition: 'BOTTOM_LEGEND',
+                      axis: [{ position: 'BOTTOM_AXIS' }, { position: 'LEFT_AXIS', title: 'Spend ($)' }],
+                      domains: [{ domain: { sourceRange: { sources: [{ sheetId: numericId, startRowIndex: 0, endRowIndex: 1, startColumnIndex: firstDateCol - 1, endColumnIndex: lastDateCol }] } } }],
+                      series: campaigns.map((_, i) => ({
+                        series: { sourceRange: { sources: [{ sheetId: numericId, startRowIndex: i + 2, endRowIndex: i + 3, startColumnIndex: firstDateCol - 1, endColumnIndex: lastDateCol }] } },
+                        targetAxis: 'LEFT_AXIS',
+                      })),
+                      headerCount: 1,
+                    },
+                  },
+                  position: { overlayPosition: { anchorCell: { sheetId: numericId, rowIndex: lastDataRow + 2, columnIndex: 0 }, widthPixels: 1100, heightPixels: 380 } },
+                },
+              },
+            },
+          ],
+        },
+      });
+    } catch (e) {
+      console.warn('[CPL] chart update failed (non-fatal):', e.message);
+    }
+  }
 }
 
 async function runSync() {
