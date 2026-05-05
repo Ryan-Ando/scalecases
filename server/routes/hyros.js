@@ -906,6 +906,7 @@ async function writeCplTab(sheets, numericId, adsetInfo, dailyData, dates, tabMa
   const dEnd = dataEnd1;       // 0-based exclusive end
 
   const fmtReqs = [
+    { clearBasicFilter: { sheetId: numericId } },
     { updateSheetProperties: { properties: { sheetId: numericId, index: 1 }, fields: 'index' } },
     { updateSheetProperties: { properties: { sheetId: numericId, gridProperties: { frozenRowCount: 2, frozenColumnCount: 1 } }, fields: 'gridProperties.frozenRowCount,gridProperties.frozenColumnCount' } },
     // Date header row: green, white bold, centred
