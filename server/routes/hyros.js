@@ -1885,7 +1885,7 @@ router.get('/cpl-data', async (req, res) => {
   }
 });
 
-// Standalone CPL sync — fetches its own data, no full sync required
+// Standalone CPL sync — fetches Hyros + FB data only, no Sheets writes
 async function runCplSync() {
   _cplSync.running   = true;
   _cplSync.startedAt = new Date().toISOString();
@@ -1894,25 +1894,8 @@ async function runCplSync() {
     const today = isoToday();
     const dates = buildDateRange(START_DATE, today).reverse();
 
-    const auth   = await getAuthClient();
-    const sheets = google.sheets({ version: 'v4', auth });
-
-    // Get or create CPL tab
-    const meta = await sheets.spreadsheets.get({ spreadsheetId: SHEET_ID });
-    const tabMap = {};
-    for (const s of meta.data.sheets) tabMap[s.properties.title] = s.properties.sheetId;
-    if (tabMap['CPL'] === undefined) {
-      const r = await sheets.spreadsheets.batchUpdate({
-        spreadsheetId: SHEET_ID,
-        requestBody: { requests: [{ addSheet: { properties: { title: 'CPL' } } }] },
-      });
-      tabMap['CPL'] = r.data.replies[0].addSheet.properties.sheetId;
-    }
-
-    // Adset → campaign names from FB
     const adsetInfo = await getAllAccountAdsets();
 
-    // Spend per adset per day from Hyros (no delay needed — Hyros reads don't hit Sheets quota)
     const dailyData = {};
     for (const dateStr of dates) {
       const attrByAdset = await fetchCostForDay(dateStr);
@@ -1922,8 +1905,7 @@ async function runCplSync() {
       }
     }
 
-    _lastCplData = aggregateCplData(adsetInfo, dailyData, dates);
-    await writeCplTab(sheets, tabMap['CPL'], adsetInfo, dailyData, dates, tabMap);
+    _lastCplData      = aggregateCplData(adsetInfo, dailyData, dates);
     _cplSync.lastSync = new Date().toISOString();
     console.log('[sync-cpl] complete');
   } catch (e) {
