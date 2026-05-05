@@ -746,16 +746,20 @@ let _lastError    = null;
 let _lastSyncData = null; // cached { adsetInfo, dailyData, dates, tabMap } for CPL refresh
 
 // ── CPL tab ───────────────────────────────────────────────────────────────────
-// Layout:
-//   Row 1  : Header — Campaign | MM-DD … | Total Spend | Leads | CPL
-//   Row 2  : Totals (SUM formulas)
-//   Row 3+ : One row per campaign, sorted by total spend desc
-//   Chart  : Line chart anchored below the table, one series per campaign
+// Three stacked sections, all sharing the same date columns:
 //
-// "Leads" column has a yellow background so it's obvious it's manual input.
-// CPL = Total Spend / Leads (formula, shows "—" when leads = 0).
+//   SECTION 1 — LEADS (yellow): manual input, one cell per campaign per day
+//   SECTION 2 — SPEND (grey):   auto-filled from Hyros attribution API
+//   SECTION 3 — CPL  (green):   formula = spend / leads per cell
+//   CHART: line chart of CPL section, one series per campaign
+//
+// Leads values are preserved across syncs — only spend+CPL sections are rewritten.
 
 async function writeCplTab(sheets, numericId, adsetInfo, dailyData, dates, tabMap) {
+  const C = 0; // campaign name col index (0-based) = col A
+  const nDates      = dates.length;
+  const dateLabels  = dates.map(d => d.slice(5)); // MM-DD
+
   // 1. Aggregate spend by campaign per day
   const campaignDays = {};
   for (const [dateStr, adsetMap] of Object.entries(dailyData)) {
@@ -765,122 +769,220 @@ async function writeCplTab(sheets, numericId, adsetInfo, dailyData, dates, tabMa
       campaignDays[name][dateStr] = (campaignDays[name][dateStr] || 0) + cost;
     }
   }
-
   const campaigns = Object.keys(campaignDays).sort((a, b) => {
     const ta = Object.values(campaignDays[a]).reduce((s, v) => s + v, 0);
     const tb = Object.values(campaignDays[b]).reduce((s, v) => s + v, 0);
     return tb - ta;
   });
+  const nCamp = campaigns.length;
+  if (!nCamp) { console.warn('[CPL] no campaigns found, skipping tab write'); return; }
 
-  const nDates       = dates.length;
-  // Column indices (1-based for colLetter, 0-based for API ranges)
-  const firstDateCol = 2;                    // col B
-  const lastDateCol  = firstDateCol + nDates - 1;
-  const totalSpendC  = lastDateCol + 1;
-  const leadsC       = totalSpendC + 1;
-  const cplC         = leadsC + 1;
-  const lastDataRow  = campaigns.length + 2; // header=1, totals=2, data=3..N+2
+  // 2. Read existing leads values so they survive a sync rewrite
+  //    Structure on sheet: leadsHeaderRow at row leadsHdr1, data at rows leadsData1..leadsData1+nCamp-1
+  const leadsHdr1  = 2;                    // 1-indexed sheet row for leads header
+  const leadsData1 = leadsHdr1 + 1;        // first leads data row (1-indexed)
+  const spendHdr1  = leadsData1 + nCamp + 1;
+  const spendData1 = spendHdr1 + 1;
+  const cplHdr1    = spendData1 + nCamp + 1;
+  const cplData1   = cplHdr1 + 1;
+  const cplDataEnd1 = cplData1 + nCamp - 1;
 
-  // 2. Build grid values
-  const headers  = ['Campaign', ...dates.map(d => d.slice(5)), 'Total Spend', 'Leads', 'CPL'];
-  const gridRows = [headers];
+  // Read existing leads (campaign → dateLabel → count)
+  const existingLeads = {};
+  try {
+    const r = await sheets.spreadsheets.values.get({
+      spreadsheetId: SHEET_ID,
+      range: `CPL!A${leadsHdr1}:${colLetter(nDates + 1)}${leadsData1 + nCamp - 1}`,
+    });
+    const rows = r.data.values || [];
+    const hdr  = rows[0] || [];
+    for (let i = 1; i < rows.length; i++) {
+      const name = rows[i][0];
+      if (!name) continue;
+      existingLeads[name] = {};
+      for (let c = 1; c < hdr.length; c++) {
+        const v = parseInt(rows[i][c] || '0', 10);
+        if (v > 0) existingLeads[name][hdr[c]] = v;
+      }
+    }
+  } catch { /* first run or structure changed */ }
 
-  // Totals row (row 2)
-  const totalsRow = ['TOTALS'];
-  for (let i = 0; i < nDates; i++) {
-    totalsRow.push(`=SUM(${colLetter(firstDateCol + i)}3:${colLetter(firstDateCol + i)}${lastDataRow})`);
-  }
-  totalsRow.push(`=SUM(${colLetter(totalSpendC)}3:${colLetter(totalSpendC)}${lastDataRow})`);
-  totalsRow.push(`=SUM(${colLetter(leadsC)}3:${colLetter(leadsC)}${lastDataRow})`);
-  totalsRow.push(`=IF(${colLetter(leadsC)}2=0,"—",${colLetter(totalSpendC)}2/${colLetter(leadsC)}2)`);
-  gridRows.push(totalsRow);
+  // 3. Build grid (all three sections in one values array, written to A1)
+  const colA = 1;  // 1-indexed first date col = B
+  const firstDateC1 = 2;
+  const lastDateC1  = firstDateC1 + nDates - 1;
 
-  // Campaign rows (row 3+)
-  for (let r = 0; r < campaigns.length; r++) {
-    const row     = r + 3;
-    const name    = campaigns[r];
-    const dayCols = dates.map(d => +(campaignDays[name][d] || 0).toFixed(2));
-    const totalF  = `=SUM(${colLetter(firstDateCol)}${row}:${colLetter(lastDateCol)}${row})`;
-    const cplF    = `=IF(${colLetter(leadsC)}${row}=0,"—",${colLetter(totalSpendC)}${row}/${colLetter(leadsC)}${row})`;
-    gridRows.push([name, ...dayCols, totalF, '', cplF]);
-  }
+  const hdrRow    = ['Campaign', ...dateLabels, 'TOTAL'];
+  const totalColF = (row1) =>
+    `=SUM(${colLetter(firstDateC1)}${row1}:${colLetter(lastDateC1)}${row1})`;
 
-  // 3. Write values
+  // Build leads rows (preserve existing values)
+  const leadsRows = campaigns.map((name, i) => {
+    const row1 = leadsData1 + i;
+    return [name, ...dateLabels.map(dl => existingLeads[name]?.[dl] || ''), totalColF(row1)];
+  });
+
+  // Build spend rows
+  const spendRows = campaigns.map((name, i) => {
+    const row1 = spendData1 + i;
+    const dayCosts = dates.map(d => +(campaignDays[name][d] || 0).toFixed(2));
+    return [name, ...dayCosts, totalColF(row1)];
+  });
+
+  // Build CPL rows (formula: spend / leads per cell)
+  const cplRows = campaigns.map((name, i) => {
+    const leadRow1  = leadsData1 + i;
+    const spendRow1 = spendData1 + i;
+    const cplRow1   = cplData1 + i;
+    const dayCpl = dateLabels.map((_, ci) => {
+      const col = colLetter(firstDateC1 + ci);
+      return `=IF(${col}${leadRow1}=0,"—",${col}${spendRow1}/${col}${leadRow1})`;
+    });
+    const totalCpl = `=IF(${colLetter(lastDateC1 + 1)}${leadRow1}=0,"—",${colLetter(lastDateC1 + 1)}${spendRow1}/${colLetter(lastDateC1 + 1)}${leadRow1})`;
+    return [name, ...dayCpl, totalCpl];
+  });
+
+  // Full grid starting at A1
+  const grid = [
+    ['DAILY CPL'],                         // row 1 — title
+    hdrRow,                                // row 2 — leads header (leadsHdr1)
+    ...leadsRows,                          // rows 3..nCamp+2
+    [],                                    // blank separator
+    ['SPEND'],                             // spend label
+    hdrRow,                                // spend header (spendHdr1)
+    ...spendRows,                          // spend data
+    [],                                    // blank separator
+    ['CPL'],                               // cpl label
+    hdrRow,                                // cpl header (cplHdr1)
+    ...cplRows,                            // cpl data
+  ];
+
+  // 4. Clear only non-leads rows then write full grid
+  //    We clear everything and re-write including leads (which we read above),
+  //    so the structure stays clean even when campaigns are added/removed.
   await sheets.spreadsheets.values.clear({ spreadsheetId: SHEET_ID, range: 'CPL!A:ZZ' });
-  await delay(500);
+  await delay(400);
   await sheets.spreadsheets.values.update({
     spreadsheetId: SHEET_ID, range: 'CPL!A1',
     valueInputOption: 'USER_ENTERED',
-    requestBody: { values: gridRows },
+    requestBody: { values: grid },
   });
-  await delay(500);
+  await delay(400);
 
-  // 4. Formatting (separate batchUpdate from chart to isolate quota errors)
+  // 5. Formatting
+  const green  = { red: 0.23, green: 0.56, blue: 0.36 };
+  const white  = { red: 1, green: 1, blue: 1 };
+  const yellow = { red: 1, green: 0.98, blue: 0.80 };
+  const grey   = { red: 0.93, green: 0.93, blue: 0.93 };
+  const ltGreen = { red: 0.88, green: 0.96, blue: 0.91 };
+  const ltBlue  = { red: 0.91, green: 0.94, blue: 0.98 };
+
+  // 0-indexed row references for API
+  const leadsHdr0  = leadsHdr1 - 1;
+  const leadsData0 = leadsData1 - 1;
+  const spendHdr0  = spendHdr1 - 1;
+  const spendData0 = spendData1 - 1;
+  const cplHdr0    = cplHdr1 - 1;
+  const cplData0   = cplData1 - 1;
+  const cplDataEnd0 = cplDataEnd1 - 1;
+  const lastCol0   = lastDateC1; // exclusive end for date cols (0-indexed)
+
+  const currency = { type: 'CURRENCY', pattern: '$#,##0.00' };
+  const integer  = { type: 'NUMBER',   pattern: '#,##0' };
+
+  const fmt = (r0, r1, c0, c1, format) => ({
+    repeatCell: {
+      range: { sheetId: numericId, startRowIndex: r0, endRowIndex: r1, startColumnIndex: c0, endColumnIndex: c1 },
+      cell: { userEnteredFormat: format },
+      fields: Object.keys(format).map(k => `userEnteredFormat.${k}`).join(','),
+    },
+  });
+
   const formatRequests = [
-    { updateSheetProperties: { properties: { sheetId: numericId, gridProperties: { frozenRowCount: 2, frozenColumnCount: 1 } }, fields: 'gridProperties.frozenRowCount,gridProperties.frozenColumnCount' } },
+    // Sheet position
     { updateSheetProperties: { properties: { sheetId: numericId, index: 1 }, fields: 'index' } },
-    { repeatCell: { range: { sheetId: numericId, startRowIndex: 0, endRowIndex: 1 },
-        cell: { userEnteredFormat: { backgroundColor: { red: 0.23, green: 0.56, blue: 0.36 }, textFormat: { bold: true, foregroundColor: { red: 1, green: 1, blue: 1 }, fontSize: 10 } } },
-        fields: 'userEnteredFormat(backgroundColor,textFormat)' } },
-    { repeatCell: { range: { sheetId: numericId, startRowIndex: 1, endRowIndex: 2 },
-        cell: { userEnteredFormat: { backgroundColor: { red: 0.93, green: 0.93, blue: 0.93 }, textFormat: { bold: true } } },
-        fields: 'userEnteredFormat(backgroundColor,textFormat)' } },
-    { repeatCell: { range: { sheetId: numericId, startRowIndex: 1, endRowIndex: lastDataRow, startColumnIndex: firstDateCol - 1, endColumnIndex: totalSpendC },
-        cell: { userEnteredFormat: { numberFormat: { type: 'CURRENCY', pattern: '$#,##0.00' } } },
-        fields: 'userEnteredFormat.numberFormat' } },
-    { repeatCell: { range: { sheetId: numericId, startRowIndex: 1, endRowIndex: lastDataRow, startColumnIndex: cplC - 1, endColumnIndex: cplC },
-        cell: { userEnteredFormat: { numberFormat: { type: 'CURRENCY', pattern: '$#,##0.00' } } },
-        fields: 'userEnteredFormat.numberFormat' } },
-    { repeatCell: { range: { sheetId: numericId, startRowIndex: 2, endRowIndex: lastDataRow, startColumnIndex: leadsC - 1, endColumnIndex: leadsC },
-        cell: { userEnteredFormat: { backgroundColor: { red: 1, green: 0.98, blue: 0.8 } } },
-        fields: 'userEnteredFormat.backgroundColor' } },
-    { updateDimensionProperties: { range: { sheetId: numericId, dimension: 'COLUMNS', startIndex: 0, endIndex: 1 }, properties: { pixelSize: 220 }, fields: 'pixelSize' } },
-    { updateDimensionProperties: { range: { sheetId: numericId, dimension: 'COLUMNS', startIndex: 1, endIndex: lastDateCol }, properties: { pixelSize: 68 }, fields: 'pixelSize' } },
-    { updateDimensionProperties: { range: { sheetId: numericId, dimension: 'COLUMNS', startIndex: totalSpendC - 1, endIndex: cplC }, properties: { pixelSize: 90 }, fields: 'pixelSize' } },
-    { setBasicFilter: { filter: { range: { sheetId: numericId, startRowIndex: 0 } } } },
+    // Freeze col A + row 1 (title)
+    { updateSheetProperties: { properties: { sheetId: numericId, gridProperties: { frozenRowCount: 1, frozenColumnCount: 1 } }, fields: 'gridProperties.frozenRowCount,gridProperties.frozenColumnCount' } },
+
+    // Title row
+    { repeatCell: { range: { sheetId: numericId, startRowIndex: 0, endRowIndex: 1 }, cell: { userEnteredFormat: { backgroundColor: green, textFormat: { bold: true, foregroundColor: white, fontSize: 13 } } }, fields: 'userEnteredFormat(backgroundColor,textFormat)' } },
+
+    // LEADS section header
+    { repeatCell: { range: { sheetId: numericId, startRowIndex: leadsHdr0, endRowIndex: leadsHdr0 + 1 }, cell: { userEnteredFormat: { backgroundColor: { red: 0.98, green: 0.93, blue: 0.6 }, textFormat: { bold: true } } }, fields: 'userEnteredFormat(backgroundColor,textFormat)' } },
+    // Leads data — yellow background, integer format
+    { repeatCell: { range: { sheetId: numericId, startRowIndex: leadsData0, endRowIndex: leadsData0 + nCamp, startColumnIndex: 1, endColumnIndex: lastCol0 + 1 }, cell: { userEnteredFormat: { backgroundColor: yellow, numberFormat: integer } }, fields: 'userEnteredFormat(backgroundColor,numberFormat)' } },
+
+    // SPEND section header
+    { repeatCell: { range: { sheetId: numericId, startRowIndex: spendHdr0, endRowIndex: spendHdr0 + 1 }, cell: { userEnteredFormat: { backgroundColor: ltBlue, textFormat: { bold: true } } }, fields: 'userEnteredFormat(backgroundColor,textFormat)' } },
+    // Spend data — currency
+    { repeatCell: { range: { sheetId: numericId, startRowIndex: spendData0, endRowIndex: spendData0 + nCamp, startColumnIndex: 1, endColumnIndex: lastCol0 + 1 }, cell: { userEnteredFormat: { numberFormat: currency } }, fields: 'userEnteredFormat.numberFormat' } },
+
+    // CPL section header
+    { repeatCell: { range: { sheetId: numericId, startRowIndex: cplHdr0, endRowIndex: cplHdr0 + 1 }, cell: { userEnteredFormat: { backgroundColor: ltGreen, textFormat: { bold: true } } }, fields: 'userEnteredFormat(backgroundColor,textFormat)' } },
+    // CPL data — currency
+    { repeatCell: { range: { sheetId: numericId, startRowIndex: cplData0, endRowIndex: cplDataEnd0 + 1, startColumnIndex: 1, endColumnIndex: lastCol0 + 1 }, cell: { userEnteredFormat: { numberFormat: currency } }, fields: 'userEnteredFormat.numberFormat' } },
+
+    // Section labels (rows above each header) — bold grey
+    { repeatCell: { range: { sheetId: numericId, startRowIndex: leadsHdr0 - 1, endRowIndex: leadsHdr0 }, cell: { userEnteredFormat: { textFormat: { bold: true, fontSize: 11 } } }, fields: 'userEnteredFormat.textFormat' } },
+    { repeatCell: { range: { sheetId: numericId, startRowIndex: spendHdr0 - 1, endRowIndex: spendHdr0 }, cell: { userEnteredFormat: { textFormat: { bold: true, fontSize: 11 } } }, fields: 'userEnteredFormat.textFormat' } },
+    { repeatCell: { range: { sheetId: numericId, startRowIndex: cplHdr0 - 1, endRowIndex: cplHdr0 }, cell: { userEnteredFormat: { textFormat: { bold: true, fontSize: 11 } } }, fields: 'userEnteredFormat.textFormat' } },
+
+    // Column widths
+    { updateDimensionProperties: { range: { sheetId: numericId, dimension: 'COLUMNS', startIndex: 0, endIndex: 1 }, properties: { pixelSize: 230 }, fields: 'pixelSize' } },
+    { updateDimensionProperties: { range: { sheetId: numericId, dimension: 'COLUMNS', startIndex: 1, endIndex: lastCol0 + 1 }, properties: { pixelSize: 68 }, fields: 'pixelSize' } },
   ];
+
   await sheets.spreadsheets.batchUpdate({ spreadsheetId: SHEET_ID, requestBody: { requests: formatRequests } });
   await delay(500);
 
-  // 5. Chart — separate call so a quota error here doesn't abort the data write
-  if (campaigns.length > 0) {
-    try {
-      const meta     = await sheets.spreadsheets.get({ spreadsheetId: SHEET_ID });
-      const cplSheet = meta.data.sheets.find(s => s.properties.sheetId === numericId);
-      const deleteCharts = (cplSheet?.charts || []).map(c => ({ deleteEmbeddedObject: { objectId: c.chartId } }));
-      await delay(300);
-      await sheets.spreadsheets.batchUpdate({
-        spreadsheetId: SHEET_ID,
-        requestBody: {
-          requests: [
-            ...deleteCharts,
-            {
-              addChart: {
-                chart: {
-                  spec: {
-                    title: 'Daily Spend by Campaign',
-                    basicChart: {
-                      chartType: 'LINE',
-                      legendPosition: 'BOTTOM_LEGEND',
-                      axis: [{ position: 'BOTTOM_AXIS' }, { position: 'LEFT_AXIS', title: 'Spend ($)' }],
-                      domains: [{ domain: { sourceRange: { sources: [{ sheetId: numericId, startRowIndex: 0, endRowIndex: 1, startColumnIndex: firstDateCol - 1, endColumnIndex: lastDateCol }] } } }],
-                      series: campaigns.map((_, i) => ({
-                        series: { sourceRange: { sources: [{ sheetId: numericId, startRowIndex: i + 2, endRowIndex: i + 3, startColumnIndex: firstDateCol - 1, endColumnIndex: lastDateCol }] } },
-                        targetAxis: 'LEFT_AXIS',
-                      })),
-                      headerCount: 1,
-                    },
+  // 6. Chart — CPL per campaign per day (references CPL section)
+  try {
+    const meta     = await sheets.spreadsheets.get({ spreadsheetId: SHEET_ID });
+    const cplSheet = meta.data.sheets.find(s => s.properties.sheetId === numericId);
+    const deleteCharts = (cplSheet?.charts || []).map(c => ({ deleteEmbeddedObject: { objectId: c.chartId } }));
+    await delay(300);
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId: SHEET_ID,
+      requestBody: {
+        requests: [
+          ...deleteCharts,
+          {
+            addChart: {
+              chart: {
+                spec: {
+                  title: 'Daily CPL by Campaign',
+                  basicChart: {
+                    chartType: 'LINE',
+                    legendPosition: 'BOTTOM_LEGEND',
+                    axis: [
+                      { position: 'BOTTOM_AXIS' },
+                      { position: 'LEFT_AXIS', title: 'CPL ($)' },
+                    ],
+                    // Domain: date headers from CPL section header row
+                    domains: [{ domain: { sourceRange: { sources: [{ sheetId: numericId, startRowIndex: cplHdr0, endRowIndex: cplHdr0 + 1, startColumnIndex: 1, endColumnIndex: lastCol0 }] } } }],
+                    // Series: one per campaign (date cols only, not TOTAL col)
+                    series: campaigns.map((_, i) => ({
+                      series: { sourceRange: { sources: [{ sheetId: numericId, startRowIndex: cplData0 + i, endRowIndex: cplData0 + i + 1, startColumnIndex: 1, endColumnIndex: lastCol0 }] } },
+                      targetAxis: 'LEFT_AXIS',
+                    })),
+                    headerCount: 1,
                   },
-                  position: { overlayPosition: { anchorCell: { sheetId: numericId, rowIndex: lastDataRow + 2, columnIndex: 0 }, widthPixels: 1100, heightPixels: 380 } },
+                },
+                position: {
+                  overlayPosition: {
+                    anchorCell: { sheetId: numericId, rowIndex: 0, columnIndex: lastCol0 + 2 },
+                    widthPixels: 900,
+                    heightPixels: 400,
+                  },
                 },
               },
             },
-          ],
-        },
-      });
-    } catch (e) {
-      console.warn('[CPL] chart update failed (non-fatal):', e.message);
-    }
+          },
+        ],
+      },
+    });
+  } catch (e) {
+    console.warn('[CPL] chart update failed (non-fatal):', e.message);
   }
 }
 
