@@ -1146,6 +1146,10 @@ async function runSync() {
       return;
     }
 
+    // Derive today + l4dDates from the imported dates (needed by writeCampaignTab)
+    const today    = dates[0];                // most recent imported date
+    const l4dDates = dates.slice(1, 5);       // next 4 imported dates = "L4D" window
+
     // 3. dailyData comes directly from CSV imports — no API calls for spend or leads
     const dailyData = {};
     for (const dateStr of dates) {
