@@ -60,6 +60,24 @@ function safeTabName(s) {
 
 function delay(ms) { return new Promise(res => setTimeout(res, ms)); }
 
+async function withQuotaRetry(fn, maxRetries = 6) {
+  let wait = 15000;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      const isQuota = err?.code === 429 ||
+        String(err?.message).includes('Quota exceeded') ||
+        err?.errors?.[0]?.reason === 'rateLimitExceeded' ||
+        err?.errors?.[0]?.reason === 'userRateLimitExceeded';
+      if (!isQuota || attempt === maxRetries) throw err;
+      console.log(`  [quota] waiting ${wait / 1000}s before retry ${attempt + 1}/${maxRetries}…`);
+      await delay(wait);
+      wait = Math.min(wait * 2, 90000);
+    }
+  }
+}
+
 // Known-good domains for fuzzy matching (edit-distance-1 typos get corrected to these)
 const KNOWN_DOMAINS = ['gmail.com','yahoo.com','hotmail.com','outlook.com','icloud.com','aol.com','comcast.net','verizon.net','att.net','live.com','msn.com'];
 
@@ -424,12 +442,12 @@ async function writeCampaignTab(sheets, tabName, numericId, adsets, dailyData, d
     ...dates.map((_, i) => `=SUM(${colLetter(firstDayCol + i)}3:${colLetter(firstDayCol + i)}${lastRow})`),
   ];
 
-  await sheets.spreadsheets.values.clear({ spreadsheetId: SHEET_ID, range: tabName });
-  await sheets.spreadsheets.values.update({
+  await withQuotaRetry(() => sheets.spreadsheets.values.clear({ spreadsheetId: SHEET_ID, range: tabName }));
+  await withQuotaRetry(() => sheets.spreadsheets.values.update({
     spreadsheetId: SHEET_ID, range: `${tabName}!A1`,
     valueInputOption: 'USER_ENTERED',
     requestBody: { values: [headers, totalsRow, ...dataRows] },
-  });
+  }));
 
   const currencyFmt = (startCol, endCol, startRow = 1) => ({
     repeatCell: {
@@ -487,7 +505,7 @@ async function writeCampaignTab(sheets, tabName, numericId, adsets, dailyData, d
     currencyFmt(l4dCplCol,   l4dCplCol),
   ];
 
-  await sheets.spreadsheets.batchUpdate({ spreadsheetId: SHEET_ID, requestBody: { requests } });
+  await withQuotaRetry(() => sheets.spreadsheets.batchUpdate({ spreadsheetId: SHEET_ID, requestBody: { requests } }));
 }
 
 // ── Write Home tab ────────────────────────────────────────────────────────────
@@ -522,16 +540,16 @@ async function writeHomeTab(sheets, tabMap) {
     ['• Adsets not found in Facebook are filled from CSV names'],
   ];
 
-  await sheets.spreadsheets.values.clear({ spreadsheetId: SHEET_ID, range: HOME });
-  await sheets.spreadsheets.values.update({
+  await withQuotaRetry(() => sheets.spreadsheets.values.clear({ spreadsheetId: SHEET_ID, range: HOME }));
+  await withQuotaRetry(() => sheets.spreadsheets.values.update({
     spreadsheetId: SHEET_ID, range: `${HOME}!A1`,
     valueInputOption: 'USER_ENTERED',
     requestBody: { values: rows },
-  });
+  }));
 
   const homeId = tabMap[HOME];
   if (homeId == null) return;
-  await sheets.spreadsheets.batchUpdate({
+  await withQuotaRetry(() => sheets.spreadsheets.batchUpdate({
     spreadsheetId: SHEET_ID,
     requestBody: {
       requests: [
@@ -1235,8 +1253,8 @@ async function runSync() {
     // 7. Write each campaign tab
     for (const [tabName, adsets] of Object.entries(byCampaign)) {
       console.log(`  Writing tab: ${tabName} (${adsets.length} adsets)`);
-      await writeCampaignTab(sheets, tabName, tabMap[tabName], adsets, dailyData, dates, today, l4dDates);
-      await delay(300);
+      await withQuotaRetry(() => writeCampaignTab(sheets, tabName, tabMap[tabName], adsets, dailyData, dates, today, l4dDates));
+      await delay(4000);
     }
 
     // 8. Write CPL tab
