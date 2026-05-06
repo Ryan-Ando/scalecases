@@ -6,13 +6,14 @@ import SpendSheet from './SpendSheet.jsx';
 import CampaignReports from './CampaignReports.jsx';
 import StateVariations from './StateVariations.jsx';
 import CplTracker from './CplTracker.jsx';
+import LeadReports from './LeadReports.jsx';
 
 function Logo() {
   return <img src="/logo.png" width="32" height="32" style={{ borderRadius: 8, display: 'block' }} alt="Scale Cases" />;
 }
 
 const BASE = import.meta.env.VITE_API_URL || 'http://localhost:3001';
-const TABS = ['Ads Tracking', 'Spend Sheet', 'Campaign Reports', 'State Variations', 'CPL Tracker'];
+const TABS = ['Ads Tracking', 'Spend Sheet', 'Campaign Reports', 'State Variations', 'CPL Tracker', 'Lead Reports'];
 
 function logout() {
   localStorage.removeItem('sc_auth_token');
@@ -86,6 +87,7 @@ export default function App() {
         {mounted.has('Campaign Reports') && <div style={show('Campaign Reports')}><CampaignReports /></div>}
         {mounted.has('State Variations') && <div style={show('State Variations')}><StateVariations /></div>}
         {mounted.has('CPL Tracker')      && <div style={show('CPL Tracker')}><CplTracker /></div>}
+        {mounted.has('Lead Reports')     && <div style={show('Lead Reports')}><LeadReports /></div>}
       </main>
       <footer style={{ textAlign: 'center', padding: '12px 0', fontSize: 11, color: 'var(--text-muted)', borderTop: '1px solid var(--border)' }}>
         <a href="/privacy-policy.html" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--text-muted)', textDecoration: 'underline' }}>

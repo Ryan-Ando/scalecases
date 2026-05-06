@@ -4,6 +4,7 @@ import { google } from 'googleapis';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import multer from 'multer';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
@@ -765,6 +766,91 @@ function persistLeads() {
   try { fs.writeFileSync(LEADS_FILE, JSON.stringify(_leads)); } catch {}
 }
 
+// ── CSV report storage ────────────────────────────────────────────────────────
+const REPORTS_DIR = process.env.DATA_DIR
+  ? path.join(process.env.DATA_DIR, 'reports')
+  : path.join(__dirname, '../../reports');
+
+function ensureReportsDir() {
+  try { fs.mkdirSync(REPORTS_DIR, { recursive: true }); } catch {}
+}
+
+// Parse a CSV line handling basic quoted fields
+function splitCsvLine(line) {
+  const out = []; let cur = ''; let inQ = false;
+  for (const ch of line) {
+    if (ch === '"') { inQ = !inQ; }
+    else if (ch === ',' && !inQ) { out.push(cur.trim()); cur = ''; }
+    else { cur += ch; }
+  }
+  out.push(cur.trim());
+  return out;
+}
+
+// Parse CSV text → array of row objects.  Finds columns by name (position-agnostic).
+function parseReportCsv(text) {
+  const lines = text.split(/\r?\n/).filter(l => l.trim());
+  if (lines.length < 2) return [];
+
+  const headers = splitCsvLine(lines[0]);
+  const idx = name => headers.findIndex(h => h.trim().toLowerCase() === name.toLowerCase());
+
+  const iName    = idx('Name');
+  const iLeadZ   = idx('Leads Zemsky');
+  const iLeadB   = idx('Leads B2C PPL');
+  const iLeadA   = idx('Leads Acc Con');
+  const iAdsetId = idx('Ad Set ID');
+  const iCamp    = idx('Campaign Name');
+  const iCost    = idx('Cost');
+
+  const rows = [];
+  for (const line of lines.slice(1)) {
+    const v = splitCsvLine(line);
+    const adsetId = (v[iAdsetId] || '').trim();
+    if (!adsetId || adsetId === '-') continue; // skip totals row
+    const leads = (parseInt(v[iLeadZ]) || 0) + (parseInt(v[iLeadB]) || 0) + (parseInt(v[iLeadA]) || 0);
+    rows.push({
+      adsetId,
+      adsetName:    (v[iName]  || '').trim(),
+      campaignName: (v[iCamp]  || '').trim(),
+      spend:        parseFloat(v[iCost]) || 0,
+      leads,
+    });
+  }
+  return rows;
+}
+
+// "Report 05-05-2026 - 05-05-2026.csv" → "2026-05-05"
+function parseDateFromFilename(filename) {
+  const m = filename.match(/(\d{2})-(\d{2})-(\d{4})/);
+  return m ? `${m[3]}-${m[1]}-${m[2]}` : null;
+}
+
+// Load all stored daily reports into dailyData format: { dateStr: { adsetId: {leads,cost} } }
+function loadCsvReports() {
+  ensureReportsDir();
+  const result = {};
+  try {
+    for (const file of fs.readdirSync(REPORTS_DIR).filter(f => f.endsWith('.json'))) {
+      const dateStr = file.replace('.json', '');
+      try {
+        const { rows } = JSON.parse(fs.readFileSync(path.join(REPORTS_DIR, file), 'utf8'));
+        result[dateStr] = {};
+        for (const row of rows) {
+          // Multiple adset rows can share the same ID (split campaigns); sum them
+          if (!result[dateStr][row.adsetId]) {
+            result[dateStr][row.adsetId] = { leads: 0, cost: 0, campaignName: row.campaignName, adsetName: row.adsetName };
+          }
+          result[dateStr][row.adsetId].leads += row.leads;
+          result[dateStr][row.adsetId].cost  += row.spend;
+        }
+      } catch {}
+    }
+  } catch {}
+  return result;
+}
+
+
 function aggregateCplData(adsetInfo, dailyData, dates) {
   const spend = {};
   for (const [dateStr, adsetMap] of Object.entries(dailyData)) {
@@ -1072,29 +1158,24 @@ async function runSync() {
     const auth   = await getAuthClient();
     const sheets = google.sheets({ version: 'v4', auth });
 
-    // 2. Clean up duplicate emails from overlapping CSV uploads
-    await deduplicateLeadEvents(sheets);
+    // 2. Load uploaded CSV reports (spend + leads per adset per day)
+    const csvReports = loadCsvReports();
+    console.log(`[sync] CSV reports loaded for ${Object.keys(csvReports).length} date(s)`);
 
-    // 3. Re-attribute Lead Events from current Hyros last-click data; mark DROPPED
-    //    if Hyros no longer recognises a lead (removes overcount)
-    await reattributeLeadEvents(sheets);
-
-    // 4. Read all stage events from sheet (now deduped + re-attributed)
-    const leadsFromSheet = await getLeadsFromSheet(sheets);
-
-    // 5. Fetch spend per day from Hyros attribution API; merge with Lead Events for lead counts
+    // 3. Build dailyData: use CSV when available, Hyros API as fallback for missing dates
     const dailyData = {};
     for (const dateStr of allDates) {
-      const attrByAdset = await fetchCostForDay(dateStr);
-      dailyData[dateStr] = {};
-      for (const [id, data] of Object.entries(attrByAdset)) {
-        dailyData[dateStr][id] = { leads: leadsFromSheet[dateStr]?.[id] || 0, cost: data.cost || 0 };
+      if (csvReports[dateStr]) {
+        dailyData[dateStr] = csvReports[dateStr];
+      } else {
+        // No CSV uploaded for this date — fetch spend from Hyros (leads = 0)
+        const attrByAdset = await fetchCostForDay(dateStr);
+        dailyData[dateStr] = {};
+        for (const [id, data] of Object.entries(attrByAdset)) {
+          dailyData[dateStr][id] = { leads: 0, cost: data.cost || 0 };
+        }
+        await delay(500);
       }
-      // Include adsets that have leads in sheet but no spend that day
-      for (const [id, count] of Object.entries(leadsFromSheet[dateStr] || {})) {
-        if (!dailyData[dateStr][id]) dailyData[dateStr][id] = { leads: count, cost: 0 };
-      }
-      await delay(500);
     }
 
     // 4. Collect adset IDs from leads + spend, then merge ALL account adsets from FB
@@ -1904,6 +1985,66 @@ router.post('/cpl-leads', (req, res) => {
     _leads[key] = value;
   }
   persistLeads();
+  res.json({ ok: true });
+});
+
+// ── CSV report endpoints ──────────────────────────────────────────────────────
+
+// GET /api/hyros/reports — list all uploaded daily reports
+router.get('/reports', (_req, res) => {
+  ensureReportsDir();
+  try {
+    const files = fs.readdirSync(REPORTS_DIR).filter(f => f.endsWith('.json')).sort().reverse();
+    const list = files.map(f => {
+      try {
+        const { date, uploadedAt, rows } = JSON.parse(fs.readFileSync(path.join(REPORTS_DIR, f), 'utf8'));
+        return {
+          date,
+          uploadedAt,
+          rowCount:   rows.length,
+          totalLeads: rows.reduce((s, r) => s + r.leads, 0),
+          totalSpend: rows.reduce((s, r) => s + r.spend, 0),
+        };
+      } catch { return null; }
+    }).filter(Boolean);
+    res.json({ ok: true, reports: list });
+  } catch { res.json({ ok: true, reports: [] }); }
+});
+
+// POST /api/hyros/upload-report — upload one or more CSV files (multipart)
+const _upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
+
+router.post('/upload-report', _upload.array('files'), (req, res) => {
+  ensureReportsDir();
+  const results = [];
+  for (const file of (req.files || [])) {
+    const dateStr = parseDateFromFilename(file.originalname);
+    if (!dateStr) {
+      results.push({ file: file.originalname, ok: false, error: 'Could not parse date from filename' });
+      continue;
+    }
+    try {
+      const rows = parseReportCsv(file.buffer.toString('utf8'));
+      fs.writeFileSync(
+        path.join(REPORTS_DIR, `${dateStr}.json`),
+        JSON.stringify({ date: dateStr, uploadedAt: new Date().toISOString(), rows })
+      );
+      results.push({
+        file: file.originalname, ok: true, date: dateStr,
+        rowCount:   rows.length,
+        totalLeads: rows.reduce((s, r) => s + r.leads, 0),
+        totalSpend: rows.reduce((s, r) => s + r.spend, 0),
+      });
+    } catch (e) {
+      results.push({ file: file.originalname, ok: false, error: e.message });
+    }
+  }
+  res.json({ ok: true, results });
+});
+
+// DELETE /api/hyros/reports/:date — remove one day's report
+router.delete('/reports/:date', (req, res) => {
+  try { fs.unlinkSync(path.join(REPORTS_DIR, `${req.params.date}.json`)); } catch {}
   res.json({ ok: true });
 });
 
