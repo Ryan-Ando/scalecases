@@ -265,6 +265,11 @@ export default function CplTracker() {
                 >
                   <td className={`cpl-td-camp${alt ? ' alt' : ''}`} title={camp}>
                     <span className="cpl-drag-handle">⠿</span>
+                    <span
+                      className="cpl-status-dot"
+                      title={cplData.status?.[camp] === 'ACTIVE' ? 'Active' : 'Inactive'}
+                      style={{ background: cplData.status?.[camp] === 'ACTIVE' ? '#16a34a' : '#9ca3af' }}
+                    />
                     {camp}
                   </td>
                   {visDates.map(date => {
@@ -346,6 +351,11 @@ export default function CplTracker() {
                 }}
               >
                 <span className="cpl-ldot" style={{ background: off ? '#d1d5db' : color }} />
+                <span
+                  className="cpl-status-dot"
+                  title={cplData.status?.[c] === 'ACTIVE' ? 'Active' : 'Inactive'}
+                  style={{ background: cplData.status?.[c] === 'ACTIVE' ? '#16a34a' : '#9ca3af' }}
+                />
                 {c}
               </button>
             );

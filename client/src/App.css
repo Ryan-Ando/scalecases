@@ -1111,6 +1111,7 @@ tfoot .td-name { font-family: var(--sans); font-weight: 700; font-size: 13px; }
 .cpl-row-totals td { background: #1e293b !important; color: #f1f5f9 !important; font-weight: 700; border-top: 2px solid #334155; }
 .cpl-td-totals-label { position: sticky; left: 0; z-index: 2; }
 .cpl-drag-handle { display: inline-block; width: 16px; margin-right: 4px; color: #9ca3af; font-size: 13px; cursor: grab; user-select: none; }
+.cpl-status-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 5px; flex-shrink: 0; vertical-align: middle; position: relative; top: -1px; }
 
 .cpl-input {
   width: 48px; text-align: center; border: 1px solid #d1d5db;

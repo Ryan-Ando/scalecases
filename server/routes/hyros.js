@@ -869,20 +869,28 @@ function loadCsvReports() {
 
 
 function aggregateCplData(adsetInfo, dailyData, dates) {
-  const spend = {};
+  const spend  = {};
+  const status = {}; // campaignName → 'ACTIVE' | 'PAUSED'
   for (const [dateStr, adsetMap] of Object.entries(dailyData)) {
     const label = dateStr.slice(5);
     for (const [id, { cost }] of Object.entries(adsetMap)) {
-      const name = adsetInfo[id]?.campaignName || 'Unknown Campaign';
+      const info = adsetInfo[id];
+      const name = info?.campaignName || 'Unknown Campaign';
       if (!spend[name]) spend[name] = {};
       spend[name][label] = (spend[name][label] || 0) + (cost || 0);
+      // A campaign is live if any of its adsets is ACTIVE
+      if (info?.status === 'ACTIVE') {
+        status[name] = 'ACTIVE';
+      } else if (!status[name]) {
+        status[name] = 'PAUSED';
+      }
     }
   }
   const campaigns = Object.keys(spend).sort((a, b) => {
     return Object.values(spend[b]).reduce((s, v) => s + v, 0)
          - Object.values(spend[a]).reduce((s, v) => s + v, 0);
   });
-  return { campaigns, dates: dates.map(d => d.slice(5)), spend, lastSync: new Date().toISOString() };
+  return { campaigns, dates: dates.map(d => d.slice(5)), spend, status, lastSync: new Date().toISOString() };
 }
 
 // ── CPL tab ───────────────────────────────────────────────────────────────────
