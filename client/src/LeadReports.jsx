@@ -43,6 +43,12 @@ export default function LeadReports() {
     setReports(prev => prev.filter(r => r.date !== date));
   }, []);
 
+  const clearAll = useCallback(async () => {
+    if (!window.confirm('Delete all stored reports? You will need to re-upload all CSV files.')) return;
+    await fetch(`${BASE}/api/hyros/reports`, { method: 'DELETE' });
+    setReports([]);
+  }, []);
+
   const onDrop = useCallback(e => {
     e.preventDefault(); setDragging(false);
     uploadFiles(e.dataTransfer.files);
@@ -54,9 +60,16 @@ export default function LeadReports() {
       <div className="lr-sidebar">
         <div className="lr-header">
           <h2 className="lr-title">Lead Reports</h2>
-          <a href={SHEET_URL} target="_blank" rel="noopener noreferrer" className="lr-sheet-link">
-            Open Sheet ↗
-          </a>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            {reports.length > 0 && (
+              <button onClick={clearAll} className="lr-clear-btn" title="Delete all stored reports">
+                Clear All
+              </button>
+            )}
+            <a href={SHEET_URL} target="_blank" rel="noopener noreferrer" className="lr-sheet-link">
+              Open Sheet ↗
+            </a>
+          </div>
         </div>
         <p className="lr-subtitle">
           Upload daily Hyros CSV exports. Re-uploading the same day replaces existing data.

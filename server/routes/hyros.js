@@ -2090,6 +2090,16 @@ router.delete('/reports/:date', (req, res) => {
   res.json({ ok: true });
 });
 
+// DELETE /api/hyros/reports — clear ALL stored reports
+router.delete('/reports', (req, res) => {
+  ensureReportsDir();
+  try {
+    const files = fs.readdirSync(REPORTS_DIR).filter(f => f.endsWith('.json'));
+    for (const f of files) { try { fs.unlinkSync(path.join(REPORTS_DIR, f)); } catch {} }
+    res.json({ ok: true, deleted: files.length });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
 // GET /api/hyros/cpl-data — serve aggregated spend data to the React CPL Tracker tab
 router.get('/cpl-data', (_req, res) => {
   if (!_lastCplData) return res.status(503).json({ ok: false, error: 'No data yet — click "Sync CPL" to load' });
