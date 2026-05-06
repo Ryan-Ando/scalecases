@@ -1132,50 +1132,25 @@ async function runSync() {
   _lastError   = null;
 
   try {
-    const today = isoToday();
-    const yesterday = (() => {
-      const d = new Date(today + 'T12:00:00Z');
-      d.setUTCDate(d.getUTCDate() - 1);
-      return d.toISOString().slice(0, 10);
-    })();
-
-    // Date columns: START_DATE to today, reversed so latest is first (leftmost)
-    const dates = buildDateRange(START_DATE, today).reverse();
-
-    // L4D: yesterday and 3 days prior (excludes today)
-    const l4dStart = (() => {
-      const d = new Date(today + 'T12:00:00Z');
-      d.setUTCDate(d.getUTCDate() - 4);
-      return d.toISOString().slice(0, 10);
-    })();
-    const l4dDates = buildDateRange(l4dStart, yesterday);
-
-    // All dates we need to fetch (union, deduplicated)
-    const allDates = [...new Set([...dates, ...l4dDates])];
-    console.log(`Hyros sync: ${allDates.length} days…`);
-
-    // 1. Get Google Sheets auth early — needed for leads + writing tabs
+    // 1. Get Google Sheets auth early — needed for writing tabs
     const auth   = await getAuthClient();
     const sheets = google.sheets({ version: 'v4', auth });
 
-    // 2. Load uploaded CSV reports (spend + leads per adset per day)
+    // 2. Load uploaded CSV reports — these are the ONLY data source
     const csvReports = loadCsvReports();
-    console.log(`[sync] CSV reports loaded for ${Object.keys(csvReports).length} date(s)`);
+    const dates = Object.keys(csvReports).sort().reverse(); // newest first, matching sheet column order
+    console.log(`[sync] ${dates.length} imported date(s): ${dates.join(', ')}`);
 
-    // 3. Build dailyData: use CSV when available, Hyros API as fallback for missing dates
+    if (!dates.length) {
+      _lastError = 'No CSV reports uploaded — upload at least one file before syncing';
+      console.warn('[sync] no CSV reports found, aborting');
+      return;
+    }
+
+    // 3. dailyData comes directly from CSV imports — no API calls for spend or leads
     const dailyData = {};
-    for (const dateStr of allDates) {
-      if (csvReports[dateStr]) {
-        dailyData[dateStr] = csvReports[dateStr];
-      } else {
-        // No CSV uploaded for this date — fetch spend from Hyros (leads = 0)
-        const attrByAdset = await fetchCostForDay(dateStr);
-        dailyData[dateStr] = {};
-        for (const [id, data] of Object.entries(attrByAdset)) {
-          dailyData[dateStr][id] = { leads: 0, cost: data.cost || 0 };
-        }
-        await delay(500);
-      }
+    for (const dateStr of dates) {
+      dailyData[dateStr] = csvReports[dateStr];
     }
 
     // 4. Collect adset IDs from leads + spend, then merge ALL account adsets from FB
