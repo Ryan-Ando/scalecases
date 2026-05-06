@@ -1312,6 +1312,26 @@ async function runSync() {
       });
     }
 
+    // 10. Reorder tabs: Home → non-CBO campaigns → CBO campaigns → CPL
+    const isCboTab = t => /\bCBO\b/i.test(t);
+    const finalSheets = (await sheets.spreadsheets.get({ spreadsheetId: SHEET_ID })).data.sheets
+      .map(s => ({ title: s.properties.title, sheetId: s.properties.sheetId }));
+    const ordered = [
+      ...finalSheets.filter(s => s.title === 'Home'),
+      ...finalSheets.filter(s => s.title !== 'Home' && s.title !== 'CPL' && !isCboTab(s.title)).sort((a, b) => a.title.localeCompare(b.title)),
+      ...finalSheets.filter(s => s.title !== 'Home' && s.title !== 'CPL' &&  isCboTab(s.title)).sort((a, b) => a.title.localeCompare(b.title)),
+      ...finalSheets.filter(s => s.title === 'CPL'),
+    ];
+    await withQuotaRetry(() => sheets.spreadsheets.batchUpdate({
+      spreadsheetId: SHEET_ID,
+      requestBody: {
+        requests: ordered.map((s, i) => ({
+          updateSheetProperties: { properties: { sheetId: s.sheetId, index: i }, fields: 'index' },
+        })),
+      },
+    }));
+    console.log(`  Tab order: ${ordered.map(s => s.title).join(', ')}`);
+
     _lastSyncData = { adsetInfo, dailyData, dates, tabMap };
     _lastCplData  = aggregateCplData(adsetInfo, dailyData, dates);
     _lastSync = new Date().toISOString();
