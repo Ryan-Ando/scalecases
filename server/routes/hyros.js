@@ -582,7 +582,7 @@ async function writeHomeTab(sheets, tabMap) {
         { updateDimensionProperties: { range: { sheetId: homeId, dimension: 'COLUMNS', startIndex: 2, endIndex: 3 }, properties: { pixelSize: 380 }, fields: 'pixelSize' } },
       ],
     },
-  });
+  }));
 }
 
 // ── Dedup Lead Events by email ────────────────────────────────────────────────
