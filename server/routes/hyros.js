@@ -1193,6 +1193,20 @@ async function runSync() {
       [...allAdsetIds].filter(id => !allAccountAdsets[id]) // only look up unknowns
     )};
 
+    // Back-fill any adsets that FB doesn't know about using names from the CSV itself
+    for (const adsetMap of Object.values(csvReports)) {
+      for (const [adsetId, data] of Object.entries(adsetMap)) {
+        if (!adsetInfo[adsetId] && data.campaignName) {
+          adsetInfo[adsetId] = {
+            name:         data.adsetName || adsetId,
+            status:       'PAUSED',
+            campaignName: data.campaignName,
+            campaignId:   null,
+          };
+        }
+      }
+    }
+
     // If FB returned nothing (expired token / API error), skip the tab deletion step later
     // so we don't wipe campaign tabs — Hyros data still writes fine without FB names.
     const fbAvailable = Object.keys(allAccountAdsets).length > 0;
