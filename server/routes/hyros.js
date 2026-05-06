@@ -819,6 +819,7 @@ function parseReportCsv(text) {
   const iAdsetId = idx('Ad Set ID');
   const iCamp    = idx('Campaign Name');
   const iCost    = idx('Cost');
+  const iStatus  = idx('Status');
 
   const rows = [];
   for (const line of lines.slice(1)) {
@@ -828,10 +829,11 @@ function parseReportCsv(text) {
     const leads = (parseInt(v[iLeadZ]) || 0) + (parseInt(v[iLeadB]) || 0) + (parseInt(v[iLeadA]) || 0);
     rows.push({
       adsetId,
-      adsetName:    (v[iName]  || '').trim(),
-      campaignName: (v[iCamp]  || '').trim(),
+      adsetName:    (v[iName]   || '').trim(),
+      campaignName: (v[iCamp]   || '').trim(),
       spend:        parseFloat(v[iCost]) || 0,
       leads,
+      status:       (v[iStatus] || 'PAUSED').trim().toUpperCase(),
     });
   }
   return rows;
@@ -856,7 +858,9 @@ function loadCsvReports() {
         for (const row of rows) {
           // Multiple adset rows can share the same ID (split campaigns); sum them
           if (!result[dateStr][row.adsetId]) {
-            result[dateStr][row.adsetId] = { leads: 0, cost: 0, campaignName: row.campaignName, adsetName: row.adsetName };
+            result[dateStr][row.adsetId] = { leads: 0, cost: 0, campaignName: row.campaignName, adsetName: row.adsetName, status: row.status || 'PAUSED' };
+          } else if (row.status === 'ACTIVE') {
+            result[dateStr][row.adsetId].status = 'ACTIVE'; // ACTIVE wins when merging split rows
           }
           result[dateStr][row.adsetId].leads += row.leads;
           result[dateStr][row.adsetId].cost  += row.spend;
@@ -870,26 +874,31 @@ function loadCsvReports() {
 
 function aggregateCplData(adsetInfo, dailyData, dates) {
   const spend  = {};
-  const status = {}; // campaignName → 'ACTIVE' | 'PAUSED'
+  const status = {}; // campaignName → 'ACTIVE' | 'PAUSED', from most recent CSV date
+
   for (const [dateStr, adsetMap] of Object.entries(dailyData)) {
     const label = dateStr.slice(5);
     for (const [id, { cost }] of Object.entries(adsetMap)) {
-      const info = adsetInfo[id];
-      const name = info?.campaignName || 'Unknown Campaign';
+      const name = adsetInfo[id]?.campaignName || 'Unknown Campaign';
       if (!spend[name]) spend[name] = {};
       spend[name][label] = (spend[name][label] || 0) + (cost || 0);
-      // A campaign is live if any of its adsets is ACTIVE
-      if (info?.status === 'ACTIVE') {
-        status[name] = 'ACTIVE';
-      } else if (!status[name]) {
-        status[name] = 'PAUSED';
-      }
     }
   }
-  const campaigns = Object.keys(spend).sort((a, b) => {
-    return Object.values(spend[b]).reduce((s, v) => s + v, 0)
-         - Object.values(spend[a]).reduce((s, v) => s + v, 0);
-  });
+
+  // Status comes from the most recent imported date (CSV Status column is authoritative)
+  for (const [id, data] of Object.entries(dailyData[dates[0]] || {})) {
+    const name = adsetInfo[id]?.campaignName || 'Unknown Campaign';
+    if (data.status === 'ACTIVE') {
+      status[name] = 'ACTIVE';
+    } else if (!status[name]) {
+      status[name] = 'PAUSED';
+    }
+  }
+
+  const campaigns = Object.keys(spend).sort((a, b) =>
+    Object.values(spend[b]).reduce((s, v) => s + v, 0) -
+    Object.values(spend[a]).reduce((s, v) => s + v, 0)
+  );
   return { campaigns, dates: dates.map(d => d.slice(5)), spend, status, lastSync: new Date().toISOString() };
 }
 
@@ -1203,11 +1212,18 @@ async function runSync() {
         if (!adsetInfo[adsetId] && data.campaignName) {
           adsetInfo[adsetId] = {
             name:         data.adsetName || adsetId,
-            status:       'PAUSED',
+            status:       data.status || 'PAUSED',
             campaignName: data.campaignName,
             campaignId:   null,
           };
         }
+      }
+    }
+
+    // Override adset statuses from most recent CSV date (CSV Status column is authoritative)
+    for (const [adsetId, csvData] of Object.entries(csvReports[dates[0]] || {})) {
+      if (adsetInfo[adsetId]) {
+        adsetInfo[adsetId] = { ...adsetInfo[adsetId], status: csvData.status || 'PAUSED' };
       }
     }
 
@@ -1217,14 +1233,27 @@ async function runSync() {
     if (!fbAvailable) console.warn('[sync] FB returned 0 adsets — skipping stale-tab deletion this run');
 
     // 4. Group adsets by campaign — all statuses (active first, inactive hidden in tab)
-    const byCampaign = {}; // campaignTabName → adset[]
+    const allByCampaign = {}; // campaignTabName → adset[]
     for (const id of allAdsetIds) {
       const info = adsetInfo[id];
       if (!info) continue; // skip completely unknown adsets
       const tabName = safeTabName(info?.campaignName || 'Unknown Campaign');
-      if (!byCampaign[tabName]) byCampaign[tabName] = [];
-      byCampaign[tabName].push({ id, name: info.name || id, status: info.status || 'UNKNOWN' });
+      if (!allByCampaign[tabName]) allByCampaign[tabName] = [];
+      allByCampaign[tabName].push({ id, name: info.name || id, status: info.status || 'UNKNOWN' });
     }
+
+    // Only create/write tabs for campaigns that have at least one ACTIVE adset
+    // in the most recent imported CSV date — campaigns with all-paused ads get no tab
+    const activeCampTabNames = new Set();
+    for (const [, data] of Object.entries(csvReports[dates[0]] || {})) {
+      if (data.status === 'ACTIVE' && data.campaignName) {
+        activeCampTabNames.add(safeTabName(data.campaignName));
+      }
+    }
+    const byCampaign = Object.fromEntries(
+      Object.entries(allByCampaign).filter(([name]) => activeCampTabNames.has(name))
+    );
+    console.log(`[sync] ${Object.keys(byCampaign).length} active campaign(s), ${Object.keys(allByCampaign).length - Object.keys(byCampaign).length} inactive (no tab)`);
 
     // 5. Get or create tabs
     const meta        = await sheets.spreadsheets.get({ spreadsheetId: SHEET_ID });
