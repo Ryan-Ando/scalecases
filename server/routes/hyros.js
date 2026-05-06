@@ -839,10 +839,10 @@ function parseReportCsv(text) {
   return rows;
 }
 
-// "Report 05-05-2026 - 05-05-2026.csv" → "2026-05-05"
+// Hyros filenames use DD-MM-YYYY: "Report 30-04-2026 - 30-04-2026.csv" → "2026-04-30"
 function parseDateFromFilename(filename) {
   const m = filename.match(/(\d{2})-(\d{2})-(\d{4})/);
-  return m ? `${m[3]}-${m[1]}-${m[2]}` : null;
+  return m ? `${m[3]}-${m[2]}-${m[1]}` : null;  // DD-MM-YYYY → YYYY-MM-DD
 }
 
 // Load all stored daily reports into dailyData format: { dateStr: { adsetId: {leads,cost} } }
