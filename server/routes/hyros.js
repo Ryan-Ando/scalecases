@@ -1242,16 +1242,11 @@ async function runSync() {
       allByCampaign[tabName].push({ id, name: info.name || id, status: info.status || 'UNKNOWN' });
     }
 
-    // Only create/write tabs for campaigns that have at least one ACTIVE adset
-    // in the most recent imported CSV date — campaigns with all-paused ads get no tab
-    const activeCampTabNames = new Set();
-    for (const [, data] of Object.entries(csvReports[dates[0]] || {})) {
-      if (data.status === 'ACTIVE' && data.campaignName) {
-        activeCampTabNames.add(safeTabName(data.campaignName));
-      }
-    }
+    // Only create/write tabs for campaigns that have at least one ACTIVE adset.
+    // adset statuses were already overridden from the most recent CSV above,
+    // so we just filter allByCampaign by whether any adset in the group is ACTIVE.
     const byCampaign = Object.fromEntries(
-      Object.entries(allByCampaign).filter(([name]) => activeCampTabNames.has(name))
+      Object.entries(allByCampaign).filter(([, adsets]) => adsets.some(a => a.status === 'ACTIVE'))
     );
     console.log(`[sync] ${Object.keys(byCampaign).length} active campaign(s), ${Object.keys(allByCampaign).length - Object.keys(byCampaign).length} inactive (no tab)`);
 
