@@ -18,12 +18,15 @@ function matchClass(fb, hyros) {
 }
 
 function ReconcilePanel({ reports }) {
-  const [data, setData]       = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError]     = useState(null);
-  const [expanded, setExpanded] = useState(new Set());
-  const [from, setFrom] = useState('');
-  const [to,   setTo]   = useState('');
+  const [data, setData]           = useState(null);
+  const [loading, setLoading]     = useState(false);
+  const [error, setError]         = useState(null);
+  const [expanded, setExpanded]   = useState(new Set());
+  const [from, setFrom]           = useState('');
+  const [to,   setTo]             = useState('');
+  const [debug, setDebug]         = useState(null);
+  const [showDebug, setShowDebug] = useState(false);
+  const [debugLoading, setDebugLoading] = useState(false);
 
   // Default dates to the range of uploaded reports
   useEffect(() => {
@@ -46,6 +49,20 @@ function ReconcilePanel({ reports }) {
     finally { setLoading(false); }
   }, [from, to]);
 
+  const runDebug = useCallback(async () => {
+    setDebugLoading(true); setDebug(null);
+    try {
+      const params = new URLSearchParams();
+      if (from) params.set('from', from);
+      if (to)   params.set('to',   to);
+      const j = await fetch(`${BASE}/api/hyros/reconcile/debug?${params}`).then(r => r.json());
+      if (!j.ok) throw new Error(j.error);
+      setDebug(j);
+      setShowDebug(true);
+    } catch (e) { setError(e.message); }
+    finally { setDebugLoading(false); }
+  }, [from, to]);
+
   const toggle = name => setExpanded(prev => {
     const s = new Set(prev);
     s.has(name) ? s.delete(name) : s.add(name);
@@ -56,9 +73,14 @@ function ReconcilePanel({ reports }) {
     <div className="rc-wrap">
       <div className="rc-header">
         <span className="rc-title">Hyros vs Ads Manager</span>
-        <button onClick={run} disabled={loading} className="rc-run-btn">
-          {loading ? 'Checking…' : '↻ Check Match'}
-        </button>
+        <div style={{ display: 'flex', gap: 6 }}>
+          <button onClick={run} disabled={loading || debugLoading} className="rc-run-btn">
+            {loading ? 'Checking…' : '↻ Check Match'}
+          </button>
+          <button onClick={runDebug} disabled={loading || debugLoading} className="rc-debug-btn" title="Show all raw FB action types for each campaign">
+            {debugLoading ? '…' : 'Debug FB'}
+          </button>
+        </div>
       </div>
       <div className="rc-dates">
         <input type="date" value={from} onChange={e => setFrom(e.target.value)} className="rc-date-input" />
@@ -66,6 +88,32 @@ function ReconcilePanel({ reports }) {
         <input type="date" value={to}   onChange={e => setTo(e.target.value)}   className="rc-date-input" />
       </div>
       {error && <div className="rc-error">{error}</div>}
+
+      {showDebug && debug && (
+        <div className="rc-debug-wrap">
+          <div className="rc-debug-header">
+            <span>Raw FB Action Types ({debug.since} – {debug.until})</span>
+            <button onClick={() => setShowDebug(false)} className="rc-debug-close">×</button>
+          </div>
+          {Object.entries(debug.campaigns).map(([camp, actions]) => (
+            <div key={camp} className="rc-debug-camp">
+              <div className="rc-debug-camp-name">{camp}</div>
+              <table className="rc-debug-table">
+                <tbody>
+                  {actions.map(a => (
+                    <tr key={a.action_type}>
+                      <td className="rc-debug-type">{a.action_type}</td>
+                      <td className="rc-debug-val">{a.value}</td>
+                    </tr>
+                  ))}
+                  {actions.length === 0 && <tr><td colSpan={2} style={{ color: 'var(--text-muted)', fontSize: 11 }}>no actions</td></tr>}
+                </tbody>
+              </table>
+            </div>
+          ))}
+        </div>
+      )}
+
       {data && (
         <>
           <div className="rc-summary">

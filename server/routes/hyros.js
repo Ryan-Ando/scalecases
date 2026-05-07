@@ -2075,26 +2075,37 @@ async function fetchFbLeadsForRange(since, until) {
   if (!accounts.length) throw new Error('FB_AD_ACCOUNTS not set');
 
   const timeRange  = encodeURIComponent(JSON.stringify({ since, until }));
+  // Match Ads Manager default attribution window: 7-day click + 1-day view
+  const attrWindows = encodeURIComponent(JSON.stringify(['7d_click', '1d_view']));
   // campaignName → leads (campaign-level = exact Ads Manager Results column value, deduplicated)
   const campaigns  = {};
   // adsetId → { leads, adsetName, campaignName } (for breakdown only — may not sum to campaign total)
   const adsets     = {};
+  // campaignName → raw actions array (for debug)
+  const rawActions = {};
 
   for (const account of accounts) {
     // Campaign-level actions — deduplicated by FB, matches Ads Manager Results column
-    let url = `${FB_API}/${account}/insights?level=campaign&fields=campaign_name,actions&time_range=${timeRange}&limit=500&access_token=${token}`;
+    let url = `${FB_API}/${account}/insights?level=campaign&fields=campaign_name,actions&time_range=${timeRange}&action_attribution_windows=${attrWindows}&limit=500&access_token=${token}`;
     while (url) {
       const j = await fetch(url).then(r => r.json());
       if (j.error) throw new Error(`FB API: ${j.error.message}`);
       for (const row of (j.data || [])) {
         campaigns[row.campaign_name] = (campaigns[row.campaign_name] || 0) + extractLeadCount(row.actions || []);
+        // Accumulate raw actions for debug
+        if (!rawActions[row.campaign_name]) rawActions[row.campaign_name] = [];
+        for (const a of (row.actions || [])) {
+          const existing = rawActions[row.campaign_name].find(x => x.action_type === a.action_type);
+          if (existing) existing.value = String(parseInt(existing.value) + parseInt(a.value || 0));
+          else rawActions[row.campaign_name].push({ ...a });
+        }
       }
       url = j.paging?.next || null;
       if (url) await delay(300);
     }
 
     // Adset-level actions — for the breakdown view (diagnostic; may not sum to campaign total due to multi-touch)
-    url = `${FB_API}/${account}/insights?level=adset&fields=adset_id,adset_name,campaign_name,actions&time_range=${timeRange}&limit=500&access_token=${token}`;
+    url = `${FB_API}/${account}/insights?level=adset&fields=adset_id,adset_name,campaign_name,actions&time_range=${timeRange}&action_attribution_windows=${attrWindows}&limit=500&access_token=${token}`;
     while (url) {
       const j = await fetch(url).then(r => r.json());
       if (j.error) throw new Error(`FB API: ${j.error.message}`);
@@ -2110,8 +2121,27 @@ async function fetchFbLeadsForRange(since, until) {
 
     await delay(300);
   }
-  return { campaigns, adsets };
+  return { campaigns, adsets, rawActions };
 }
+
+// GET /api/hyros/reconcile/debug — show all raw FB action types for each campaign (diagnostic)
+router.get('/reconcile/debug', async (req, res) => {
+  const csvReports = loadCsvReports();
+  const allDates   = Object.keys(csvReports).sort();
+  const since = req.query.from || allDates[0] || '2026-05-01';
+  const until = req.query.to   || allDates[allDates.length - 1] || '2026-05-07';
+  try {
+    const fbData = await fetchFbLeadsForRange(since, until);
+    // Sort each campaign's actions by value descending for easy reading
+    const result = {};
+    for (const [camp, actions] of Object.entries(fbData.rawActions || {})) {
+      result[camp] = [...actions].sort((a, b) => parseInt(b.value) - parseInt(a.value));
+    }
+    res.json({ ok: true, since, until, campaigns: result });
+  } catch (e) {
+    res.json({ ok: false, error: e.message });
+  }
+});
 
 // GET /api/hyros/reconcile — compare Hyros CSV leads vs Facebook Ads Manager leads
 router.get('/reconcile', async (req, res) => {
