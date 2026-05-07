@@ -8,6 +8,120 @@ const SHEET_EMBED = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/htmlview
 const fmt$ = v => `$${Number(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const fmtDate = d => { const [y, m, day] = d.split('-'); return `${m}/${day}/${y}`; };
 
+function matchClass(fb, hyros) {
+  if (fb === 0 && hyros === 0) return '';
+  if (fb === 0) return 'rc-miss';
+  const ratio = hyros / fb;
+  if (ratio >= 0.85 && ratio <= 1.15) return 'rc-match';
+  if (ratio >= 0.6  && ratio <= 1.4)  return 'rc-close';
+  return 'rc-off';
+}
+
+function ReconcilePanel({ reports }) {
+  const [data, setData]     = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError]   = useState(null);
+  const [expanded, setExpanded] = useState(new Set());
+
+  const run = useCallback(async () => {
+    setLoading(true); setError(null); setData(null);
+    try {
+      const j = await fetch(`${BASE}/api/hyros/reconcile`).then(r => r.json());
+      if (!j.ok) throw new Error(j.error);
+      setData(j);
+    } catch (e) { setError(e.message); }
+    finally { setLoading(false); }
+  }, []);
+
+  const toggle = name => setExpanded(prev => {
+    const s = new Set(prev);
+    s.has(name) ? s.delete(name) : s.add(name);
+    return s;
+  });
+
+  if (!reports.length) return null;
+
+  return (
+    <div className="rc-wrap">
+      <div className="rc-header">
+        <span className="rc-title">Hyros vs Ads Manager</span>
+        <button onClick={run} disabled={loading} className="rc-run-btn">
+          {loading ? 'Checking…' : '↻ Check Match'}
+        </button>
+      </div>
+      {error && <div className="rc-error">{error}</div>}
+      {data && (
+        <>
+          <div className="rc-summary">
+            <span>Range: {fmtDate(data.since)} – {fmtDate(data.until)}</span>
+            <span className="rc-total">
+              FB: <b>{data.grandFb}</b> &nbsp;·&nbsp; Hyros: <b>{data.grandHyros}</b>
+              &nbsp;·&nbsp;
+              <span className={matchClass(data.grandFb, data.grandHyros)}>
+                {data.grandFb > 0 ? `${Math.round(data.grandHyros / data.grandFb * 100)}%` : '—'}
+              </span>
+            </span>
+          </div>
+          <table className="rc-table">
+            <thead>
+              <tr>
+                <th>Campaign</th>
+                <th className="rc-num">FB</th>
+                <th className="rc-num">Hyros</th>
+                <th className="rc-num">Diff</th>
+                <th className="rc-num">Match</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.campaigns.map(c => (
+                <>
+                  <tr key={c.name} className="rc-camp-row" onClick={() => toggle(c.name)} style={{ cursor: 'pointer' }}>
+                    <td className="rc-camp-name">
+                      <span className="rc-expand">{expanded.has(c.name) ? '▾' : '▸'}</span>
+                      {c.name}
+                    </td>
+                    <td className="rc-num">{c.fbTotal}</td>
+                    <td className="rc-num">{c.hyrosTotal}</td>
+                    <td className="rc-num" style={{ color: c.hyrosTotal - c.fbTotal < 0 ? '#dc2626' : c.hyrosTotal - c.fbTotal > 0 ? '#16a34a' : 'inherit' }}>
+                      {c.hyrosTotal - c.fbTotal > 0 ? '+' : ''}{c.hyrosTotal - c.fbTotal}
+                    </td>
+                    <td className="rc-num">
+                      <span className={`rc-badge ${matchClass(c.fbTotal, c.hyrosTotal)}`}>
+                        {c.fbTotal > 0 ? `${Math.round(c.hyrosTotal / c.fbTotal * 100)}%` : '—'}
+                      </span>
+                    </td>
+                  </tr>
+                  {expanded.has(c.name) && c.adsets.map(a => (
+                    <tr key={a.adsetId} className="rc-adset-row">
+                      <td className="rc-adset-name">{a.adsetName}</td>
+                      <td className="rc-num">{a.fb}</td>
+                      <td className="rc-num">{a.hyros}</td>
+                      <td className="rc-num" style={{ color: a.diff < 0 ? '#dc2626' : a.diff > 0 ? '#16a34a' : 'inherit' }}>
+                        {a.diff > 0 ? '+' : ''}{a.diff}
+                      </td>
+                      <td className="rc-num">
+                        <span className={`rc-badge ${matchClass(a.fb, a.hyros)}`}>
+                          {a.fb > 0 ? `${Math.round(a.hyros / a.fb * 100)}%` : '—'}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </>
+              ))}
+            </tbody>
+          </table>
+          <div className="rc-legend">
+            <span className="rc-badge rc-match">85–115%</span> match &nbsp;
+            <span className="rc-badge rc-close">60–140%</span> close &nbsp;
+            <span className="rc-badge rc-off">off</span> mismatch &nbsp;
+            <span className="rc-badge rc-miss">—</span> FB only
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 export default function LeadReports() {
   const [reports, setReports]     = useState([]);
   const [dragging, setDragging]   = useState(false);
@@ -134,6 +248,8 @@ export default function LeadReports() {
         ) : (
           !uploading && <div className="lr-empty">No reports uploaded yet.</div>
         )}
+
+        <ReconcilePanel reports={reports} />
       </div>
 
       {/* Right column: embedded sheet */}

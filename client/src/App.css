@@ -1187,5 +1187,30 @@ tfoot .td-name { font-family: var(--sans); font-weight: 700; font-size: 13px; }
 .lr-clear-btn:hover { background: #fef2f2; }
 .lr-empty { color: var(--text-muted); font-size: 12px; text-align: center; padding: 16px 0; }
 
+/* Reconcile panel */
+.rc-wrap { margin-top: 20px; border-top: 1px solid var(--border); padding-top: 16px; }
+.rc-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.rc-title { font-weight: 600; font-size: 13px; }
+.rc-run-btn { font-size: 12px; padding: 4px 12px; background: var(--accent); color: #fff; border: none; border-radius: 6px; cursor: pointer; }
+.rc-run-btn:disabled { opacity: 0.6; cursor: default; }
+.rc-error { font-size: 12px; color: #dc2626; margin-bottom: 8px; }
+.rc-summary { display: flex; justify-content: space-between; font-size: 12px; color: var(--text-muted); margin-bottom: 8px; }
+.rc-total b { color: var(--text); }
+.rc-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-bottom: 8px; }
+.rc-table th { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--border); font-weight: 600; color: var(--text-muted); font-size: 11px; }
+.rc-num { text-align: right; padding: 4px 6px; }
+.rc-camp-row { background: var(--surface); font-weight: 600; }
+.rc-camp-row:hover { background: #f0f4f8; }
+.rc-camp-name { padding: 5px 6px; }
+.rc-expand { margin-right: 4px; font-size: 10px; color: var(--text-muted); }
+.rc-adset-row td { padding: 3px 6px; border-bottom: 1px solid var(--border); color: var(--text-muted); }
+.rc-adset-name { padding-left: 20px; }
+.rc-badge { display: inline-block; padding: 1px 6px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+.rc-match { background: #dcfce7; color: #15803d; }
+.rc-close  { background: #fef9c3; color: #a16207; }
+.rc-off    { background: #fee2e2; color: #dc2626; }
+.rc-miss   { background: #f3f4f6; color: #6b7280; }
+.rc-legend { font-size: 11px; color: var(--text-muted); margin-top: 4px; }
+
 .lr-sheet-wrap { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .lr-sheet-iframe { flex: 1; width: 100%; height: 100%; border: none; }

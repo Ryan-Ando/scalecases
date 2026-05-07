@@ -2050,6 +2050,108 @@ router.post('/cpl-leads', (req, res) => {
   res.json({ ok: true });
 });
 
+// ── Lead reconciliation ───────────────────────────────────────────────────────
+// Fetch adset-level lead counts from the Facebook Marketing API for a date range.
+// Uses the same action-type priority as Ads Manager (pixel lead → lead form → aggregate).
+async function fetchFbLeadsForRange(since, until) {
+  const token    = process.env.FB_ACCESS_TOKEN;
+  const accounts = (process.env.FB_AD_ACCOUNTS || '')
+    .split(',').map(a => { const id = a.trim(); return id.startsWith('act_') ? id : `act_${id}`; })
+    .filter(id => id !== 'act_');
+  if (!token || !accounts.length) return {};
+
+  const result = {}; // adsetId → { leads, adsetName, campaignName }
+  const timeRange = encodeURIComponent(JSON.stringify({ since, until }));
+
+  for (const account of accounts) {
+    let url = `${FB_API}/${account}/insights?level=adset&fields=adset_id,adset_name,campaign_name,actions,results,result_type&time_range=${timeRange}&limit=500&access_token=${token}`;
+    while (url) {
+      try {
+        const j = await fetch(url).then(r => r.json());
+        if (j.error) { console.warn('reconcile FB error:', j.error.message); break; }
+        for (const row of (j.data || [])) {
+          const id      = row.adset_id;
+          const actions = row.actions || [];
+          // Priority: pixel lead → lead form → fallback to results field → aggregate 'lead'
+          const leadTypes = [
+            'offsite_conversion.fb_pixel_lead',
+            'onsite_conversion.lead_grouped',
+            'onsite_conversion.lead',
+            'lead',
+          ];
+          let leads = 0;
+          for (const type of leadTypes) {
+            const a = actions.find(a => a.action_type === type);
+            if (a) { leads = parseInt(a.value, 10) || 0; break; }
+          }
+          // Fallback: use results field directly if actions gave nothing
+          if (!leads && row.results) leads = parseInt(row.results, 10) || 0;
+
+          if (!result[id]) result[id] = { leads: 0, adsetName: row.adset_name || id, campaignName: row.campaign_name || '' };
+          result[id].leads += leads;
+        }
+        url = j.paging?.next || null;
+        if (url) await delay(300);
+      } catch (e) { console.warn('reconcile FB fetch:', e.message); break; }
+    }
+    await delay(300);
+  }
+  return result;
+}
+
+// GET /api/hyros/reconcile — compare Hyros CSV leads vs Facebook Ads Manager leads
+router.get('/reconcile', async (req, res) => {
+  const csvReports = loadCsvReports();
+  const allDates   = Object.keys(csvReports).sort();
+  if (!allDates.length) return res.json({ ok: false, error: 'No CSV reports uploaded yet' });
+
+  const since = req.query.from || allDates[0];
+  const until = req.query.to   || allDates[allDates.length - 1];
+
+  try {
+    // Aggregate Hyros leads per adset across the date range
+    const hyrosLeads = {}; // adsetId → leads
+    const adsetMeta  = {}; // adsetId → { adsetName, campaignName }
+    for (const [dateStr, adsetMap] of Object.entries(csvReports)) {
+      if (dateStr < since || dateStr > until) continue;
+      for (const [id, data] of Object.entries(adsetMap)) {
+        hyrosLeads[id] = (hyrosLeads[id] || 0) + (data.leads || 0);
+        if (!adsetMeta[id]) adsetMeta[id] = { adsetName: data.adsetName || id, campaignName: data.campaignName || 'Unknown' };
+      }
+    }
+
+    // Fetch FB leads for same range
+    const fbData = await fetchFbLeadsForRange(since, until);
+
+    // Group comparison by campaign
+    const allIds = new Set([...Object.keys(hyrosLeads), ...Object.keys(fbData)]);
+    const byCampaign = {}; // campaignName → { fbTotal, hyrosTotal, adsets[] }
+    for (const id of allIds) {
+      const hyros = hyrosLeads[id] || 0;
+      const fb    = fbData[id]?.leads || 0;
+      if (hyros === 0 && fb === 0) continue; // skip adsets with no activity
+      const meta  = adsetMeta[id] || { adsetName: fbData[id]?.adsetName || id, campaignName: fbData[id]?.campaignName || 'Unknown' };
+      const camp  = meta.campaignName;
+      if (!byCampaign[camp]) byCampaign[camp] = { fbTotal: 0, hyrosTotal: 0, adsets: [] };
+      byCampaign[camp].adsets.push({ adsetId: id, adsetName: meta.adsetName, fb, hyros, diff: hyros - fb });
+      byCampaign[camp].fbTotal    += fb;
+      byCampaign[camp].hyrosTotal += hyros;
+    }
+
+    // Sort campaigns by total Hyros leads desc
+    const campaigns = Object.entries(byCampaign)
+      .map(([name, d]) => ({ name, ...d }))
+      .sort((a, b) => b.hyrosTotal - a.hyrosTotal);
+
+    const grandFb    = campaigns.reduce((s, c) => s + c.fbTotal, 0);
+    const grandHyros = campaigns.reduce((s, c) => s + c.hyrosTotal, 0);
+    res.json({ ok: true, since, until, campaigns, grandFb, grandHyros });
+  } catch (e) {
+    console.error('reconcile error:', e.message);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // ── CSV report endpoints ──────────────────────────────────────────────────────
 
 // GET /api/hyros/reports — list all uploaded daily reports
