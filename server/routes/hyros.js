@@ -2058,40 +2058,47 @@ async function fetchFbLeadsForRange(since, until) {
   const accounts = (process.env.FB_AD_ACCOUNTS || process.env.FB_AD_ACCOUNT || '')
     .split(',').map(a => { const id = a.trim(); return id.startsWith('act_') ? id : `act_${id}`; })
     .filter(id => id !== 'act_');
-  if (!token)          throw new Error('FB_ACCESS_TOKEN not set');
+  if (!token)           throw new Error('FB_ACCESS_TOKEN not set');
   if (!accounts.length) throw new Error('FB_AD_ACCOUNTS not set');
 
-  const result = {}; // adsetId → { leads, adsetName, campaignName }
-  const timeRange = encodeURIComponent(JSON.stringify({ since, until }));
+  const timeRange  = encodeURIComponent(JSON.stringify({ since, until }));
+  // campaignName → leads (campaign-level = exact Ads Manager Results column value, deduplicated)
+  const campaigns  = {};
+  // adsetId → { leads, adsetName, campaignName } (for breakdown only — may not sum to campaign total)
+  const adsets     = {};
 
   for (const account of accounts) {
-    let url = `${FB_API}/${account}/insights?level=adset&fields=adset_id,adset_name,campaign_name,actions&time_range=${timeRange}&limit=500&access_token=${token}`;
+    // Campaign-level results — this matches what Ads Manager shows in the Results column
+    let url = `${FB_API}/${account}/insights?level=campaign&fields=campaign_name,results,result_type&time_range=${timeRange}&limit=500&access_token=${token}`;
     while (url) {
       const j = await fetch(url).then(r => r.json());
       if (j.error) throw new Error(`FB API: ${j.error.message}`);
       for (const row of (j.data || [])) {
-        const id      = row.adset_id;
-        const actions = row.actions || [];
-        const leadTypes = [
-          'offsite_conversion.fb_pixel_lead',
-          'onsite_conversion.lead_grouped',
-          'onsite_conversion.lead',
-          'lead',
-        ];
-        let leads = 0;
-        for (const type of leadTypes) {
-          const a = actions.find(a => a.action_type === type);
-          if (a) { leads = parseInt(a.value, 10) || 0; break; }
-        }
-        if (!result[id]) result[id] = { leads: 0, adsetName: row.adset_name || id, campaignName: row.campaign_name || '' };
-        result[id].leads += leads;
+        const leads = parseInt(row.results, 10) || 0;
+        campaigns[row.campaign_name] = (campaigns[row.campaign_name] || 0) + leads;
       }
       url = j.paging?.next || null;
       if (url) await delay(300);
     }
+
+    // Adset-level results — for the breakdown view (diagnostic; won't always sum to campaign total)
+    url = `${FB_API}/${account}/insights?level=adset&fields=adset_id,adset_name,campaign_name,results&time_range=${timeRange}&limit=500&access_token=${token}`;
+    while (url) {
+      const j = await fetch(url).then(r => r.json());
+      if (j.error) throw new Error(`FB API: ${j.error.message}`);
+      for (const row of (j.data || [])) {
+        const id    = row.adset_id;
+        const leads = parseInt(row.results, 10) || 0;
+        if (!adsets[id]) adsets[id] = { leads: 0, adsetName: row.adset_name || id, campaignName: row.campaign_name || '' };
+        adsets[id].leads += leads;
+      }
+      url = j.paging?.next || null;
+      if (url) await delay(300);
+    }
+
     await delay(300);
   }
-  return result;
+  return { campaigns, adsets };
 }
 
 // GET /api/hyros/reconcile — compare Hyros CSV leads vs Facebook Ads Manager leads
@@ -2115,28 +2122,47 @@ router.get('/reconcile', async (req, res) => {
       }
     }
 
-    // Fetch FB leads for same range
+    // Fetch FB leads — campaign-level for accurate totals, adset-level for breakdown
     const fbData = await fetchFbLeadsForRange(since, until);
 
-    // Group comparison by campaign
-    const allIds = new Set([...Object.keys(hyrosLeads), ...Object.keys(fbData)]);
-    const byCampaign = {}; // campaignName → { fbTotal, hyrosTotal, adsets[] }
-    for (const id of allIds) {
-      const hyros = hyrosLeads[id] || 0;
-      const fb    = fbData[id]?.leads || 0;
-      if (hyros === 0 && fb === 0) continue; // skip adsets with no activity
-      const meta  = adsetMeta[id] || { adsetName: fbData[id]?.adsetName || id, campaignName: fbData[id]?.campaignName || 'Unknown' };
-      const camp  = meta.campaignName;
-      if (!byCampaign[camp]) byCampaign[camp] = { fbTotal: 0, hyrosTotal: 0, adsets: [] };
-      byCampaign[camp].adsets.push({ adsetId: id, adsetName: meta.adsetName, fb, hyros, diff: hyros - fb });
-      byCampaign[camp].fbTotal    += fb;
-      byCampaign[camp].hyrosTotal += hyros;
+    // Group Hyros leads by campaign name (to match against campaign-level FB totals)
+    const hyrosByCampaign = {};
+    for (const [id, leads] of Object.entries(hyrosLeads)) {
+      const camp = adsetMeta[id]?.campaignName || 'Unknown';
+      hyrosByCampaign[camp] = (hyrosByCampaign[camp] || 0) + leads;
     }
 
-    // Sort campaigns by total Hyros leads desc
+    // Build per-campaign comparison using campaign-level FB results (matches Ads Manager exactly)
+    const allCampaigns = new Set([...Object.keys(fbData.campaigns), ...Object.keys(hyrosByCampaign)]);
+    const byCampaign = {};
+    for (const camp of allCampaigns) {
+      const fbTotal    = fbData.campaigns[camp]    || 0;
+      const hyrosTotal = hyrosByCampaign[camp] || 0;
+      if (fbTotal === 0 && hyrosTotal === 0) continue;
+
+      // Build adset breakdown for this campaign (diagnostic — won't always sum to fbTotal)
+      const adsets = [];
+      for (const [id, data] of Object.entries(fbData.adsets)) {
+        if (data.campaignName !== camp) continue;
+        const hyros = hyrosLeads[id] || 0;
+        const fb    = data.leads;
+        if (fb === 0 && hyros === 0) continue;
+        const name  = adsetMeta[id]?.adsetName || data.adsetName;
+        adsets.push({ adsetId: id, adsetName: name, fb, hyros, diff: hyros - fb });
+      }
+      // Include Hyros adsets not in FB breakdown
+      for (const [id, leads] of Object.entries(hyrosLeads)) {
+        if ((adsetMeta[id]?.campaignName || 'Unknown') !== camp) continue;
+        if (adsets.some(a => a.adsetId === id)) continue;
+        adsets.push({ adsetId: id, adsetName: adsetMeta[id]?.adsetName || id, fb: 0, hyros: leads, diff: leads });
+      }
+
+      byCampaign[camp] = { fbTotal, hyrosTotal, adsets };
+    }
+
     const campaigns = Object.entries(byCampaign)
       .map(([name, d]) => ({ name, ...d }))
-      .sort((a, b) => b.hyrosTotal - a.hyrosTotal);
+      .sort((a, b) => b.fbTotal - a.fbTotal);
 
     const grandFb    = campaigns.reduce((s, c) => s + c.fbTotal, 0);
     const grandHyros = campaigns.reduce((s, c) => s + c.hyrosTotal, 0);
