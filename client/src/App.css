@@ -1191,6 +1191,8 @@ tfoot .td-name { font-family: var(--sans); font-weight: 700; font-size: 13px; }
 .rc-wrap { margin-top: 20px; border-top: 1px solid var(--border); padding-top: 16px; }
 .rc-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
 .rc-title { font-weight: 600; font-size: 13px; }
+.rc-dates { display: flex; align-items: center; gap: 6px; margin-bottom: 10px; }
+.rc-date-input { font-size: 12px; padding: 3px 6px; border: 1px solid var(--border); border-radius: 5px; background: var(--surface); color: var(--text); }
 .rc-run-btn { font-size: 12px; padding: 4px 12px; background: #3a8f5c; color: #fff; border: none; border-radius: 6px; cursor: pointer; }
 .rc-run-btn:hover { background: #2d7a4d; }
 .rc-run-btn:disabled { opacity: 0.6; cursor: default; }

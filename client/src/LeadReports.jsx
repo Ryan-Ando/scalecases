@@ -18,20 +18,33 @@ function matchClass(fb, hyros) {
 }
 
 function ReconcilePanel({ reports }) {
-  const [data, setData]     = useState(null);
+  const [data, setData]       = useState(null);
   const [loading, setLoading] = useState(false);
-  const [error, setError]   = useState(null);
+  const [error, setError]     = useState(null);
   const [expanded, setExpanded] = useState(new Set());
+  const [from, setFrom] = useState('');
+  const [to,   setTo]   = useState('');
+
+  // Default dates to the range of uploaded reports
+  useEffect(() => {
+    if (!reports.length) return;
+    const dates = reports.map(r => r.date).sort();
+    if (!from) setFrom(dates[0]);
+    if (!to)   setTo(dates[dates.length - 1]);
+  }, [reports]);
 
   const run = useCallback(async () => {
     setLoading(true); setError(null); setData(null);
     try {
-      const j = await fetch(`${BASE}/api/hyros/reconcile`).then(r => r.json());
+      const params = new URLSearchParams();
+      if (from) params.set('from', from);
+      if (to)   params.set('to',   to);
+      const j = await fetch(`${BASE}/api/hyros/reconcile?${params}`).then(r => r.json());
       if (!j.ok) throw new Error(j.error);
       setData(j);
     } catch (e) { setError(e.message); }
     finally { setLoading(false); }
-  }, []);
+  }, [from, to]);
 
   const toggle = name => setExpanded(prev => {
     const s = new Set(prev);
@@ -46,6 +59,11 @@ function ReconcilePanel({ reports }) {
         <button onClick={run} disabled={loading} className="rc-run-btn">
           {loading ? 'Checking…' : '↻ Check Match'}
         </button>
+      </div>
+      <div className="rc-dates">
+        <input type="date" value={from} onChange={e => setFrom(e.target.value)} className="rc-date-input" />
+        <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>–</span>
+        <input type="date" value={to}   onChange={e => setTo(e.target.value)}   className="rc-date-input" />
       </div>
       {error && <div className="rc-error">{error}</div>}
       {data && (
