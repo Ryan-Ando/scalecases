@@ -39,8 +39,6 @@ function ReconcilePanel({ reports }) {
     return s;
   });
 
-  if (!reports.length) return null;
-
   return (
     <div className="rc-wrap">
       <div className="rc-header">
