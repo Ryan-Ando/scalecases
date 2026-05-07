@@ -2143,9 +2143,9 @@ router.get('/reconcile/debug', async (req, res) => {
   }
 });
 
-// GET /api/hyros/pixel-stats — raw pixel event counts directly from FB Pixel Stats API
-// Shows unattributed event fires: Lead, ViewContent, etc. per day per pixel
-router.get('/pixel-stats', async (req, res) => {
+// GET /api/hyros/custom-conversions — list all custom conversions on the ad accounts
+// These reveal what FB is actually measuring as "Results" for campaigns using custom conversions
+router.get('/custom-conversions', async (req, res) => {
   const token    = process.env.FB_ACCESS_TOKEN;
   const accounts = (process.env.FB_AD_ACCOUNTS || process.env.FB_AD_ACCOUNT || '')
     .split(',').map(a => { const id = a.trim(); return id.startsWith('act_') ? id : `act_${id}`; })
@@ -2157,50 +2157,61 @@ router.get('/pixel-stats', async (req, res) => {
   const allDates   = Object.keys(csvReports).sort();
   const since = req.query.from || allDates[0] || '2026-05-01';
   const until = req.query.to   || allDates[allDates.length - 1] || '2026-05-07';
-
-  // Convert YYYY-MM-DD to Unix timestamps (FB pixel stats uses Unix time)
-  const startTs = Math.floor(new Date(since + 'T00:00:00Z').getTime() / 1000);
-  const endTs   = Math.floor(new Date(until + 'T23:59:59Z').getTime() / 1000);
+  const timeRange = encodeURIComponent(JSON.stringify({ since, until }));
+  const attrWindows = encodeURIComponent(JSON.stringify(['7d_click', '1d_view']));
 
   try {
-    const pixels = [];
+    const conversions = [];
+    const campaignActions = {}; // campaign → { unique_actions, actions }
 
-    // Step 1: discover pixels attached to each ad account
     for (const account of accounts) {
-      const pixelUrl = `${FB_API}/${account}/adspixels?fields=id,name,code&access_token=${token}`;
-      const pj = await fetch(pixelUrl).then(r => r.json());
-      if (pj.error) throw new Error(`FB pixel list: ${pj.error.message}`);
-      for (const px of (pj.data || [])) {
-        if (!pixels.some(p => p.id === px.id)) pixels.push(px);
+      // Fetch custom conversions defined on the account
+      const ccUrl = `${FB_API}/${account}/customconversions?fields=id,name,event_source_type,rule,creation_time&access_token=${token}`;
+      const ccj = await fetch(ccUrl).then(r => r.json());
+      if (!ccj.error) {
+        for (const cc of (ccj.data || [])) conversions.push(cc);
+      }
+      await delay(200);
+
+      // Fetch campaign insights with BOTH actions and unique_actions — unique_actions dedups per person
+      const insightUrl = `${FB_API}/${account}/insights?level=campaign&fields=campaign_name,actions,unique_actions&time_range=${timeRange}&action_attribution_windows=${attrWindows}&limit=500&access_token=${token}`;
+      const ij = await fetch(insightUrl).then(r => r.json());
+      if (!ij.error) {
+        for (const row of (ij.data || [])) {
+          const camp = row.campaign_name;
+          if (!campaignActions[camp]) campaignActions[camp] = { actions: [], uniqueActions: [] };
+          // Merge actions
+          for (const a of (row.actions || [])) {
+            const ex = campaignActions[camp].actions.find(x => x.action_type === a.action_type);
+            if (ex) ex.value = String(parseInt(ex.value) + parseInt(a.value || 0));
+            else campaignActions[camp].actions.push({ ...a });
+          }
+          for (const a of (row.unique_actions || [])) {
+            const ex = campaignActions[camp].uniqueActions.find(x => x.action_type === a.action_type);
+            if (ex) ex.value = String(parseInt(ex.value) + parseInt(a.value || 0));
+            else campaignActions[camp].uniqueActions.push({ ...a });
+          }
+        }
       }
       await delay(200);
     }
 
-    if (!pixels.length) return res.json({ ok: false, error: 'No pixels found on ad account(s)' });
+    // Build per-campaign comparison: actions vs unique_actions for lead-related types
+    const leadTypes = ['offsite_conversion.fb_pixel_lead','onsite_conversion.lead_grouped','onsite_conversion.lead','lead'];
+    const summary = Object.entries(campaignActions).map(([camp, d]) => {
+      const allLeadActions = d.actions
+        .filter(a => leadTypes.includes(a.action_type) || a.action_type.startsWith('offsite_conversion') || a.action_type.includes('lead'))
+        .sort((a, b) => parseInt(b.value) - parseInt(a.value));
+      const allUniqueLeadActions = d.uniqueActions
+        .filter(a => leadTypes.includes(a.action_type) || a.action_type.startsWith('offsite_conversion') || a.action_type.includes('lead'))
+        .sort((a, b) => parseInt(b.value) - parseInt(a.value));
+      return { campaign: camp, actions: allLeadActions, uniqueActions: allUniqueLeadActions };
+    }).filter(c => c.actions.length || c.uniqueActions.length)
+      .sort((a, b) => a.campaign.localeCompare(b.campaign));
 
-    // Step 2: for each pixel, fetch event stats broken down by day + event_name
-    const results = [];
-    for (const px of pixels) {
-      // aggregation=event gives total per event type across the window
-      const statsUrl = `${FB_API}/${px.id}/stats?aggregation=event&start_time=${startTs}&end_time=${endTs}&access_token=${token}`;
-      const sj = await fetch(statsUrl).then(r => r.json());
-      await delay(200);
-      if (sj.error) {
-        results.push({ pixelId: px.id, pixelName: px.name || px.id, error: sj.error.message, events: [] });
-        continue;
-      }
-
-      // data is array of { event: 'Lead', count: N }
-      const events = (sj.data || [])
-        .map(e => ({ event: e.event, count: parseInt(e.count, 10) || 0 }))
-        .sort((a, b) => b.count - a.count);
-
-      results.push({ pixelId: px.id, pixelName: px.name || px.id, events });
-    }
-
-    res.json({ ok: true, since, until, pixels: results });
+    res.json({ ok: true, since, until, customConversions: conversions, campaigns: summary });
   } catch (e) {
-    console.error('pixel-stats error:', e.message);
+    console.error('custom-conversions error:', e.message);
     res.json({ ok: false, error: e.message });
   }
 });

@@ -72,7 +72,7 @@ function ReconcilePanel({ reports }) {
       const params = new URLSearchParams();
       if (from) params.set('from', from);
       if (to)   params.set('to',   to);
-      const j = await fetch(`${BASE}/api/hyros/pixel-stats?${params}`).then(r => r.json());
+      const j = await fetch(`${BASE}/api/hyros/custom-conversions?${params}`).then(r => r.json());
       if (!j.ok) throw new Error(j.error);
       setPixelStats(j);
       setShowPixel(true);
@@ -114,33 +114,57 @@ function ReconcilePanel({ reports }) {
       {showPixel && pixelStats && (
         <div className="rc-debug-wrap">
           <div className="rc-debug-header">
-            <span>Pixel Event Counts — raw fires ({pixelStats.since} – {pixelStats.until})</span>
+            <span>Lead Actions: Total vs Unique ({pixelStats.since} – {pixelStats.until})</span>
             <button onClick={() => setShowPixel(false)} className="rc-debug-close">×</button>
           </div>
           <div style={{ padding: '6px 10px 4px', fontSize: 10, color: 'var(--text-muted)' }}>
-            These are unattributed pixel fires received by FB — not campaign-attributed. Compare total Lead count here vs Hyros CSV vs Ads Manager Results.
+            <b>Total</b> counts each conversion per ad. <b>Unique</b> counts once per person. Ads Manager "Results" typically uses unique. Custom conversions shown below campaigns.
           </div>
-          {pixelStats.pixels.map(px => (
-            <div key={px.pixelId} className="rc-debug-camp">
-              <div className="rc-debug-camp-name">{px.pixelName} <span style={{ fontWeight: 400, color: 'var(--text-muted)' }}>({px.pixelId})</span></div>
-              {px.error
-                ? <div style={{ color: '#dc2626', fontSize: 11 }}>{px.error}</div>
-                : (
-                  <table className="rc-debug-table">
-                    <tbody>
-                      {px.events.map(e => (
-                        <tr key={e.event} style={{ background: e.event === 'Lead' ? 'rgba(22,163,74,0.07)' : undefined }}>
-                          <td className="rc-debug-type" style={{ fontWeight: e.event === 'Lead' ? 700 : undefined, color: e.event === 'Lead' ? '#15803d' : undefined }}>{e.event}</td>
-                          <td className="rc-debug-val">{e.count.toLocaleString()}</td>
-                        </tr>
-                      ))}
-                      {px.events.length === 0 && <tr><td colSpan={2} style={{ color: 'var(--text-muted)', fontSize: 11 }}>no events in range</td></tr>}
-                    </tbody>
-                  </table>
-                )
-              }
+          {pixelStats.campaigns.map(c => (
+            <div key={c.campaign} className="rc-debug-camp">
+              <div className="rc-debug-camp-name">{c.campaign}</div>
+              <table className="rc-debug-table">
+                <thead>
+                  <tr>
+                    <td className="rc-debug-type" style={{ fontWeight: 600, color: 'var(--text)' }}>Action Type</td>
+                    <td className="rc-debug-val" style={{ fontWeight: 600, color: 'var(--text)' }}>Total</td>
+                    <td className="rc-debug-val" style={{ fontWeight: 600, color: 'var(--text)' }}>Unique</td>
+                  </tr>
+                </thead>
+                <tbody>
+                  {c.actions.map(a => {
+                    const uniq = c.uniqueActions.find(u => u.action_type === a.action_type);
+                    return (
+                      <tr key={a.action_type}>
+                        <td className="rc-debug-type">{a.action_type}</td>
+                        <td className="rc-debug-val">{a.value}</td>
+                        <td className="rc-debug-val" style={{ color: '#15803d' }}>{uniq?.value ?? '—'}</td>
+                      </tr>
+                    );
+                  })}
+                  {c.actions.length === 0 && <tr><td colSpan={3} style={{ color: 'var(--text-muted)', fontSize: 11 }}>no lead actions</td></tr>}
+                </tbody>
+              </table>
             </div>
           ))}
+          {pixelStats.customConversions?.length > 0 && (
+            <div className="rc-debug-camp">
+              <div className="rc-debug-camp-name">Custom Conversions on account</div>
+              <table className="rc-debug-table">
+                <tbody>
+                  {pixelStats.customConversions.map(cc => (
+                    <tr key={cc.id}>
+                      <td className="rc-debug-type">{cc.name}</td>
+                      <td className="rc-debug-val" style={{ color: 'var(--text-muted)', fontSize: 10 }}>{cc.event_source_type}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {pixelStats.customConversions?.length === 0 && (
+            <div style={{ padding: '6px 10px', fontSize: 11, color: 'var(--text-muted)' }}>No custom conversions found on this account.</div>
+          )}
         </div>
       )}
 
