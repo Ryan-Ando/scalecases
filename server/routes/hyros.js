@@ -2181,9 +2181,10 @@ router.get('/pixel-stats', async (req, res) => {
     // Step 2: for each pixel, fetch event stats broken down by day + event_name
     const results = [];
     for (const px of pixels) {
-      // aggregation=event_name gives total per event type across the window
-      const statsUrl = `${FB_API}/${px.id}/stats?aggregation=event_name&start_time=${startTs}&end_time=${endTs}&access_token=${token}`;
+      // aggregation=event gives total per event type across the window
+      const statsUrl = `${FB_API}/${px.id}/stats?aggregation=event&start_time=${startTs}&end_time=${endTs}&access_token=${token}`;
       const sj = await fetch(statsUrl).then(r => r.json());
+      await delay(200);
       if (sj.error) {
         results.push({ pixelId: px.id, pixelName: px.name || px.id, error: sj.error.message, events: [] });
         continue;
@@ -2193,11 +2194,6 @@ router.get('/pixel-stats', async (req, res) => {
       const events = (sj.data || [])
         .map(e => ({ event: e.event, count: parseInt(e.count, 10) || 0 }))
         .sort((a, b) => b.count - a.count);
-
-      // Also fetch day-by-day for Lead specifically
-      const dailyUrl = `${FB_API}/${px.id}/stats?aggregation=event_name&start_time=${startTs}&end_time=${endTs}&fields=event,count,start_time,end_time&access_token=${token}`;
-      const dj = await fetch(dailyUrl).then(r => r.json());
-      await delay(200);
 
       results.push({ pixelId: px.id, pixelName: px.name || px.id, events });
     }
