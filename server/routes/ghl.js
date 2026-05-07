@@ -1,8 +1,40 @@
 import { Router } from 'express';
 import fetch from 'node-fetch';
+import crypto from 'crypto';
 
 const router = Router();
 const GHL_API = 'https://services.leadconnectorhq.com';
+const FB_CAPI  = 'https://graph.facebook.com/v19.0';
+
+// ── FB CAPI helpers ───────────────────────────────────────────────────────────
+
+function sha256(str) {
+  return crypto.createHash('sha256').update(str.trim().toLowerCase()).digest('hex');
+}
+
+// GHL stores fbclid in attributionSource.fbclid, or we parse it from the URL
+function extractFbclid(contact) {
+  const src = contact.attributionSource || {};
+  if (src.fbclid && src.fbclid !== '_removed_') return src.fbclid;
+  const url = src.url || src.sessionSource || '';
+  const m = url.match(/[?&]fbclid=([^&]+)/);
+  return (m && m[1] !== '_removed_') ? m[1] : null;
+}
+
+// fbc format FB expects: fb.1.{unix_seconds}.{fbclid}
+function buildFbc(fbclid, dateMs) {
+  if (!fbclid) return null;
+  const ts = Math.floor((dateMs || Date.now()) / 1000);
+  return `fb.1.${ts}.${fbclid}`;
+}
+
+// Per-state pixel IDs — override via env vars (FB_PIXEL_TX, FB_PIXEL_FL, …)
+// Falls back to FB_PIXEL_ID, then LSS Global (the pixel used across all state events)
+const LSS_GLOBAL_PIXEL = '915888867929537';
+function getPixelForState(state) {
+  const s = (state || '').toUpperCase();
+  return process.env[`FB_PIXEL_${s}`] || process.env.FB_PIXEL_ID || LSS_GLOBAL_PIXEL;
+}
 
 function token() {
   return process.env.GHL_API_KEY;
@@ -428,6 +460,123 @@ router.post('/tag-contacts', async (req, res) => {
   } catch (err) {
     console.error('GHL tag-contacts error:', err.message);
     res.status(500).json({ error: err.message });
+  }
+});
+
+// ── FB CAPI sending ───────────────────────────────────────────────────────────
+
+async function sendCapiEvent(contact, opts = {}) {
+  const fbToken = process.env.FB_ACCESS_TOKEN;
+  if (!fbToken) throw new Error('FB_ACCESS_TOKEN not set');
+
+  // Normalise: GHL webhooks sometimes wrap the contact under contact.contact
+  const c = contact.contact || contact;
+
+  const email     = (c.email     || '').toLowerCase().trim();
+  const phone     = (c.phone     || '').replace(/\D/g, '');
+  const firstName = (c.firstName || '').toLowerCase().trim();
+  const lastName  = (c.lastName  || '').toLowerCase().trim();
+
+  const fbclid     = extractFbclid(c);
+  const dateMs     = c.dateAdded ? new Date(c.dateAdded).getTime() : Date.now();
+  const fbc        = buildFbc(fbclid, dateMs);
+  const state      = opts.state || extractContactState(c);
+  const campaign   = opts.campaign || getAttr(c, 'utmCampaign', 'utm_campaign', 'campaign');
+  const sourceUrl  = (c.attributionSource || {}).url || '';
+  const eventName  = state ? state.toLowerCase() : 'lead';
+  const pixelId    = opts.pixelId || getPixelForState(state);
+
+  const userData = {};
+  if (email)     userData.em = sha256(email);
+  if (phone)     userData.ph = sha256(phone);
+  if (firstName) userData.fn = sha256(firstName);
+  if (lastName)  userData.ln = sha256(lastName);
+  if (fbc)       userData.fbc = fbc;
+
+  const eventId = `ghl-${c.id || crypto.randomUUID()}-${dateMs}`;
+
+  const payload = {
+    data: [{
+      event_name:       eventName,
+      event_time:       Math.floor(dateMs / 1000),
+      action_source:    'website',
+      event_source_url: sourceUrl || undefined,
+      event_id:         eventId,
+      user_data:        userData,
+      custom_data:      { campaign: campaign || undefined, state: state || undefined },
+    }],
+    access_token: fbToken,
+  };
+  if (process.env.FB_CAPI_TEST_CODE) payload.test_event_code = process.env.FB_CAPI_TEST_CODE;
+
+  const j = await fetch(`${FB_CAPI}/${pixelId}/events`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  }).then(r => r.json());
+
+  if (j.error) throw new Error(j.error.message);
+  return { eventName, pixelId, eventsReceived: j.events_received, fbcFound: !!fbc, eventId };
+}
+
+// POST /api/ghl/capi-webhook
+// Set this URL in GHL Workflows → "Send Webhook" action on the Contact Created trigger.
+// No auth needed (GHL doesn't sign webhooks by default); add GHL_WEBHOOK_SECRET to env
+// and uncomment the check below if you want signature validation.
+router.post('/capi-webhook', async (req, res) => {
+  try {
+    const secret = process.env.GHL_WEBHOOK_SECRET;
+    if (secret && req.headers['x-ghl-signature'] !== secret) {
+      return res.status(401).json({ ok: false, error: 'invalid signature' });
+    }
+
+    const result = await sendCapiEvent(req.body);
+    console.log(`[CAPI] webhook → ${result.eventName} | pixel ${result.pixelId} | fbc=${result.fbcFound} | received=${result.eventsReceived}`);
+    res.json({ ok: true, ...result });
+  } catch (e) {
+    console.error('[CAPI] webhook error:', e.message);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// POST /api/ghl/capi-backfill?start=YYYY-MM-DD&end=YYYY-MM-DD&dry=true
+// Sends CAPI events for all GHL contacts in the date range.
+// Use dry=true to preview without sending to FB.
+router.post('/capi-backfill', async (req, res) => {
+  try {
+    const { start, end, dry } = req.query;
+    const isDry = dry === 'true';
+    const startMs = start ? new Date(start).getTime() : null;
+    const endMs   = end   ? new Date(end + 'T23:59:59.999Z').getTime() : null;
+
+    const contacts = await fetchAllContacts(startMs, endMs);
+    const results  = [];
+
+    for (const c of contacts) {
+      const state = extractContactState(c);
+      if (!state) { results.push({ id: c.id, skipped: 'no state' }); continue; }
+      const fbclid = extractFbclid(c);
+      if (isDry) {
+        results.push({ id: c.id, state, fbcFound: !!fbclid, email: !!c.email, phone: !!c.phone, dry: true });
+        continue;
+      }
+      try {
+        const r = await sendCapiEvent(c);
+        results.push({ id: c.id, ...r });
+      } catch (e) {
+        results.push({ id: c.id, error: e.message });
+      }
+      await sleep(50); // stay under FB CAPI rate limit
+    }
+
+    const sent    = results.filter(r => r.eventsReceived > 0).length;
+    const skipped = results.filter(r => r.skipped).length;
+    const errors  = results.filter(r => r.error).length;
+    console.log(`[CAPI] backfill done — ${sent} sent, ${skipped} skipped, ${errors} errors (dry=${isDry})`);
+    res.json({ ok: true, isDry, total: contacts.length, sent, skipped, errors, results });
+  } catch (e) {
+    console.error('[CAPI] backfill error:', e.message);
+    res.status(500).json({ ok: false, error: e.message });
   }
 });
 
