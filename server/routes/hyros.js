@@ -2055,44 +2055,39 @@ router.post('/cpl-leads', (req, res) => {
 // Uses the same action-type priority as Ads Manager (pixel lead → lead form → aggregate).
 async function fetchFbLeadsForRange(since, until) {
   const token    = process.env.FB_ACCESS_TOKEN;
-  const accounts = (process.env.FB_AD_ACCOUNTS || '')
+  const accounts = (process.env.FB_AD_ACCOUNTS || process.env.FB_AD_ACCOUNT || '')
     .split(',').map(a => { const id = a.trim(); return id.startsWith('act_') ? id : `act_${id}`; })
     .filter(id => id !== 'act_');
-  if (!token || !accounts.length) return {};
+  if (!token)          throw new Error('FB_ACCESS_TOKEN not set');
+  if (!accounts.length) throw new Error('FB_AD_ACCOUNTS not set');
 
   const result = {}; // adsetId → { leads, adsetName, campaignName }
   const timeRange = encodeURIComponent(JSON.stringify({ since, until }));
 
   for (const account of accounts) {
-    let url = `${FB_API}/${account}/insights?level=adset&fields=adset_id,adset_name,campaign_name,actions,results,result_type&time_range=${timeRange}&limit=500&access_token=${token}`;
+    let url = `${FB_API}/${account}/insights?level=adset&fields=adset_id,adset_name,campaign_name,actions&time_range=${timeRange}&limit=500&access_token=${token}`;
     while (url) {
-      try {
-        const j = await fetch(url).then(r => r.json());
-        if (j.error) { console.warn('reconcile FB error:', j.error.message); break; }
-        for (const row of (j.data || [])) {
-          const id      = row.adset_id;
-          const actions = row.actions || [];
-          // Priority: pixel lead → lead form → fallback to results field → aggregate 'lead'
-          const leadTypes = [
-            'offsite_conversion.fb_pixel_lead',
-            'onsite_conversion.lead_grouped',
-            'onsite_conversion.lead',
-            'lead',
-          ];
-          let leads = 0;
-          for (const type of leadTypes) {
-            const a = actions.find(a => a.action_type === type);
-            if (a) { leads = parseInt(a.value, 10) || 0; break; }
-          }
-          // Fallback: use results field directly if actions gave nothing
-          if (!leads && row.results) leads = parseInt(row.results, 10) || 0;
-
-          if (!result[id]) result[id] = { leads: 0, adsetName: row.adset_name || id, campaignName: row.campaign_name || '' };
-          result[id].leads += leads;
+      const j = await fetch(url).then(r => r.json());
+      if (j.error) throw new Error(`FB API: ${j.error.message}`);
+      for (const row of (j.data || [])) {
+        const id      = row.adset_id;
+        const actions = row.actions || [];
+        const leadTypes = [
+          'offsite_conversion.fb_pixel_lead',
+          'onsite_conversion.lead_grouped',
+          'onsite_conversion.lead',
+          'lead',
+        ];
+        let leads = 0;
+        for (const type of leadTypes) {
+          const a = actions.find(a => a.action_type === type);
+          if (a) { leads = parseInt(a.value, 10) || 0; break; }
         }
-        url = j.paging?.next || null;
-        if (url) await delay(300);
-      } catch (e) { console.warn('reconcile FB fetch:', e.message); break; }
+        if (!result[id]) result[id] = { leads: 0, adsetName: row.adset_name || id, campaignName: row.campaign_name || '' };
+        result[id].leads += leads;
+      }
+      url = j.paging?.next || null;
+      if (url) await delay(300);
     }
     await delay(300);
   }
