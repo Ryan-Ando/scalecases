@@ -2051,8 +2051,21 @@ router.post('/cpl-leads', (req, res) => {
 });
 
 // ── Lead reconciliation ───────────────────────────────────────────────────────
-// Fetch adset-level lead counts from the Facebook Marketing API for a date range.
-// Uses the same action-type priority as Ads Manager (pixel lead → lead form → aggregate).
+
+function extractLeadCount(actions) {
+  const types = [
+    'offsite_conversion.fb_pixel_lead',
+    'onsite_conversion.lead_grouped',
+    'onsite_conversion.lead',
+    'lead',
+  ];
+  for (const t of types) {
+    const a = actions.find(a => a.action_type === t);
+    if (a) return parseInt(a.value, 10) || 0;
+  }
+  return 0;
+}
+
 async function fetchFbLeadsForRange(since, until) {
   const token    = process.env.FB_ACCESS_TOKEN;
   const accounts = (process.env.FB_AD_ACCOUNTS || process.env.FB_AD_ACCOUNT || '')
@@ -2068,27 +2081,26 @@ async function fetchFbLeadsForRange(since, until) {
   const adsets     = {};
 
   for (const account of accounts) {
-    // Campaign-level results — this matches what Ads Manager shows in the Results column
-    let url = `${FB_API}/${account}/insights?level=campaign&fields=campaign_name,results&time_range=${timeRange}&limit=500&access_token=${token}`;
+    // Campaign-level actions — deduplicated by FB, matches Ads Manager Results column
+    let url = `${FB_API}/${account}/insights?level=campaign&fields=campaign_name,actions&time_range=${timeRange}&limit=500&access_token=${token}`;
     while (url) {
       const j = await fetch(url).then(r => r.json());
       if (j.error) throw new Error(`FB API: ${j.error.message}`);
       for (const row of (j.data || [])) {
-        const leads = parseInt(row.results, 10) || 0;
-        campaigns[row.campaign_name] = (campaigns[row.campaign_name] || 0) + leads;
+        campaigns[row.campaign_name] = (campaigns[row.campaign_name] || 0) + extractLeadCount(row.actions || []);
       }
       url = j.paging?.next || null;
       if (url) await delay(300);
     }
 
-    // Adset-level results — for the breakdown view (diagnostic; won't always sum to campaign total)
-    url = `${FB_API}/${account}/insights?level=adset&fields=adset_id,adset_name,campaign_name,results&time_range=${timeRange}&limit=500&access_token=${token}`;
+    // Adset-level actions — for the breakdown view (diagnostic; may not sum to campaign total due to multi-touch)
+    url = `${FB_API}/${account}/insights?level=adset&fields=adset_id,adset_name,campaign_name,actions&time_range=${timeRange}&limit=500&access_token=${token}`;
     while (url) {
       const j = await fetch(url).then(r => r.json());
       if (j.error) throw new Error(`FB API: ${j.error.message}`);
       for (const row of (j.data || [])) {
         const id    = row.adset_id;
-        const leads = parseInt(row.results, 10) || 0;
+        const leads = extractLeadCount(row.actions || []);
         if (!adsets[id]) adsets[id] = { leads: 0, adsetName: row.adset_name || id, campaignName: row.campaign_name || '' };
         adsets[id].leads += leads;
       }
