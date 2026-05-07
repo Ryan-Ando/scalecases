@@ -2085,8 +2085,8 @@ async function fetchFbLeadsForRange(since, until) {
   const rawActions = {};
 
   for (const account of accounts) {
-    // Campaign-level actions — deduplicated by FB, matches Ads Manager Results column
-    let url = `${FB_API}/${account}/insights?level=campaign&fields=campaign_name,actions&time_range=${timeRange}&action_attribution_windows=${attrWindows}&limit=500&access_token=${token}`;
+    // Campaign-level actions — action_report_time=conversion makes date filter match Ads Manager
+    let url = `${FB_API}/${account}/insights?level=campaign&fields=campaign_name,actions&time_range=${timeRange}&action_attribution_windows=${attrWindows}&action_report_time=conversion&limit=500&access_token=${token}`;
     while (url) {
       const j = await fetch(url).then(r => r.json());
       if (j.error) throw new Error(`FB API: ${j.error.message}`);
@@ -2105,7 +2105,7 @@ async function fetchFbLeadsForRange(since, until) {
     }
 
     // Adset-level actions — for the breakdown view (diagnostic; may not sum to campaign total due to multi-touch)
-    url = `${FB_API}/${account}/insights?level=adset&fields=adset_id,adset_name,campaign_name,actions&time_range=${timeRange}&action_attribution_windows=${attrWindows}&limit=500&access_token=${token}`;
+    url = `${FB_API}/${account}/insights?level=adset&fields=adset_id,adset_name,campaign_name,actions&time_range=${timeRange}&action_attribution_windows=${attrWindows}&action_report_time=conversion&limit=500&access_token=${token}`;
     while (url) {
       const j = await fetch(url).then(r => r.json());
       if (j.error) throw new Error(`FB API: ${j.error.message}`);
@@ -2173,8 +2173,8 @@ router.get('/custom-conversions', async (req, res) => {
       }
       await delay(200);
 
-      // Fetch campaign insights with BOTH actions and unique_actions — unique_actions dedups per person
-      const insightUrl = `${FB_API}/${account}/insights?level=campaign&fields=campaign_name,actions,unique_actions&time_range=${timeRange}&action_attribution_windows=${attrWindows}&limit=500&access_token=${token}`;
+      // Fetch campaign insights with BOTH actions and unique_actions
+      const insightUrl = `${FB_API}/${account}/insights?level=campaign&fields=campaign_name,actions,unique_actions&time_range=${timeRange}&action_attribution_windows=${attrWindows}&action_report_time=conversion&limit=500&access_token=${token}`;
       const ij = await fetch(insightUrl).then(r => r.json());
       if (!ij.error) {
         for (const row of (ij.data || [])) {
