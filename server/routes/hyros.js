@@ -2143,6 +2143,72 @@ router.get('/reconcile/debug', async (req, res) => {
   }
 });
 
+// GET /api/hyros/pixel-stats — raw pixel event counts directly from FB Pixel Stats API
+// Shows unattributed event fires: Lead, ViewContent, etc. per day per pixel
+router.get('/pixel-stats', async (req, res) => {
+  const token    = process.env.FB_ACCESS_TOKEN;
+  const accounts = (process.env.FB_AD_ACCOUNTS || process.env.FB_AD_ACCOUNT || '')
+    .split(',').map(a => { const id = a.trim(); return id.startsWith('act_') ? id : `act_${id}`; })
+    .filter(id => id !== 'act_');
+  if (!token)           return res.json({ ok: false, error: 'FB_ACCESS_TOKEN not set' });
+  if (!accounts.length) return res.json({ ok: false, error: 'FB_AD_ACCOUNTS not set' });
+
+  const csvReports = loadCsvReports();
+  const allDates   = Object.keys(csvReports).sort();
+  const since = req.query.from || allDates[0] || '2026-05-01';
+  const until = req.query.to   || allDates[allDates.length - 1] || '2026-05-07';
+
+  // Convert YYYY-MM-DD to Unix timestamps (FB pixel stats uses Unix time)
+  const startTs = Math.floor(new Date(since + 'T00:00:00Z').getTime() / 1000);
+  const endTs   = Math.floor(new Date(until + 'T23:59:59Z').getTime() / 1000);
+
+  try {
+    const pixels = [];
+
+    // Step 1: discover pixels attached to each ad account
+    for (const account of accounts) {
+      const pixelUrl = `${FB_API}/${account}/adspixels?fields=id,name,code&access_token=${token}`;
+      const pj = await fetch(pixelUrl).then(r => r.json());
+      if (pj.error) throw new Error(`FB pixel list: ${pj.error.message}`);
+      for (const px of (pj.data || [])) {
+        if (!pixels.some(p => p.id === px.id)) pixels.push(px);
+      }
+      await delay(200);
+    }
+
+    if (!pixels.length) return res.json({ ok: false, error: 'No pixels found on ad account(s)' });
+
+    // Step 2: for each pixel, fetch event stats broken down by day + event_name
+    const results = [];
+    for (const px of pixels) {
+      // aggregation=event_name gives total per event type across the window
+      const statsUrl = `${FB_API}/${px.id}/stats?aggregation=event_name&start_time=${startTs}&end_time=${endTs}&access_token=${token}`;
+      const sj = await fetch(statsUrl).then(r => r.json());
+      if (sj.error) {
+        results.push({ pixelId: px.id, pixelName: px.name || px.id, error: sj.error.message, events: [] });
+        continue;
+      }
+
+      // data is array of { event: 'Lead', count: N }
+      const events = (sj.data || [])
+        .map(e => ({ event: e.event, count: parseInt(e.count, 10) || 0 }))
+        .sort((a, b) => b.count - a.count);
+
+      // Also fetch day-by-day for Lead specifically
+      const dailyUrl = `${FB_API}/${px.id}/stats?aggregation=event_name&start_time=${startTs}&end_time=${endTs}&fields=event,count,start_time,end_time&access_token=${token}`;
+      const dj = await fetch(dailyUrl).then(r => r.json());
+      await delay(200);
+
+      results.push({ pixelId: px.id, pixelName: px.name || px.id, events });
+    }
+
+    res.json({ ok: true, since, until, pixels: results });
+  } catch (e) {
+    console.error('pixel-stats error:', e.message);
+    res.json({ ok: false, error: e.message });
+  }
+});
+
 // GET /api/hyros/reconcile — compare Hyros CSV leads vs Facebook Ads Manager leads
 router.get('/reconcile', async (req, res) => {
   const csvReports = loadCsvReports();

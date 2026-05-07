@@ -18,15 +18,18 @@ function matchClass(fb, hyros) {
 }
 
 function ReconcilePanel({ reports }) {
-  const [data, setData]           = useState(null);
-  const [loading, setLoading]     = useState(false);
-  const [error, setError]         = useState(null);
-  const [expanded, setExpanded]   = useState(new Set());
-  const [from, setFrom]           = useState('');
-  const [to,   setTo]             = useState('');
-  const [debug, setDebug]         = useState(null);
-  const [showDebug, setShowDebug] = useState(false);
+  const [data, setData]                 = useState(null);
+  const [loading, setLoading]           = useState(false);
+  const [error, setError]               = useState(null);
+  const [expanded, setExpanded]         = useState(new Set());
+  const [from, setFrom]                 = useState('');
+  const [to,   setTo]                   = useState('');
+  const [debug, setDebug]               = useState(null);
+  const [showDebug, setShowDebug]       = useState(false);
   const [debugLoading, setDebugLoading] = useState(false);
+  const [pixelStats, setPixelStats]     = useState(null);
+  const [pixelLoading, setPixelLoading] = useState(false);
+  const [showPixel, setShowPixel]       = useState(false);
 
   // Default dates to the range of uploaded reports
   useEffect(() => {
@@ -63,22 +66,41 @@ function ReconcilePanel({ reports }) {
     finally { setDebugLoading(false); }
   }, [from, to]);
 
+  const runPixelStats = useCallback(async () => {
+    setPixelLoading(true); setPixelStats(null);
+    try {
+      const params = new URLSearchParams();
+      if (from) params.set('from', from);
+      if (to)   params.set('to',   to);
+      const j = await fetch(`${BASE}/api/hyros/pixel-stats?${params}`).then(r => r.json());
+      if (!j.ok) throw new Error(j.error);
+      setPixelStats(j);
+      setShowPixel(true);
+    } catch (e) { setError(e.message); }
+    finally { setPixelLoading(false); }
+  }, [from, to]);
+
   const toggle = name => setExpanded(prev => {
     const s = new Set(prev);
     s.has(name) ? s.delete(name) : s.add(name);
     return s;
   });
 
+  const anyLoading = loading || debugLoading || pixelLoading;
+
   return (
     <div className="rc-wrap">
       <div className="rc-header">
         <span className="rc-title">Hyros vs Ads Manager</span>
         <div style={{ display: 'flex', gap: 6 }}>
-          <button onClick={run} disabled={loading || debugLoading} className="rc-run-btn">
+          <button onClick={run} disabled={anyLoading} className="rc-run-btn">
             {loading ? 'Checking…' : '↻ Check Match'}
           </button>
-          <button onClick={runDebug} disabled={loading || debugLoading} className="rc-debug-btn" title="Show all raw FB action types for each campaign">
-            {debugLoading ? '…' : 'Debug FB'}
+          <button onClick={runPixelStats} disabled={anyLoading} className="rc-debug-btn" title="Show raw pixel event counts from FB Events Manager">
+            {pixelLoading ? '…' : 'Pixel Stats'}
+          </button>
+          <button onClick={runDebug} disabled={anyLoading} className="rc-debug-btn" title="Show all raw FB action types for each campaign">
+            {debugLoading ? '…' : 'Actions'}
           </button>
         </div>
       </div>
@@ -89,10 +111,43 @@ function ReconcilePanel({ reports }) {
       </div>
       {error && <div className="rc-error">{error}</div>}
 
+      {showPixel && pixelStats && (
+        <div className="rc-debug-wrap">
+          <div className="rc-debug-header">
+            <span>Pixel Event Counts — raw fires ({pixelStats.since} – {pixelStats.until})</span>
+            <button onClick={() => setShowPixel(false)} className="rc-debug-close">×</button>
+          </div>
+          <div style={{ padding: '6px 10px 4px', fontSize: 10, color: 'var(--text-muted)' }}>
+            These are unattributed pixel fires received by FB — not campaign-attributed. Compare total Lead count here vs Hyros CSV vs Ads Manager Results.
+          </div>
+          {pixelStats.pixels.map(px => (
+            <div key={px.pixelId} className="rc-debug-camp">
+              <div className="rc-debug-camp-name">{px.pixelName} <span style={{ fontWeight: 400, color: 'var(--text-muted)' }}>({px.pixelId})</span></div>
+              {px.error
+                ? <div style={{ color: '#dc2626', fontSize: 11 }}>{px.error}</div>
+                : (
+                  <table className="rc-debug-table">
+                    <tbody>
+                      {px.events.map(e => (
+                        <tr key={e.event} style={{ background: e.event === 'Lead' ? 'rgba(22,163,74,0.07)' : undefined }}>
+                          <td className="rc-debug-type" style={{ fontWeight: e.event === 'Lead' ? 700 : undefined, color: e.event === 'Lead' ? '#15803d' : undefined }}>{e.event}</td>
+                          <td className="rc-debug-val">{e.count.toLocaleString()}</td>
+                        </tr>
+                      ))}
+                      {px.events.length === 0 && <tr><td colSpan={2} style={{ color: 'var(--text-muted)', fontSize: 11 }}>no events in range</td></tr>}
+                    </tbody>
+                  </table>
+                )
+              }
+            </div>
+          ))}
+        </div>
+      )}
+
       {showDebug && debug && (
         <div className="rc-debug-wrap">
           <div className="rc-debug-header">
-            <span>Raw FB Action Types ({debug.since} – {debug.until})</span>
+            <span>Campaign Action Types ({debug.since} – {debug.until})</span>
             <button onClick={() => setShowDebug(false)} className="rc-debug-close">×</button>
           </div>
           {Object.entries(debug.campaigns).map(([camp, actions]) => (
