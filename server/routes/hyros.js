@@ -2069,7 +2069,7 @@ async function fetchFbLeadsForRange(since, until) {
 
   for (const account of accounts) {
     // Campaign-level results — this matches what Ads Manager shows in the Results column
-    let url = `${FB_API}/${account}/insights?level=campaign&fields=campaign_name,results,result_type&time_range=${timeRange}&limit=500&access_token=${token}`;
+    let url = `${FB_API}/${account}/insights?level=campaign&fields=campaign_name,results&time_range=${timeRange}&limit=500&access_token=${token}`;
     while (url) {
       const j = await fetch(url).then(r => r.json());
       if (j.error) throw new Error(`FB API: ${j.error.message}`);
