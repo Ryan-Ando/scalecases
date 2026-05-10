@@ -449,15 +449,15 @@ function AdDetailModal({ adName, state, allAds, sheetByName, accountLabel, merge
 
   // Manual lead corrections for this ad+state
   const cutoff = useMemo(() => {
-    const todayPT = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Los_Angeles' }).format(new Date());
+    const today = new Date().toISOString().slice(0, 10);
     if (period === 'all')   return null;
-    if (period === 'today') return todayPT;
-    return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Los_Angeles' }).format(new Date(Date.now() - parseInt(period) * 864e5));
+    if (period === 'today') return today;
+    return new Date(Date.now() - parseInt(period) * 864e5).toISOString().slice(0, 10);
   }, [period]);
 
   // Chart: GHL leads/day + FB ad-level spend/day
   const chartData = useMemo(() => {
-    const ceiling = period === 'today' ? new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Los_Angeles' }).format(new Date()) : null;
+    const ceiling = period === 'today' ? new Date().toISOString().slice(0, 10) : null;
     const leadsMap = {};
     for (const c of loadingGhl ? [] : cases) {
       if (!c.date) continue;
@@ -936,6 +936,20 @@ export default function AdsTracking() {
     doFetch();
     return () => { cancelled = true; if (retryTimer) clearTimeout(retryTimer); };
   }, [rangeStart, rangeEnd, ghlLeadsKey]);
+
+  // Hyros CSV reports — used for the main leads-by-date chart (PST dates, next-steps attributed)
+  const [hyrosReportsByDate, setHyrosReportsByDate] = useState({});
+  useEffect(() => {
+    fetch(`${BASE}/api/hyros/reports`)
+      .then(r => r.json())
+      .then(d => {
+        if (!d.ok) return;
+        const map = {};
+        for (const r of (d.reports || [])) map[r.date] = r.totalLeads;
+        setHyrosReportsByDate(map);
+      })
+      .catch(() => {});
+  }, []);
 
   // ── Derived merge maps ──────────────────────────────────────────────────────
   const memberToCanonical = useMemo(() => {
@@ -1736,22 +1750,21 @@ export default function AdsTracking() {
       fbMap[date].spend += parseFloat(row.spend) || 0;
       if (row.cpm) { fbMap[date].cpm_sum += parseFloat(row.cpm); fbMap[date].cpm_count++; }
     }
-    // Merge in GHL lead counts by date
-    const ghlByDate = ghlLeads.byDate || {};
-    const allDates = new Set([...Object.keys(fbMap), ...Object.keys(ghlByDate).filter(d => {
+    // Merge in Hyros CSV report leads by date (PST, next-steps attributed)
+    const allDates = new Set([...Object.keys(fbMap), ...Object.keys(hyrosReportsByDate).filter(d => {
       if (chartStart && d < chartStart) return false;
       if (chartEnd   && d > chartEnd)   return false;
       return true;
     })]);
     return [...allDates].sort().map(date => {
       const fb     = fbMap[date] || { spend: 0, cpm_sum: 0, cpm_count: 0 };
-      const leads  = ghlByDate[date] || 0;
+      const leads  = hyrosReportsByDate[date] || 0;
       const spend  = +(fb.spend).toFixed(2);
       const cpm    = fb.cpm_count > 0 ? +(fb.cpm_sum / fb.cpm_count).toFixed(2) : null;
       const cpl    = leads > 0 && spend > 0 ? +(spend / leads).toFixed(2) : null;
       return { date: date.slice(5), leads, spend, cpm, cpl };
     });
-  }, [allDailyInsights, ghlLeads.byDate, chartStart, chartEnd]);
+  }, [allDailyInsights, hyrosReportsByDate, chartStart, chartEnd]);
 
 
   function saveAccountName(state, name) {
