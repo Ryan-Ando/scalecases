@@ -211,7 +211,7 @@ router.get('/leads-by-adid', (req, res) => {
     }
 
     if (c.dateMs) {
-      const day = new Date(c.dateMs).toISOString().slice(0, 10);
+      const day = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Los_Angeles' }).format(new Date(c.dateMs));
       byDate[day] = (byDate[day] || 0) + 1;
     }
 
@@ -354,7 +354,9 @@ router.get('/leads', async (req, res) => {
       const state = extractContactState(c);
       if (!state) continue;
 
-      const date = (c.dateAdded || '').slice(0, 10); // YYYY-MM-DD
+      const date = c.dateAdded
+        ? new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Los_Angeles' }).format(new Date(c.dateAdded))
+        : '';
 
       const key = `${adName}|${state}`;
       byRawNameState[key] = (byRawNameState[key] || 0) + 1;

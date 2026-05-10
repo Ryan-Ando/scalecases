@@ -449,15 +449,15 @@ function AdDetailModal({ adName, state, allAds, sheetByName, accountLabel, merge
 
   // Manual lead corrections for this ad+state
   const cutoff = useMemo(() => {
-    const today = new Date().toISOString().slice(0, 10);
+    const todayPT = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Los_Angeles' }).format(new Date());
     if (period === 'all')   return null;
-    if (period === 'today') return today;
-    return new Date(Date.now() - parseInt(period) * 864e5).toISOString().slice(0, 10);
+    if (period === 'today') return todayPT;
+    return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Los_Angeles' }).format(new Date(Date.now() - parseInt(period) * 864e5));
   }, [period]);
 
   // Chart: GHL leads/day + FB ad-level spend/day
   const chartData = useMemo(() => {
-    const ceiling = period === 'today' ? new Date().toISOString().slice(0, 10) : null;
+    const ceiling = period === 'today' ? new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Los_Angeles' }).format(new Date()) : null;
     const leadsMap = {};
     for (const c of loadingGhl ? [] : cases) {
       if (!c.date) continue;
