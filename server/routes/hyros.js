@@ -2358,6 +2358,25 @@ router.delete('/reports', (req, res) => {
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
 
+// GET /api/hyros/lead-events-bydate
+// Reads Lead Events sheet (deduped, last-click, verified=YES only) and returns
+// total qualified leads per date: { byDate: { 'YYYY-MM-DD': count } }
+router.get('/lead-events-bydate', async (_req, res) => {
+  try {
+    const auth   = await getAuthClient();
+    const sheets = google.sheets({ version: 'v4', auth });
+    const raw    = await getLeadsFromSheet(sheets); // { dateStr: { adsetId: count } }
+    const byDate = {};
+    for (const [date, adsets] of Object.entries(raw)) {
+      byDate[date] = Object.values(adsets).reduce((s, n) => s + n, 0);
+    }
+    res.json({ ok: true, byDate });
+  } catch (e) {
+    console.error('lead-events-bydate error:', e.message);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // GET /api/hyros/cpl-data — serve aggregated spend data to the React CPL Tracker tab
 router.get('/cpl-data', (_req, res) => {
   if (!_lastCplData) return res.status(503).json({ ok: false, error: 'No data yet — click "Sync CPL" to load' });

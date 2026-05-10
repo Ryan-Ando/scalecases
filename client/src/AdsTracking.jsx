@@ -937,16 +937,14 @@ export default function AdsTracking() {
     return () => { cancelled = true; if (retryTimer) clearTimeout(retryTimer); };
   }, [rangeStart, rangeEnd, ghlLeadsKey]);
 
-  // Hyros CSV reports — used for the main leads-by-date chart (PST dates, next-steps attributed)
+  // Lead Events sheet — deduped, last-click, verified=YES only (PST dates)
   const [hyrosReportsByDate, setHyrosReportsByDate] = useState({});
   useEffect(() => {
-    fetch(`${BASE}/api/hyros/reports`)
+    fetch(`${BASE}/api/hyros/lead-events-bydate`)
       .then(r => r.json())
       .then(d => {
         if (!d.ok) return;
-        const map = {};
-        for (const r of (d.reports || [])) map[r.date] = r.totalLeads;
-        setHyrosReportsByDate(map);
+        setHyrosReportsByDate(d.byDate || {});
       })
       .catch(() => {});
   }, []);
