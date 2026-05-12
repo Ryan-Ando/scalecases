@@ -421,10 +421,10 @@ async function writeCampaignTab(sheets, tabName, numericId, adsets, dailyData, d
       adset.status,
       Number(totCost.toFixed(2)),
       `=SUM(${colLetter(firstDayCol)}${row}:${colLetter(lastDayCol)}${row})`,
-      `=IF(${colLetter(leadsCol)}${row}=0,"—",${colLetter(spendCol)}${row}/${colLetter(leadsCol)}${row})`,
+      `=IF(${colLetter(leadsCol)}${row}=0,${colLetter(spendCol)}${row},${colLetter(spendCol)}${row}/${colLetter(leadsCol)}${row})`,
       `=SUM(${colLetter(l4dStartCol)}${row}:${colLetter(l4dEndCol)}${row})`,
       Number(l4dCost.toFixed(2)),
-      `=IF(${colLetter(l4dLeadsCol)}${row}=0,"—",${colLetter(l4dSpendCol)}${row}/${colLetter(l4dLeadsCol)}${row})`,
+      `=IF(${colLetter(l4dLeadsCol)}${row}=0,${colLetter(l4dSpendCol)}${row},${colLetter(l4dSpendCol)}${row}/${colLetter(l4dLeadsCol)}${row})`,
       ...dayCells,
     ];
   });
@@ -435,10 +435,10 @@ async function writeCampaignTab(sheets, tabName, numericId, adsets, dailyData, d
     'TOTALS', '',
     `=SUM(${colLetter(spendCol)}4:${colLetter(spendCol)}${lastRow})`,
     `=SUM(${colLetter(leadsCol)}4:${colLetter(leadsCol)}${lastRow})`,
-    `=IF(${colLetter(leadsCol)}2=0,"—",${colLetter(spendCol)}2/${colLetter(leadsCol)}2)`,
+    `=IF(${colLetter(leadsCol)}2=0,${colLetter(spendCol)}2,${colLetter(spendCol)}2/${colLetter(leadsCol)}2)`,
     `=SUM(${colLetter(l4dLeadsCol)}4:${colLetter(l4dLeadsCol)}${lastRow})`,
     `=SUM(${colLetter(l4dSpendCol)}4:${colLetter(l4dSpendCol)}${lastRow})`,
-    `=IF(${colLetter(l4dLeadsCol)}2=0,"—",${colLetter(l4dSpendCol)}2/${colLetter(l4dLeadsCol)}2)`,
+    `=IF(${colLetter(l4dLeadsCol)}2=0,${colLetter(l4dSpendCol)}2,${colLetter(l4dSpendCol)}2/${colLetter(l4dLeadsCol)}2)`,
     ...dates.map((_, i) => `=SUM(${colLetter(firstDayCol + i)}4:${colLetter(firstDayCol + i)}${lastRow})`),
   ];
 
@@ -448,7 +448,7 @@ async function writeCampaignTab(sheets, tabName, numericId, adsets, dailyData, d
     ...dates.map(dateStr => {
       const daySpend = adsetData.reduce((s, { adset }) => s + (dailyData[dateStr]?.[adset.id]?.cost || 0), 0);
       const dayLeads = adsetData.reduce((s, { adset }) => s + (dailyData[dateStr]?.[adset.id]?.leads || 0), 0);
-      return dayLeads > 0 ? Number((daySpend / dayLeads).toFixed(2)) : '—';
+      return dayLeads > 0 ? Number((daySpend / dayLeads).toFixed(2)) : Number(daySpend.toFixed(2));
     }),
   ];
 
