@@ -408,14 +408,14 @@ async function writeCampaignTab(sheets, tabName, numericId, adsets, dailyData, d
     return b.cpl - a.cpl;
   });
 
-  // Find where inactive rows start (sheet row index is 0-based; header=0, totals=1, data starts at 2)
+  // Find where inactive rows start (sheet row index is 0-based; header=0, totals=1, cpl/day=2, data starts at 3)
   const firstInactiveDataIdx = adsetData.findIndex(({ adset }) => adset.status !== 'ACTIVE');
-  const inactiveSheetStart   = firstInactiveDataIdx >= 0 ? firstInactiveDataIdx + 2 : -1;
-  const inactiveSheetEnd     = inactiveSheetStart   >= 0 ? 2 + adsetData.length     : -1;
+  const inactiveSheetStart   = firstInactiveDataIdx >= 0 ? firstInactiveDataIdx + 3 : -1;
+  const inactiveSheetEnd     = inactiveSheetStart   >= 0 ? 3 + adsetData.length     : -1;
 
-  // Build data rows (start at sheet row 3; row 1=header, row 2=totals)
+  // Build data rows (start at sheet row 4; row 1=header, row 2=totals, row 3=CPL/day)
   const dataRows = adsetData.map(({ adset, dayCells, totCost, l4dCost }, idx) => {
-    const row = idx + 3; // 1-based sheet row
+    const row = idx + 4; // 1-based sheet row
     return [
       adset.name,
       adset.status,
@@ -429,24 +429,34 @@ async function writeCampaignTab(sheets, tabName, numericId, adsets, dailyData, d
     ];
   });
 
-  // Totals row (row 2) — all equation-based, sums rows 3 to end
-  const lastRow = 2 + dataRows.length;
+  // Totals row (row 2) — sums rows 4 to end (skips CPL/day row 3)
+  const lastRow = 3 + dataRows.length;
   const totalsRow = [
     'TOTALS', '',
-    `=SUM(${colLetter(spendCol)}3:${colLetter(spendCol)}${lastRow})`,
-    `=SUM(${colLetter(leadsCol)}3:${colLetter(leadsCol)}${lastRow})`,
+    `=SUM(${colLetter(spendCol)}4:${colLetter(spendCol)}${lastRow})`,
+    `=SUM(${colLetter(leadsCol)}4:${colLetter(leadsCol)}${lastRow})`,
     `=IF(${colLetter(leadsCol)}2=0,"—",${colLetter(spendCol)}2/${colLetter(leadsCol)}2)`,
-    `=SUM(${colLetter(l4dLeadsCol)}3:${colLetter(l4dLeadsCol)}${lastRow})`,
-    `=SUM(${colLetter(l4dSpendCol)}3:${colLetter(l4dSpendCol)}${lastRow})`,
+    `=SUM(${colLetter(l4dLeadsCol)}4:${colLetter(l4dLeadsCol)}${lastRow})`,
+    `=SUM(${colLetter(l4dSpendCol)}4:${colLetter(l4dSpendCol)}${lastRow})`,
     `=IF(${colLetter(l4dLeadsCol)}2=0,"—",${colLetter(l4dSpendCol)}2/${colLetter(l4dLeadsCol)}2)`,
-    ...dates.map((_, i) => `=SUM(${colLetter(firstDayCol + i)}3:${colLetter(firstDayCol + i)}${lastRow})`),
+    ...dates.map((_, i) => `=SUM(${colLetter(firstDayCol + i)}4:${colLetter(firstDayCol + i)}${lastRow})`),
+  ];
+
+  // CPL/day row (row 3) — total spend ÷ total leads for each date column
+  const dailyCplRow = [
+    'CPL/Day', '', '', '', '', '', '', '',
+    ...dates.map(dateStr => {
+      const daySpend = adsetData.reduce((s, { adset }) => s + (dailyData[dateStr]?.[adset.id]?.cost || 0), 0);
+      const dayLeads = adsetData.reduce((s, { adset }) => s + (dailyData[dateStr]?.[adset.id]?.leads || 0), 0);
+      return dayLeads > 0 ? Number((daySpend / dayLeads).toFixed(2)) : '—';
+    }),
   ];
 
   await withQuotaRetry(() => sheets.spreadsheets.values.clear({ spreadsheetId: SHEET_ID, range: tabName }));
   await withQuotaRetry(() => sheets.spreadsheets.values.update({
     spreadsheetId: SHEET_ID, range: `${tabName}!A1`,
     valueInputOption: 'USER_ENTERED',
-    requestBody: { values: [headers, totalsRow, ...dataRows] },
+    requestBody: { values: [headers, totalsRow, dailyCplRow, ...dataRows] },
   }));
 
   const currencyFmt = (startCol, endCol, startRow = 1) => ({
@@ -490,10 +500,26 @@ async function writeCampaignTab(sheets, tabName, numericId, adsets, dailyData, d
         fields: 'userEnteredFormat.textFormat.bold,userEnteredFormat.backgroundColor',
       },
     },
-    // Freeze 2 rows + 1 column
+    // CPL/day row style
+    {
+      repeatCell: {
+        range: { sheetId: numericId, startRowIndex: 2, endRowIndex: 3 },
+        cell: { userEnteredFormat: { textFormat: { bold: true }, backgroundColor: { red: 0.82, green: 0.90, blue: 0.97 } } },
+        fields: 'userEnteredFormat.textFormat.bold,userEnteredFormat.backgroundColor',
+      },
+    },
+    // Currency format for CPL/day row day columns
+    {
+      repeatCell: {
+        range: { sheetId: numericId, startRowIndex: 2, endRowIndex: 3, startColumnIndex: firstDayCol - 1, endColumnIndex: lastDayCol },
+        cell: { userEnteredFormat: { numberFormat: { type: 'CURRENCY', pattern: '"$"#,##0.00' } } },
+        fields: 'userEnteredFormat.numberFormat',
+      },
+    },
+    // Freeze 3 rows + 1 column
     {
       updateSheetProperties: {
-        properties: { sheetId: numericId, gridProperties: { frozenRowCount: 2, frozenColumnCount: 1 } },
+        properties: { sheetId: numericId, gridProperties: { frozenRowCount: 3, frozenColumnCount: 1 } },
         fields: 'gridProperties.frozenRowCount,gridProperties.frozenColumnCount',
       },
     },
