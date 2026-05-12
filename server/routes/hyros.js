@@ -284,7 +284,7 @@ async function getAdsetInfo(adsetIds) {
     try {
       const params = new URLSearchParams({
         ids:          chunk.join(','),
-        fields:       'name,effective_status,campaign{name,id}',
+        fields:       'name,effective_status,campaign{name,id},daily_budget,lifetime_budget',
         access_token: token,
       });
       const r    = await fetch(`${FB_API}/?${params}`);
@@ -297,6 +297,7 @@ async function getAdsetInfo(adsetIds) {
               status:       d.effective_status || 'UNKNOWN',
               campaignName: d.campaign?.name   || 'Unknown Campaign',
               campaignId:   d.campaign?.id     || null,
+              budget:       d.daily_budget ? d.daily_budget / 100 : (d.lifetime_budget ? d.lifetime_budget / 100 : 0),
             };
           }
         }
@@ -321,7 +322,7 @@ async function getAllAccountAdsets() {
   if (!token || !accounts.length) return info;
 
   for (const account of accounts) {
-    let url = `${FB_API}/${account}/adsets?fields=id,name,effective_status,campaign{name,id}&effective_status=["ACTIVE","PAUSED","CAMPAIGN_PAUSED","ADSET_PAUSED"]&limit=200&access_token=${token}`;
+    let url = `${FB_API}/${account}/adsets?fields=id,name,effective_status,campaign{name,id},daily_budget,lifetime_budget&effective_status=["ACTIVE","PAUSED","CAMPAIGN_PAUSED","ADSET_PAUSED"]&limit=200&access_token=${token}`;
     while (url) {
       try {
         const r    = await fetch(url);
@@ -333,6 +334,7 @@ async function getAllAccountAdsets() {
             status:       d.effective_status || 'UNKNOWN',
             campaignName: d.campaign?.name   || 'Unknown Campaign',
             campaignId:   d.campaign?.id     || null,
+            budget:       d.daily_budget ? d.daily_budget / 100 : (d.lifetime_budget ? d.lifetime_budget / 100 : 0),
           };
         }
         url = data.paging?.next || null;
@@ -971,7 +973,17 @@ async function writeCplTab(sheets, numericId, adsetInfo, dailyData, dates, tabMa
   const tSpC = 1 + nDates * 3;
   const tLeC = 2 + nDates * 3;
   const tCpC = 3 + nDates * 3;
-  const totalCols = tCpC + 1;
+  const lbC  = tCpC + 1; // Live Budget column
+  const totalCols = lbC + 1;
+
+  // Sum daily_budget of all ACTIVE adsets per campaign
+  const liveBudget = {};
+  for (const [, info] of Object.entries(adsetInfo)) {
+    if (info.status === 'ACTIVE' && info.budget > 0) {
+      const name = info.campaignName || 'Unknown Campaign';
+      liveBudget[name] = (liveBudget[name] || 0) + info.budget;
+    }
+  }
 
   // Row layout (1-indexed):
   //   row 1       = date header (merged per 3-col date group)
@@ -1005,10 +1017,12 @@ async function writeCplTab(sheets, numericId, adsetInfo, dailyData, dates, tabMa
   dateHdrRow[0] = 'Campaign';
   for (let i = 0; i < nDates; i++) dateHdrRow[spC(i)] = dateLabels[i];
   dateHdrRow[tSpC] = 'TOTAL';
+  dateHdrRow[lbC]  = 'Live Budget';
 
   // Row 2: metric labels
   const metricHdrRow = ['Campaign'];
   for (let i = 0; i <= nDates; i++) metricHdrRow.push('Spend', 'Leads', 'CPL');
+  metricHdrRow.push('$/Day (Active)');
 
   // Data rows: spend auto-filled, leads from preserved values, CPL as formula
   const dataRows = campaigns.map((name, ri) => {
@@ -1032,6 +1046,7 @@ async function writeCplTab(sheets, numericId, adsetInfo, dailyData, dates, tabMa
     row[tSpC] = `=SUM(${spRefs.join(',')})`;
     row[tLeC] = `=SUM(${leRefs.join(',')})`;
     row[tCpC] = `=IF(${tlL}${row1}=0,"—",${tsL}${row1}/${tlL}${row1})`;
+    row[lbC]  = liveBudget[name] ? Number(liveBudget[name].toFixed(2)) : '';
     return row;
   });
 
@@ -1098,6 +1113,9 @@ async function writeCplTab(sheets, numericId, adsetInfo, dailyData, dates, tabMa
     { repeatCell: { range: { sheetId: numericId, startRowIndex: d0, endRowIndex: dEnd, startColumnIndex: tCpC, endColumnIndex: tCpC + 1 }, cell: { userEnteredFormat: { backgroundColor: ltGreen, numberFormat: currency, textFormat: { bold: true } } }, fields: 'userEnteredFormat(backgroundColor,numberFormat,textFormat)' } },
     { mergeCells: { range: { sheetId: numericId, startRowIndex: 0, endRowIndex: 1, startColumnIndex: tSpC, endColumnIndex: tCpC + 1 }, mergeType: 'MERGE_ALL' } },
     { updateDimensionProperties: { range: { sheetId: numericId, dimension: 'COLUMNS', startIndex: tSpC, endIndex: tCpC + 1 }, properties: { pixelSize: 80 }, fields: 'pixelSize' } },
+    // Live Budget column — orange tint, currency, bold
+    { repeatCell: { range: { sheetId: numericId, startRowIndex: d0, endRowIndex: dEnd, startColumnIndex: lbC, endColumnIndex: lbC + 1 }, cell: { userEnteredFormat: { backgroundColor: { red: 1, green: 0.95, blue: 0.80 }, numberFormat: currency, textFormat: { bold: true } } }, fields: 'userEnteredFormat(backgroundColor,numberFormat,textFormat)' } },
+    { updateDimensionProperties: { range: { sheetId: numericId, dimension: 'COLUMNS', startIndex: lbC, endIndex: lbC + 1 }, properties: { pixelSize: 100 }, fields: 'pixelSize' } },
     // Helper block — subtle grey so it doesn't distract from main table
     { repeatCell: { range: { sheetId: numericId, startRowIndex: chartHdr0, endRowIndex: chartHdr0 + 1 + nCamp }, cell: { userEnteredFormat: { backgroundColor: { red: 0.96, green: 0.96, blue: 0.96 }, textFormat: { fontSize: 9, foregroundColor: { red: 0.5, green: 0.5, blue: 0.5 } } } }, fields: 'userEnteredFormat(backgroundColor,textFormat)' } },
   );
