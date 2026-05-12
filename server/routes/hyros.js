@@ -322,19 +322,25 @@ async function getAllAccountAdsets() {
   if (!token || !accounts.length) return info;
 
   for (const account of accounts) {
-    let url = `${FB_API}/${account}/adsets?fields=id,name,effective_status,campaign{name,id},daily_budget,lifetime_budget&effective_status=["ACTIVE","PAUSED","CAMPAIGN_PAUSED","ADSET_PAUSED"]&limit=200&access_token=${token}`;
+    let url = `${FB_API}/${account}/adsets?fields=id,name,effective_status,campaign{name,id,daily_budget,lifetime_budget},daily_budget,lifetime_budget&effective_status=["ACTIVE","PAUSED","CAMPAIGN_PAUSED","ADSET_PAUSED"]&limit=200&access_token=${token}`;
     while (url) {
       try {
         const r    = await fetch(url);
         const data = await r.json();
         if (data.error) { console.warn('FB getAllAdsets error:', data.error.message); break; }
         for (const d of data.data || []) {
+          // CBO campaigns store budget at campaign level; adset-level budget is 0 in that case
+          const adsetBudget    = d.daily_budget    ? d.daily_budget / 100
+                               : d.lifetime_budget ? d.lifetime_budget / 100 : 0;
+          const campaignBudget = d.campaign?.daily_budget    ? d.campaign.daily_budget / 100
+                               : d.campaign?.lifetime_budget ? d.campaign.lifetime_budget / 100 : 0;
           info[d.id] = {
-            name:         d.name,
-            status:       d.effective_status || 'UNKNOWN',
-            campaignName: d.campaign?.name   || 'Unknown Campaign',
-            campaignId:   d.campaign?.id     || null,
-            budget:       d.daily_budget ? d.daily_budget / 100 : (d.lifetime_budget ? d.lifetime_budget / 100 : 0),
+            name:           d.name,
+            status:         d.effective_status || 'UNKNOWN',
+            campaignName:   d.campaign?.name   || 'Unknown Campaign',
+            campaignId:     d.campaign?.id     || null,
+            budget:         adsetBudget,
+            campaignBudget, // CBO budget — set at campaign level, not per adset
           };
         }
         url = data.paging?.next || null;
@@ -976,11 +982,22 @@ async function writeCplTab(sheets, numericId, adsetInfo, dailyData, dates, tabMa
   const lbC  = tCpC + 1; // Live Budget column
   const totalCols = lbC + 1;
 
-  // Sum daily_budget of all ACTIVE adsets per campaign
+  // Compute live budget per campaign.
+  // CBO campaigns: budget is at campaign level (same value on every adset) — use it once.
+  // Non-CBO campaigns: sum the individual active adset budgets.
   const liveBudget = {};
+  const cboBudgetSeen = new Set(); // track campaign IDs already counted for CBO
   for (const [, info] of Object.entries(adsetInfo)) {
-    if (info.status === 'ACTIVE' && info.budget > 0) {
-      const name = info.campaignName || 'Unknown Campaign';
+    if (info.status !== 'ACTIVE') continue;
+    const name = info.campaignName || 'Unknown Campaign';
+    if (info.campaignBudget > 0) {
+      // CBO: only count the campaign budget once per campaign
+      if (!cboBudgetSeen.has(name)) {
+        cboBudgetSeen.add(name);
+        liveBudget[name] = (liveBudget[name] || 0) + info.campaignBudget;
+      }
+    } else if (info.budget > 0) {
+      // Adset-level budget
       liveBudget[name] = (liveBudget[name] || 0) + info.budget;
     }
   }
