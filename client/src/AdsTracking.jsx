@@ -1750,12 +1750,17 @@ export default function AdsTracking() {
       fbMap[date].spend += parseFloat(row.spend) || 0;
       if (row.cpm) { fbMap[date].cpm_sum += parseFloat(row.cpm); fbMap[date].cpm_count++; }
     }
-    // Merge in Hyros CSV report leads by date (PST, next-steps attributed)
-    const allDates = new Set([...Object.keys(fbMap), ...Object.keys(hyrosReportsByDate).filter(d => {
-      if (chartStart && d < chartStart) return false;
-      if (chartEnd   && d > chartEnd)   return false;
-      return true;
-    })]);
+    // Only show dates we have CSV data for; clamp FB-only dates to earliest CSV upload
+    const csvDates = Object.keys(hyrosReportsByDate);
+    const earliestCsv = csvDates.length ? csvDates.sort()[0] : null;
+    const allDates = new Set([
+      ...Object.keys(fbMap).filter(d => earliestCsv && d >= earliestCsv),
+      ...csvDates.filter(d => {
+        if (chartStart && d < chartStart) return false;
+        if (chartEnd   && d > chartEnd)   return false;
+        return true;
+      }),
+    ]);
     return [...allDates].sort().map(date => {
       const fb     = fbMap[date] || { spend: 0, cpm_sum: 0, cpm_count: 0 };
       const leads  = hyrosReportsByDate[date] || 0;
