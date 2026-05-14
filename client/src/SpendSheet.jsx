@@ -36,15 +36,33 @@ const PACING_KEY = 'spend_pacing_v2';
 function loadPacing() {
   try { return JSON.parse(localStorage.getItem(PACING_KEY) || '{}'); } catch { return {}; }
 }
-function daysLeft(endDate) {
+
+const TZ_OPTIONS = [
+  { label: 'ET', value: 'America/New_York' },
+  { label: 'CT', value: 'America/Chicago' },
+  { label: 'MT', value: 'America/Denver' },
+  { label: 'PT', value: 'America/Los_Angeles' },
+];
+
+function fractionOfDayRemainingInTz(ianaTimezone) {
+  const now = new Date();
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: ianaTimezone, hour: 'numeric', minute: 'numeric', second: 'numeric', hour12: false,
+  }).formatToParts(now);
+  const get = type => parseInt(parts.find(p => p.type === type)?.value || '0');
+  const elapsed = get('hour') * 3600 + get('minute') * 60 + get('second');
+  return (86400 - elapsed) / 86400;
+}
+
+function daysLeft(endDate, ianaTimezone = 'America/New_York') {
   if (!endDate) return null;
   const now = new Date();
-  const midnight = new Date(now); midnight.setHours(0, 0, 0, 0);
+  const todayStr = new Intl.DateTimeFormat('en-CA', { timeZone: ianaTimezone }).format(now);
   const end = new Date(endDate + 'T00:00:00');
-  const fullDaysAfterToday = Math.floor((end - midnight) / 86400000);
+  const todayMidnight = new Date(todayStr + 'T00:00:00');
+  const fullDaysAfterToday = Math.floor((end - todayMidnight) / 86400000);
   if (fullDaysAfterToday < 0) return 0;
-  const todayFraction = (86400 - (now - midnight) / 1000) / 86400;
-  return Math.max(0, fullDaysAfterToday + todayFraction);
+  return Math.max(0, fullDaysAfterToday + fractionOfDayRemainingInTz(ianaTimezone));
 }
 function monthsBetween(startDate, endDate) {
   if (!startDate || !endDate) return [];
@@ -239,7 +257,7 @@ export default function SpendSheet() {
       const totalBudget = months.length > 0
         ? months.reduce((s, ym) => s + (parseFloat(cfg.monthlyBudgets?.[ym]) || 0), 0)
         : null;
-      const dl          = endDate ? daysLeft(endDate) : null;
+      const dl          = endDate ? daysLeft(endDate, cfg.timezone || 'America/New_York') : null;
       const spentToDate = pacingSpend[st] ?? null;
       const remaining   = (totalBudget != null && totalBudget > 0 && spentToDate != null) ? Math.max(0, totalBudget - spentToDate) : null;
       const dailyNeeded = (remaining != null && dl != null && dl > 0) ? remaining / dl : (dl === 0 && remaining != null ? remaining : null);
@@ -453,6 +471,7 @@ export default function SpendSheet() {
                   <th style={{ ...pTh, textAlign: 'left', minWidth: 160 }}>Total Budget</th>
                   <th style={{ ...pTh, textAlign: 'left', minWidth: 150 }}>Start Date</th>
                   <th style={{ ...pTh, textAlign: 'left', minWidth: 130 }}>End Date</th>
+                  <th style={{ ...pTh, textAlign: 'left', minWidth: 70 }}>TZ</th>
                   <th style={pTh}>Days Left</th>
                   <th style={pTh}>Spent to Date</th>
                   <th style={pTh}>Remaining</th>
@@ -514,6 +533,19 @@ export default function SpendSheet() {
                           />
                         </td>
 
+                        {/* Timezone */}
+                        <td style={{ ...pTdEdit, minWidth: 70 }}>
+                          <select
+                            style={{ ...pacingInput, padding: '4px 6px' }}
+                            value={pacing[r.st]?.timezone || 'America/New_York'}
+                            onChange={e => updatePacing(r.st, 'timezone', e.target.value)}
+                          >
+                            {TZ_OPTIONS.map(tz => (
+                              <option key={tz.value} value={tz.value}>{tz.label}</option>
+                            ))}
+                          </select>
+                        </td>
+
                         {/* Days Left */}
                         <td style={pTd}>
                           {r.daysLeft == null ? '—' : r.daysLeft === 0
@@ -554,7 +586,7 @@ export default function SpendSheet() {
                       {/* Expandable monthly budget inputs */}
                       {isExpanded && (
                         <tr>
-                          <td colSpan={10} style={{ padding: '14px 20px', background: 'var(--bg)', borderBottom: '2px solid var(--border)' }}>
+                          <td colSpan={11} style={{ padding: '14px 20px', background: 'var(--bg)', borderBottom: '2px solid var(--border)' }}>
                             {r.months.length === 0 ? (
                               <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
                                 Set start and end dates to define monthly budget periods.
