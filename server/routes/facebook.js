@@ -193,9 +193,6 @@ const INSIGHTS_FIELDS = [
   'frequency',
   'cost_per_unique_inline_link_click',
   'cost_per_result',
-  'actions',
-  'video_avg_time_watched_actions',
-  'video_play_actions',
 ].join(',');
 
 // Extract lead/result count from the actions array.
@@ -581,10 +578,10 @@ router.get('/ads', async (req, res) => {
 // ── Shared daily-insights fetcher (used by /daily endpoint + prefetch) ───────
 async function fetchDailyInsights({ level, datePreset, start, end, date, adIdList, adsetIdList, full }) {
   const fields = level === 'ad'
-    ? `ad_id,ad_name,campaign_name,spend,impressions,unique_inline_link_clicks,cpm,actions,date_start,date_stop`
+    ? `ad_id,ad_name,campaign_name,spend,impressions,unique_inline_link_clicks,cpm,date_start,date_stop`
     : level === 'adset'
-    ? `adset_id,adset_name,campaign_name,spend,impressions,unique_inline_link_clicks,cpm,actions,date_start,date_stop`
-    : `campaign_id,campaign_name,spend,impressions,cpm,actions,date_start,date_stop`;
+    ? `adset_id,adset_name,campaign_name,spend,impressions,unique_inline_link_clicks,cpm,date_start,date_stop`
+    : `campaign_id,campaign_name,spend,impressions,cpm,date_start,date_stop`;
 
   const accounts = adAccounts();
   const all = [];
