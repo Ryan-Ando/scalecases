@@ -18,12 +18,12 @@ function findAngle(name, angles) {
   return null;
 }
 
-// Remove the angle and everything after it (variant number, media type, -copy, etc.)
+// Remove only the angle word and its leading separator — keep variant/media suffix intact
 function getBase(name, angle) {
   const n = stripCopy(name);
   const escaped = angle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  // Remove: separator + angle + all trailing content (-1-img, -2-vid, etc.)
-  const base = n.replace(new RegExp(`[\\s\\-]${escaped}([\\s\\-].*)?$`, 'i'), '').trim();
+  // Remove the space/hyphen before the angle and the angle itself; leave everything after
+  const base = n.replace(new RegExp(`[\\s\\-]${escaped}(?=[\\s\\-]|$)`, 'i'), '').trim();
   return base || n;
 }
 
