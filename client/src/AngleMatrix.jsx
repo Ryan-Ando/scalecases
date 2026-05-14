@@ -3,20 +3,28 @@ import { dbGetAll } from './db.js';
 
 const BASE = import.meta.env.VITE_API_URL || 'http://localhost:3001';
 
-// Find which angle from the list appears in an adset name as a whole token
+// Strip -copy (and any trailing variant like -copy-2) — normalize before matching
+function stripCopy(name) {
+  return name.replace(/[-\s]+copy[-\s\d]*$/i, '').trim();
+}
+
+// Find which angle from the list appears in the name as a whole token
 function findAngle(name, angles) {
+  const n = stripCopy(name);
   for (const angle of angles) {
-    const re = new RegExp(`(^|[\\s\\-])${angle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([\\s\\-\\d]|$)`, 'i');
-    if (re.test(name)) return angle;
+    const re = new RegExp(`(^|[\\s\\-])${angle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([\\s\\-]|$)`, 'i');
+    if (re.test(n)) return angle;
   }
   return null;
 }
 
-// Strip the angle (and any trailing -N variant suffix) to get the base creative name
+// Remove the angle and everything after it (variant number, media type, -copy, etc.)
 function getBase(name, angle) {
+  const n = stripCopy(name);
   const escaped = angle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  // Remove: optional separator + angle + optional -number suffix
-  return name.replace(new RegExp(`[\\s\\-]?${escaped}(?:[\\s\\-]\\d+)?$`, 'i'), '').trim();
+  // Remove: separator + angle + all trailing content (-1-img, -2-vid, etc.)
+  const base = n.replace(new RegExp(`[\\s\\-]${escaped}([\\s\\-].*)?$`, 'i'), '').trim();
+  return base || n;
 }
 
 export default function AngleMatrix() {
