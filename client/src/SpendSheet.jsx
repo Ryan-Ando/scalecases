@@ -38,10 +38,13 @@ function loadPacing() {
 }
 function daysLeft(endDate) {
   if (!endDate) return null;
-  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const now = new Date();
+  const midnight = new Date(now); midnight.setHours(0, 0, 0, 0);
   const end = new Date(endDate + 'T00:00:00');
-  const d = Math.floor((end - today) / 86400000) + 1; // +1 to include today
-  return d >= 1 ? d : 0;
+  const fullDaysAfterToday = Math.floor((end - midnight) / 86400000);
+  if (fullDaysAfterToday < 0) return 0;
+  const todayFraction = (86400 - (now - midnight) / 1000) / 86400;
+  return Math.max(0, fullDaysAfterToday + todayFraction);
 }
 function monthsBetween(startDate, endDate) {
   if (!startDate || !endDate) return [];
@@ -515,7 +518,7 @@ export default function SpendSheet() {
                         <td style={pTd}>
                           {r.daysLeft == null ? '—' : r.daysLeft === 0
                             ? <span style={{ color: '#dc2626', fontWeight: 700 }}>0</span>
-                            : r.daysLeft}
+                            : r.daysLeft.toFixed(1)}
                         </td>
 
                         {/* Spent to Date */}
