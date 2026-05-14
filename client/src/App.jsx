@@ -7,13 +7,14 @@ import CampaignReports from './CampaignReports.jsx';
 import StateVariations from './StateVariations.jsx';
 import CplTracker from './CplTracker.jsx';
 import LeadReports from './LeadReports.jsx';
+import AngleMatrix from './AngleMatrix.jsx';
 
 function Logo() {
   return <img src="/logo.png" width="32" height="32" style={{ borderRadius: 8, display: 'block' }} alt="Scale Cases" />;
 }
 
 const BASE = import.meta.env.VITE_API_URL || 'http://localhost:3001';
-const TABS = ['Ads Tracking', 'Spend Sheet', 'Campaign Reports', 'State Variations', 'CPL Tracker', 'Lead Reports'];
+const TABS = ['Ads Tracking', 'Angle Matrix', 'Spend Sheet', 'Campaign Reports', 'State Variations', 'CPL Tracker', 'Lead Reports'];
 
 function logout() {
   localStorage.removeItem('sc_auth_token');
@@ -83,6 +84,7 @@ export default function App() {
       </header>
       <main className="content" style={{ padding: 0, boxSizing: 'border-box', minWidth: 0, overflow: 'clip' }}>
         {mounted.has('Ads Tracking')     && <div style={show('Ads Tracking')}><AdsTracking /></div>}
+        {mounted.has('Angle Matrix')     && <div style={show('Angle Matrix')}><AngleMatrix /></div>}
         {mounted.has('Spend Sheet')      && <div style={show('Spend Sheet')}><SpendSheet /></div>}
         {mounted.has('Campaign Reports') && <div style={show('Campaign Reports')}><CampaignReports /></div>}
         {mounted.has('State Variations') && <div style={show('State Variations')}><StateVariations /></div>}
