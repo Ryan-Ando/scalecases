@@ -3,26 +3,32 @@ import { dbGetAll } from './db.js';
 
 const BASE = import.meta.env.VITE_API_URL || 'http://localhost:3001';
 
-// Strip -copy (and any trailing variant like -copy-2) — normalize before matching
-function stripCopy(name) {
-  return name.replace(/[-\s]+copy[-\s\d]*$/i, '').trim();
+const NO_ANGLE = '(no angle)';
+
+// Normalize: strip -copy and trailing fractions like 1/2, 2/2 before matching
+function normalize(name) {
+  return name
+    .replace(/[-\s]+copy[-\s\d]*$/i, '')  // strip -copy suffix
+    .replace(/\s+\d+\/\d+\s*$/, '')        // strip trailing fraction e.g. " 1/2"
+    .trim();
 }
 
 // Find which angle from the list appears in the name as a whole token
 function findAngle(name, angles) {
-  const n = stripCopy(name);
+  const n = normalize(name);
   for (const angle of angles) {
     const re = new RegExp(`(^|[\\s\\-])${angle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([\\s\\-]|$)`, 'i');
     if (re.test(n)) return angle;
   }
-  return null;
+  return NO_ANGLE;
 }
 
 // Remove only the angle word and its leading separator — keep variant/media suffix intact
+// For NO_ANGLE ads, base is just the normalized name
 function getBase(name, angle) {
-  const n = stripCopy(name);
+  const n = normalize(name);
+  if (angle === NO_ANGLE) return n;
   const escaped = angle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  // Remove the space/hyphen before the angle and the angle itself; leave everything after
   const base = n.replace(new RegExp(`[\\s\\-]${escaped}(?=[\\s\\-]|$)`, 'i'), '').trim();
   return base || n;
 }
@@ -75,35 +81,36 @@ export default function AngleMatrix() {
     return out;
   }, [ads]);
 
+  // All columns: user angles + NO_ANGLE at the end
+  const allCols = useMemo(() => [...angles, NO_ANGLE], [angles]);
+
   // Build matrix: baseName → { angle → totalLeads }
   const { matrix, bases } = useMemo(() => {
     if (!angles.length) return { matrix: {}, bases: [] };
     const matrix = {};
     for (const adset of adsets) {
       const angle = findAngle(adset.adsetName, angles);
-      if (!angle) continue;
-      const base   = getBase(adset.adsetName, angle);
-      const leads  = ghlLeads[adset.adsetId]?.total || 0;
+      const base  = getBase(adset.adsetName, angle);
+      const leads = ghlLeads[adset.adsetId]?.total || 0;
       if (!matrix[base]) matrix[base] = {};
       if (!matrix[base][angle]) matrix[base][angle] = 0;
       matrix[base][angle] += leads;
     }
     const bases = Object.keys(matrix).sort((a, b) => {
-      // Sort by total leads desc
-      const ta = angles.reduce((s, ang) => s + (matrix[a][ang] || 0), 0);
-      const tb = angles.reduce((s, ang) => s + (matrix[b][ang] || 0), 0);
+      const ta = allCols.reduce((s, ang) => s + (matrix[a][ang] || 0), 0);
+      const tb = allCols.reduce((s, ang) => s + (matrix[b][ang] || 0), 0);
       return tb - ta;
     });
     return { matrix, bases };
-  }, [adsets, angles, ghlLeads]);
+  }, [adsets, angles, allCols, ghlLeads]);
 
   const totalRow = useMemo(() => {
     const t = {};
-    for (const ang of angles) {
+    for (const ang of allCols) {
       t[ang] = bases.reduce((s, b) => s + (matrix[b]?.[ang] || 0), 0);
     }
     return t;
-  }, [matrix, bases, angles]);
+  }, [matrix, bases, allCols]);
 
   return (
     <div style={{ padding: '24px', minHeight: '100vh', boxSizing: 'border-box' }}>
@@ -151,8 +158,8 @@ export default function AngleMatrix() {
             <thead>
               <tr>
                 <th style={thStyle(true)}>Creative</th>
-                {angles.map(a => (
-                  <th key={a} style={{ ...thStyle(true), textAlign: 'center', textTransform: 'uppercase', letterSpacing: '0.05em', minWidth: 90 }}>{a}</th>
+                {allCols.map(a => (
+                  <th key={a} style={{ ...thStyle(true), textAlign: 'center', textTransform: a === NO_ANGLE ? 'none' : 'uppercase', letterSpacing: '0.05em', minWidth: 90, fontStyle: a === NO_ANGLE ? 'italic' : 'normal' }}>{a}</th>
                 ))}
                 <th style={{ ...thStyle(true), textAlign: 'center', minWidth: 70 }}>Total</th>
               </tr>
@@ -161,34 +168,35 @@ export default function AngleMatrix() {
               {/* Totals row */}
               <tr style={{ background: 'var(--surface)' }}>
                 <td style={{ ...tdStyle(), fontWeight: 700, color: 'var(--text-muted)', fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.05em' }}>TOTALS</td>
-                {angles.map(a => (
-                  <td key={a} style={{ ...tdStyle(), textAlign: 'center', fontWeight: 700 }}>
+                {allCols.map(a => (
+                  <td key={a} style={{ ...tdStyle(), textAlign: 'center', fontWeight: 700, background: a === NO_ANGLE ? 'rgba(148,163,184,0.1)' : undefined }}>
                     {totalRow[a] > 0 ? totalRow[a] : '—'}
                   </td>
                 ))}
                 <td style={{ ...tdStyle(), textAlign: 'center', fontWeight: 700 }}>
-                  {angles.reduce((s, a) => s + (totalRow[a] || 0), 0) || '—'}
+                  {allCols.reduce((s, a) => s + (totalRow[a] || 0), 0) || '—'}
                 </td>
               </tr>
 
               {bases.map((base, i) => {
-                const rowTotal = angles.reduce((s, a) => s + (matrix[base]?.[a] || 0), 0);
+                const rowTotal = allCols.reduce((s, a) => s + (matrix[base]?.[a] || 0), 0);
                 return (
                   <tr key={base} style={{ background: i % 2 === 0 ? 'var(--bg)' : 'var(--surface)' }}>
                     <td style={{ ...tdStyle(), maxWidth: 340, fontWeight: 500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={base}>
                       {base}
                     </td>
-                    {angles.map(a => {
-                      const leads = matrix[base]?.[a];
-                      const used  = leads !== undefined;
+                    {allCols.map(a => {
+                      const leads     = matrix[base]?.[a];
+                      const used      = leads !== undefined;
+                      const isNoAngle = a === NO_ANGLE;
                       return (
                         <td key={a} style={{
                           ...tdStyle(),
                           textAlign: 'center',
-                          background: used ? 'rgba(34,197,94,0.15)' : undefined,
-                          color:      used ? 'var(--green, #16a34a)' : 'var(--text-muted)',
+                          background: used ? (isNoAngle ? 'rgba(148,163,184,0.15)' : 'rgba(34,197,94,0.15)') : undefined,
+                          color:      used ? (isNoAngle ? 'var(--text-muted)' : 'var(--green, #16a34a)') : 'var(--text-muted)',
                           fontWeight: used ? 700 : 400,
-                          border:     used ? '1px solid rgba(34,197,94,0.3)' : '1px solid var(--border)',
+                          border:     used ? `1px solid ${isNoAngle ? 'rgba(148,163,184,0.3)' : 'rgba(34,197,94,0.3)'}` : '1px solid var(--border)',
                         }}>
                           {used ? (leads > 0 ? leads : '✓') : '—'}
                         </td>
