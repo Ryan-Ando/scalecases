@@ -62,7 +62,7 @@ function daysLeft(endDate, ianaTimezone = 'America/New_York') {
   const todayMidnight = new Date(todayStr + 'T00:00:00');
   const fullDaysAfterToday = Math.floor((end - todayMidnight) / 86400000);
   if (fullDaysAfterToday < 0) return 0;
-  return Math.max(0, fullDaysAfterToday + fractionOfDayRemainingInTz(ianaTimezone));
+  return Math.max(1, fullDaysAfterToday + fractionOfDayRemainingInTz(ianaTimezone));
 }
 function monthsBetween(startDate, endDate) {
   if (!startDate || !endDate) return [];
