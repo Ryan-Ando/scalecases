@@ -968,4 +968,102 @@ router.get('/stats', (req, res) => {
   });
 });
 
+// ─── Debug: deep dive for a single state's campaigns ─────────────────────────
+// GET /api/facebook/debug/state-deep?state=TX&preset=last_30d
+// Returns enriched insights at campaign/adset/ad level for one state, with kill flags.
+router.get('/debug/state-deep', async (req, res) => {
+  try {
+    const state = (req.query.state || 'TX').toUpperCase();
+    const preset = req.query.preset || 'last_30d';
+
+    const enrichedFields = [
+      'spend','impressions','reach','frequency',
+      'clicks','inline_link_clicks','unique_inline_link_clicks','outbound_clicks',
+      'ctr','unique_ctr','cpm','cpp','cost_per_unique_inline_link_click','cost_per_result',
+      'quality_ranking','engagement_rate_ranking','conversion_rate_ranking',
+      'video_play_actions','video_thruplay_watched_actions',
+      'video_p25_watched_actions','video_p50_watched_actions','video_p75_watched_actions','video_p100_watched_actions',
+      'video_avg_time_watched_actions','actions',
+    ].join(',');
+
+    // Find campaigns whose name ends with a token === state
+    const allCampaigns = await fetchFromAllAccounts('campaigns', {
+      fields: 'id,name,status,effective_status,objective,daily_budget,lifetime_budget,created_time',
+    });
+    const stateCampaigns = allCampaigns.filter(c => {
+      const tokens = (c.name || '').trim().split(/[-–—\s_/|]+/);
+      for (let i = tokens.length - 1; i >= 0; i--) {
+        if (tokens[i].toUpperCase() === state) return true;
+      }
+      return false;
+    });
+    const idSet = new Set(stateCampaigns.map(c => c.id));
+
+    // Pull enriched insights at all 3 levels
+    const accounts = adAccounts();
+    async function fetchLevel(level) {
+      const out = [];
+      for (const account of accounts) {
+        const params = new URLSearchParams({
+          level,
+          fields: `${level}_id,${level}_name,campaign_id,campaign_name,adset_id,adset_name,${enrichedFields}`,
+          date_preset: preset,
+          access_token: token(),
+          limit: 500,
+        });
+        let url = `${FB_API}/${account}/insights?${params}`;
+        while (url) {
+          const r = await fbFetch(url);
+          captureRateLimit(account, r.headers);
+          const j = await r.json();
+          if (j.error) throw new Error(`[${account}] ${j.error.message}`);
+          out.push(...(j.data || []));
+          url = j.paging?.next || null;
+        }
+      }
+      return out.filter(r => idSet.has(r.campaign_id));
+    }
+
+    const [campaignInsights, adsetInsights, adInsights] = await Promise.all([
+      fetchLevel('campaign'),
+      fetchLevel('adset'),
+      fetchLevel('ad'),
+    ]);
+
+    const BELOW = v => typeof v === 'string' && v.startsWith('BELOW_AVERAGE');
+    function flagsFor(ins) {
+      const flags = [];
+      const spend = parseFloat(ins.spend) || 0;
+      const freq  = parseFloat(ins.frequency) || 0;
+      const ctr   = parseFloat(ins.ctr) || 0;
+      const uctr  = parseFloat(ins.unique_ctr) || 0;
+      if (freq > 3)                              flags.push('HIGH_FREQ');
+      if (spend > 50 && ctr  < 1.0)              flags.push('LOW_CTR');
+      if (spend > 50 && uctr < 0.8)              flags.push('LOW_UNIQUE_CTR');
+      if (BELOW(ins.quality_ranking))            flags.push('LOW_QUALITY');
+      if (BELOW(ins.engagement_rate_ranking))    flags.push('LOW_ENGAGEMENT');
+      if (BELOW(ins.conversion_rate_ranking))    flags.push('LOW_CONVERSION');
+      const tp = ins.video_thruplay_watched_actions?.[0]?.value;
+      const pl = ins.video_play_actions?.[0]?.value;
+      if (tp && pl && parseInt(pl) > 0) {
+        const thruRate = parseInt(tp) / parseInt(pl);
+        if (thruRate < 0.15 && spend > 50) flags.push('LOW_THRUPLAY');
+      }
+      return flags;
+    }
+
+    res.json({
+      state,
+      preset,
+      campaigns: stateCampaigns,
+      counts: { campaigns: campaignInsights.length, adsets: adsetInsights.length, ads: adInsights.length },
+      campaignInsights: campaignInsights.map(r => ({ ...r, flags: flagsFor(r) })),
+      adsetInsights:    adsetInsights.map(r => ({ ...r, flags: flagsFor(r) })),
+      adInsights:       adInsights.map(r => ({ ...r, flags: flagsFor(r) })),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 export default router;
