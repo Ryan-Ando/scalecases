@@ -1,13 +1,13 @@
 import { useState, useMemo, useRef, useEffect } from 'react';
 import { dbGetAll, dbUpsert, dbDelete, dbClearStore } from './db.js';
 
-const CPL_TARGET = 300;                 // universal target — used when no leads
-const SPEND_BEFORE_KILL_NO_LEADS = 300; // hit target spend with 0 leads → kill
-const SPEND_SOFT_NO_LEADS = 200;        // approaching target with 0 leads → soft
+const CPL_TARGET = 300;                 // universal target ceiling — no-leads kill caps here
+const NO_LEADS_SOFT_RATIO = 0.67;       // soft warning when 2/3 of the way to no-leads kill
+const NO_LEADS_SOFT_CAP = 200;          // ceiling on no-leads soft warning
 const CPL_HARD_MULT = 2;                // once leads exist, hard kill at 2× baseline
 const CPL_SOFT_MULT = 1.5;              // once leads exist, soft kill at 1.5× baseline
-const CPL_HARD_CAP = 600;               // ceiling on hard kill (never let CPL exceed this)
-const CPL_SOFT_CAP = 450;               // ceiling on soft kill
+const CPL_HARD_CAP = 600;               // ceiling on with-leads hard kill
+const CPL_SOFT_CAP = 450;               // ceiling on with-leads soft kill
 const UNIVERSAL_CPULC_S1 = 10;
 const UNIVERSAL_CPULC_S2 = 7;
 const UNIVERSAL_CPM = 150;
@@ -94,7 +94,10 @@ function computeBaselines(rows) {
       totalSpend: d.spend, totalLeads: d.results, adsetCount: d.count,
       thresholdS1: cpulc ? Math.min(UNIVERSAL_CPULC_S1, cpulc * 4) : UNIVERSAL_CPULC_S1,
       thresholdS2: cpulc ? Math.min(UNIVERSAL_CPULC_S2, cpulc * 3) : UNIVERSAL_CPULC_S2,
-      // CPL kill thresholds — used only when an ad has ≥1 lead
+      // No-leads kill: kill at the campaign's own baseline CPL with 0 leads, capped at $300
+      noLeadsHardKill: cpl ? Math.min(cpl, CPL_TARGET) : CPL_TARGET,
+      noLeadsSoftKill: cpl ? Math.min(cpl * NO_LEADS_SOFT_RATIO, NO_LEADS_SOFT_CAP) : NO_LEADS_SOFT_CAP,
+      // With-leads CPL kill thresholds — used only when an ad has ≥1 lead
       cplHardKill: cpl ? Math.min(cpl * CPL_HARD_MULT, CPL_HARD_CAP) : CPL_HARD_CAP,
       cplSoftKill: cpl ? Math.min(cpl * CPL_SOFT_MULT, CPL_SOFT_CAP) : CPL_SOFT_CAP,
     };
@@ -153,12 +156,17 @@ function evaluateKill(r, baseline, prior) {
     if (r.spend >= 150 && r.lpv === 0 && r.linkClicks > 0) hard.push(`0 LPVs at $150+`);
   }
 
-  // No-lead spend rules (universal $300 only applies when no leads exist)
+  // No-lead spend rules — kill at baseline CPL (capped at $300 universal target)
   if (r.results === 0) {
-    if (r.spend >= SPEND_BEFORE_KILL_NO_LEADS) {
-      hard.push(`$${SPEND_BEFORE_KILL_NO_LEADS}+ spent, 0 leads`);
-    } else if (r.spend >= SPEND_SOFT_NO_LEADS) {
-      soft.push(`$${SPEND_SOFT_NO_LEADS}+ spent, 0 leads (approaching $${CPL_TARGET} target)`);
+    const hardLine = baseline?.noLeadsHardKill ?? CPL_TARGET;
+    const softLine = baseline?.noLeadsSoftKill ?? NO_LEADS_SOFT_CAP;
+    if (r.spend >= hardLine) {
+      const baseStr = baseline?.cpl && baseline.cpl < CPL_TARGET
+        ? ` (= $${baseline.cpl.toFixed(0)} baseline CPL)`
+        : ` ($${CPL_TARGET} cap)`;
+      hard.push(`$${hardLine.toFixed(0)} spent, 0 leads${baseStr}`);
+    } else if (r.spend >= softLine) {
+      soft.push(`$${softLine.toFixed(0)}+ spent, 0 leads (approaching kill line)`);
     }
   }
 
@@ -561,7 +569,7 @@ function CampaignCard({ group, isOpen, onToggle, sortKey, sortDir, onSort, hasCo
             <div style={{ width: 1, height: 36, background: 'var(--border)' }} />
             <StatBlock label="$50+ kill"  value={fmt$(b.thresholdS1)} sub="CPULC ≥" critical />
             <StatBlock label="$150+ kill" value={fmt$(b.thresholdS2)} sub="CPULC ≥" critical />
-            <StatBlock label="No-leads kill" value={`$${CPL_TARGET}`} sub="spend, 0 leads" critical />
+            <StatBlock label="No-leads kill" value={fmt$(b.noLeadsHardKill)} sub={b.cpl && b.cpl < CPL_TARGET ? `= $${b.cpl.toFixed(0)} baseline` : `$${CPL_TARGET} cap`} critical />
             <StatBlock label="CPL soft kill" value={fmt$(b.cplSoftKill)} sub={b.cpl ? `${CPL_SOFT_MULT}× base / $${CPL_SOFT_CAP} cap` : 'no baseline'} critical />
             <StatBlock label="CPL hard kill" value={fmt$(b.cplHardKill)} sub={b.cpl ? `${CPL_HARD_MULT}× base / $${CPL_HARD_CAP} cap` : 'no baseline'} critical />
           </div>
