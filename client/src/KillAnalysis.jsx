@@ -1,10 +1,13 @@
 import { useState, useMemo, useRef, useEffect } from 'react';
 import { dbGetAll, dbUpsert, dbDelete, dbClearStore } from './db.js';
 
-const CPL_TARGET = 300;                 // hard cap — no ad allowed above this
-const CPL_SOFT_TARGET = 225;            // 75% of target — soft warning
+const CPL_TARGET = 300;                 // universal target — used when no leads
 const SPEND_BEFORE_KILL_NO_LEADS = 300; // hit target spend with 0 leads → kill
 const SPEND_SOFT_NO_LEADS = 200;        // approaching target with 0 leads → soft
+const CPL_HARD_MULT = 2;                // once leads exist, hard kill at 2× baseline
+const CPL_SOFT_MULT = 1.5;              // once leads exist, soft kill at 1.5× baseline
+const CPL_HARD_CAP = 600;               // ceiling on hard kill (never let CPL exceed this)
+const CPL_SOFT_CAP = 450;               // ceiling on soft kill
 const UNIVERSAL_CPULC_S1 = 10;
 const UNIVERSAL_CPULC_S2 = 7;
 const UNIVERSAL_CPM = 150;
@@ -91,6 +94,9 @@ function computeBaselines(rows) {
       totalSpend: d.spend, totalLeads: d.results, adsetCount: d.count,
       thresholdS1: cpulc ? Math.min(UNIVERSAL_CPULC_S1, cpulc * 4) : UNIVERSAL_CPULC_S1,
       thresholdS2: cpulc ? Math.min(UNIVERSAL_CPULC_S2, cpulc * 3) : UNIVERSAL_CPULC_S2,
+      // CPL kill thresholds — used only when an ad has ≥1 lead
+      cplHardKill: cpl ? Math.min(cpl * CPL_HARD_MULT, CPL_HARD_CAP) : CPL_HARD_CAP,
+      cplSoftKill: cpl ? Math.min(cpl * CPL_SOFT_MULT, CPL_SOFT_CAP) : CPL_SOFT_CAP,
     };
   }
   return baselines;
@@ -116,15 +122,18 @@ function quadrant(cpm, cpulc) {
 
 function evaluateKill(r, baseline, prior) {
   const stage = stageOf(r.spend);
-  const reasons = [];
-
-  // Layer 4 — Safe override: actively converting under target
-  if (r.cpl != null && r.cpl <= CPL_TARGET) {
-    return { stage, flag: 'safe', reasons: [`CPL $${r.cpl.toFixed(0)} ≤ $${CPL_TARGET} target`], fatigue: null };
-  }
-
   const hard = [];
   const soft = [];
+
+  // Layer 4 — Safe override: ad is doing AT LEAST as well as the campaign baseline.
+  // Once leads exist we compare to baseline; falls back to universal $300 when baseline unknown.
+  const baselineCpl = baseline?.cpl;
+  if (r.results >= 1 && r.cpl != null) {
+    const safeLine = baselineCpl ?? CPL_TARGET;
+    if (r.cpl <= safeLine) {
+      return { stage, flag: 'safe', reasons: [`CPL $${r.cpl.toFixed(0)} ≤ baseline $${safeLine.toFixed(0)}`], fatigue: null };
+    }
+  }
 
   // Universal hard kills
   if (r.spend >= 50 && r.linkClicks === 0) hard.push('0 link clicks at $50+');
@@ -144,16 +153,26 @@ function evaluateKill(r, baseline, prior) {
     if (r.spend >= 150 && r.lpv === 0 && r.linkClicks > 0) hard.push(`0 LPVs at $150+`);
   }
 
-  // CPL / no-lead spend rules — tightened to $300 target
-  if (r.spend >= SPEND_BEFORE_KILL_NO_LEADS && r.results === 0) {
-    hard.push(`$${SPEND_BEFORE_KILL_NO_LEADS}+ spent, 0 leads`);
-  } else if (r.spend >= SPEND_SOFT_NO_LEADS && r.results === 0) {
-    soft.push(`$${SPEND_SOFT_NO_LEADS}+ spent, 0 leads (approaching target)`);
+  // No-lead spend rules (universal $300 only applies when no leads exist)
+  if (r.results === 0) {
+    if (r.spend >= SPEND_BEFORE_KILL_NO_LEADS) {
+      hard.push(`$${SPEND_BEFORE_KILL_NO_LEADS}+ spent, 0 leads`);
+    } else if (r.spend >= SPEND_SOFT_NO_LEADS) {
+      soft.push(`$${SPEND_SOFT_NO_LEADS}+ spent, 0 leads (approaching $${CPL_TARGET} target)`);
+    }
   }
-  if (r.cpl != null && r.cpl > CPL_TARGET) {
-    hard.push(`CPL $${r.cpl.toFixed(0)} > $${CPL_TARGET} target`);
-  } else if (r.cpl != null && r.cpl >= CPL_SOFT_TARGET) {
-    soft.push(`CPL $${r.cpl.toFixed(0)} ≥ $${CPL_SOFT_TARGET} (75% of target)`);
+
+  // CPL rules ONLY apply when ad has ≥1 lead — relative to campaign baseline with cap
+  if (r.results >= 1 && r.cpl != null) {
+    const hardLine = baseline?.cplHardKill ?? CPL_HARD_CAP;
+    const softLine = baseline?.cplSoftKill ?? CPL_SOFT_CAP;
+    if (r.cpl >= hardLine) {
+      const baseStr = baselineCpl ? ` (≥${CPL_HARD_MULT}× $${baselineCpl.toFixed(0)} baseline)` : '';
+      hard.push(`CPL $${r.cpl.toFixed(0)} ≥ $${hardLine.toFixed(0)}${baseStr}`);
+    } else if (r.cpl >= softLine) {
+      const baseStr = baselineCpl ? ` (≥${CPL_SOFT_MULT}× $${baselineCpl.toFixed(0)} baseline)` : '';
+      soft.push(`CPL $${r.cpl.toFixed(0)} ≥ $${softLine.toFixed(0)}${baseStr}`);
+    }
   }
 
   // Fatigue detection vs prior snapshot
@@ -511,7 +530,6 @@ function CampaignCard({ group, isOpen, onToggle, sortKey, sortDir, onSort, hasCo
   const b = group.baseline;
   const { counts, hardSpend, visibleRows } = group;
   const cardBorderColor = counts.hard > 0 ? '#dc2626' : counts.soft > 0 ? '#f59e0b' : 'var(--border)';
-  const cplOverTarget = b.cpl != null && b.cpl > CPL_TARGET;
 
   return (
     <div style={{ border: `1px solid ${cardBorderColor}`, borderLeft: `4px solid ${cardBorderColor}`, borderRadius: 10, background: 'var(--surface)', overflow: 'hidden' }}>
@@ -539,11 +557,13 @@ function CampaignCard({ group, isOpen, onToggle, sortKey, sortDir, onSort, hasCo
           <div style={{ marginLeft: 'auto', display: 'flex', gap: 16, alignItems: 'center', flexWrap: 'wrap' }}>
             <StatBlock label="Baseline CPULC" value={fmt$(b.cpulc)} sub="weighted" />
             <StatBlock label="Baseline CPM"   value={fmt$(b.cpm)}   sub="weighted" />
-            <StatBlock label="Baseline CPL"   value={fmt$(b.cpl)}   sub={cplOverTarget ? `> $${CPL_TARGET} target` : 'weighted'} valueColor={cplOverTarget ? '#dc2626' : null} />
+            <StatBlock label="Baseline CPL"   value={fmt$(b.cpl)}   sub="weighted" />
             <div style={{ width: 1, height: 36, background: 'var(--border)' }} />
             <StatBlock label="$50+ kill"  value={fmt$(b.thresholdS1)} sub="CPULC ≥" critical />
             <StatBlock label="$150+ kill" value={fmt$(b.thresholdS2)} sub="CPULC ≥" critical />
-            <StatBlock label="CPL kill"   value={`$${CPL_TARGET}`} sub="any spend" critical />
+            <StatBlock label="No-leads kill" value={`$${CPL_TARGET}`} sub="spend, 0 leads" critical />
+            <StatBlock label="CPL soft kill" value={fmt$(b.cplSoftKill)} sub={b.cpl ? `${CPL_SOFT_MULT}× base / $${CPL_SOFT_CAP} cap` : 'no baseline'} critical />
+            <StatBlock label="CPL hard kill" value={fmt$(b.cplHardKill)} sub={b.cpl ? `${CPL_HARD_MULT}× base / $${CPL_HARD_CAP} cap` : 'no baseline'} critical />
           </div>
         </div>
       </div>
@@ -577,7 +597,11 @@ function CampaignCard({ group, isOpen, onToggle, sortKey, sortDir, onSort, hasCo
                 {visibleRows.map((r, i) => {
                   const color = FLAG_COLORS[r.flag] || FLAG_COLORS.watch;
                   const cpulcMul = b?.cpulc && r.cpulc ? r.cpulc / b.cpulc : null;
-                  const cplOver = r.cpl != null && r.cpl > CPL_TARGET;
+                  // CPL coloring: red if at hard kill, yellow if at soft kill, default otherwise
+                  const cplHardLine = b?.cplHardKill ?? CPL_HARD_CAP;
+                  const cplSoftLine = b?.cplSoftKill ?? CPL_SOFT_CAP;
+                  const cplOver = r.cpl != null && r.results >= 1 && r.cpl >= cplHardLine;
+                  const cplWarn = r.cpl != null && r.results >= 1 && r.cpl >= cplSoftLine && r.cpl < cplHardLine;
                   const dCpl = r.fatigue?.cplDelta;
                   const dLeads = r.fatigue?.leadsDelta;
                   return (
@@ -599,7 +623,7 @@ function CampaignCard({ group, isOpen, onToggle, sortKey, sortDir, onSort, hasCo
                       <td style={td}>{fmtPct(r.uctr)}</td>
                       <td style={td}>{r.freq ? r.freq.toFixed(2) : '—'}</td>
                       <td style={td}>{fmtNum(r.results)}</td>
-                      <td style={{ ...td, color: cplOver ? '#dc2626' : 'var(--text)', fontWeight: cplOver ? 600 : 400 }}>{fmt$(r.cpl)}</td>
+                      <td style={{ ...td, color: cplOver ? '#dc2626' : cplWarn ? '#f59e0b' : 'var(--text)', fontWeight: cplOver || cplWarn ? 600 : 400 }}>{fmt$(r.cpl)}</td>
                       {hasCompare && <td style={{ ...td, color: dCpl == null ? 'var(--text-muted)' : dCpl > 0.5 ? '#dc2626' : dCpl > 0 ? '#f59e0b' : '#16a34a' }}>{fmtDelta(dCpl) || '—'}</td>}
                       {hasCompare && <td style={{ ...td, color: dLeads == null ? 'var(--text-muted)' : dLeads < -0.5 ? '#dc2626' : dLeads < 0 ? '#f59e0b' : '#16a34a' }}>{fmtDelta(dLeads) || '—'}</td>}
                       <td style={{ ...tdL, fontSize: 11, color: color.text, maxWidth: 340, whiteSpace: 'normal' }}>
