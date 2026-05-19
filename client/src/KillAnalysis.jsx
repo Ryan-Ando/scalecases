@@ -67,6 +67,7 @@ const CPL_HARD_CAP = 600;               // ceiling on with-leads hard kill
 const CPL_SOFT_CAP = 450;               // ceiling on with-leads soft kill
 const UNIVERSAL_CPULC_S1 = 10;
 const UNIVERSAL_CPULC_S2 = 7;
+const UNIVERSAL_CPULC_MIN = 0.50;       // below this CPULC, traffic is bait/bot (0 winners in dataset)
 const UNIVERSAL_CPM = 150;
 
 function parseFloatSafe(s) {
@@ -223,10 +224,9 @@ function evaluateKill(r, baseline, prior) {
     if (r.spend >= 150 && r.lpv === 0 && r.linkClicks > 0) hard.push(`0 LPVs at $150+`);
   }
 
-  // Suspicious cheap traffic: very low CPULC + very high UCTR + no leads at $100+ spend
-  // Classic engagement-bait / bot-click pattern.
-  if (r.spend >= 100 && r.results === 0 && r.cpulc != null && r.cpulc < 1.0 && r.uctr != null && r.uctr > 10) {
-    soft.push(`Suspicious cheap traffic: CPULC $${r.cpulc.toFixed(2)} + UCTR ${r.uctr.toFixed(1)}% + 0 leads`);
+  // Minimum CPULC — clicks too cheap to be real (bait / bot traffic)
+  if (r.spend >= 50 && r.cpulc != null && r.cpulc < UNIVERSAL_CPULC_MIN) {
+    hard.push(`CPULC $${r.cpulc.toFixed(2)} < $${UNIVERSAL_CPULC_MIN.toFixed(2)} min (bait traffic)`);
   }
 
   // No-lead spend rules — kill at baseline CPL (capped at $300 universal target)
@@ -682,7 +682,7 @@ function CampaignCard({ group, isOpen, onToggle, sortKey, sortDir, onSort, hasCo
   return (
     <div style={{ border: `1px solid ${cardBorderColor}`, borderLeft: `4px solid ${cardBorderColor}`, borderRadius: 10, background: 'var(--surface)', overflow: 'hidden' }}>
       <div onClick={onToggle} style={{ padding: '14px 16px', cursor: 'pointer', userSelect: 'none' }}>
-        {/* Row 1: name + counts + FEATURED kill thresholds (the visual focal point) */}
+        {/* Row 1: name + counts + baselines */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap', marginBottom: 10 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 220 }}>
             <span style={{ fontSize: 14, color: 'var(--text-muted)' }}>{isOpen ? '▼' : '▶'}</span>
@@ -690,6 +690,7 @@ function CampaignCard({ group, isOpen, onToggle, sortKey, sortDir, onSort, hasCo
               <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--text)' }}>{group.name}</div>
               <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
                 {group.rows.length} rated · ${group.ratedSpend.toFixed(0)} · {group.ratedLeads} leads
+                <span style={{ marginLeft: 6, opacity: 0.7 }}>(baselines from {b.adsetCount} all · ${b.totalSpend.toFixed(0)})</span>
               </div>
             </div>
           </div>
@@ -702,45 +703,49 @@ function CampaignCard({ group, isOpen, onToggle, sortKey, sortDir, onSort, hasCo
             {counts.pre   > 0 && <CountBadge n={counts.pre}   label="NEW"  color="var(--text-muted)" />}
           </div>
 
-          {/* FEATURED kill thresholds — the main attention area */}
-          <div style={{ marginLeft: 'auto', display: 'flex', gap: 10, alignItems: 'stretch', flexWrap: 'wrap' }}>
-            <FeaturedStat
-              label="$50+ kill"
-              value={fmt$(b.thresholdS1)}
-              sub="CPULC ≥"
-            />
-            <FeaturedStat
-              label="No-leads kill"
-              value={fmt$(b.noLeadsHardKill)}
-              sub={b.cpl && b.cpl * NO_LEADS_HARD_MULT < CPL_TARGET ? `${NO_LEADS_HARD_MULT}× baseline` : `$${CPL_TARGET} cap`}
-            />
-            <FeaturedStat
-              label="Min CPULC flag"
-              value="< $1"
-              sub="UCTR > 10% · 0 leads"
-              tone="warn"
-            />
+          <div style={{ marginLeft: 'auto', display: 'flex', gap: 14, alignItems: 'center' }}>
+            <MiniStat label="Baseline CPULC" value={fmt$(b.cpulc)} />
+            <MiniStat label="Baseline CPM"   value={fmt$(b.cpm)} />
+            <MiniStat label="Baseline CPL"   value={fmt$(b.cpl)} />
           </div>
         </div>
 
-        {/* Row 2: secondary baselines and thresholds, smaller and muted */}
-        <div style={{ display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap', paddingTop: 8, borderTop: '1px dashed var(--border)' }}>
-          <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em', marginRight: 4 }}>
-            Baselines:
-          </div>
-          <MiniStat label="CPULC" value={fmt$(b.cpulc)} />
-          <MiniStat label="CPM" value={fmt$(b.cpm)} />
-          <MiniStat label="CPL" value={fmt$(b.cpl)} />
-          <div style={{ width: 1, height: 22, background: 'var(--border)', margin: '0 4px' }} />
-          <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
-            Other thresholds:
-          </div>
-          <MiniStat label="$150+ kill" value={fmt$(b.thresholdS2)} sub="CPULC ≥" />
-          <MiniStat label="CPL soft" value={fmt$(b.cplSoftKill)} sub={b.cpl ? `${CPL_SOFT_MULT}× / $${CPL_SOFT_CAP} cap` : ''} />
-          <MiniStat label="CPL hard" value={fmt$(b.cplHardKill)} sub={b.cpl ? `${CPL_HARD_MULT}× / $${CPL_HARD_CAP} cap` : ''} />
-          <span style={{ marginLeft: 'auto', fontSize: 10, color: 'var(--text-muted)' }}>
-            baselines from {b.adsetCount} all-status adsets · ${b.totalSpend.toFixed(0)}
-          </span>
+        {/* Row 2: all kill thresholds as equal-sized boxes, with a divider between primary and secondary */}
+        <div style={{ display: 'flex', gap: 8, alignItems: 'stretch', flexWrap: 'wrap', paddingTop: 10, borderTop: '1px dashed var(--border)' }}>
+          <FeaturedStat
+            label="$50+ kill"
+            value={fmt$(b.thresholdS1)}
+            sub="CPULC ≥"
+          />
+          <FeaturedStat
+            label="No-leads kill"
+            value={fmt$(b.noLeadsHardKill)}
+            sub={b.cpl && b.cpl * NO_LEADS_HARD_MULT < CPL_TARGET ? `${NO_LEADS_HARD_MULT}× baseline` : `$${CPL_TARGET} cap`}
+          />
+          <FeaturedStat
+            label="Min CPULC"
+            value={fmt$(UNIVERSAL_CPULC_MIN)}
+            sub="CPULC <  (bait)"
+          />
+
+          <div style={{ width: 2, alignSelf: 'stretch', background: 'var(--border)', margin: '0 4px' }} />
+
+          <FeaturedStat
+            label="$150+ kill"
+            value={fmt$(b.thresholdS2)}
+            sub="CPULC ≥"
+          />
+          <FeaturedStat
+            label="CPL soft"
+            value={fmt$(b.cplSoftKill)}
+            sub={b.cpl ? `${CPL_SOFT_MULT}× / $${CPL_SOFT_CAP} cap` : 'no baseline'}
+            tone="warn"
+          />
+          <FeaturedStat
+            label="CPL hard"
+            value={fmt$(b.cplHardKill)}
+            sub={b.cpl ? `${CPL_HARD_MULT}× / $${CPL_HARD_CAP} cap` : 'no baseline'}
+          />
         </div>
       </div>
 
