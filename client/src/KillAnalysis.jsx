@@ -306,32 +306,53 @@ function KillAnalysisInner() {
   const [snapMgrOpen, setSnapMgrOpen] = useState(false);
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [serverStatus, setServerStatus] = useState('unknown'); // 'unknown' | 'ok' | 'offline'
   const fileRef = useRef(null);
 
-  // Load snapshots — server is source of truth; IndexedDB is offline fallback
+  // Load snapshots — server is source of truth; auto-sync any local-only snapshots up.
   useEffect(() => {
     async function load() {
+      let serverList = [];
       try {
-        const serverList = await serverApi.list();
-        const normalized = serverList.map(s => s.account ? s : { ...s, account: extractAccount(s.label) });
-        const sorted = normalized.sort((a, b) => (b.dateEnd || '').localeCompare(a.dateEnd || ''));
-        setSnapshots(sorted);
-        // Mirror to local IndexedDB for offline use
-        if (sorted.length) dbUpsert('killSnapshots', sorted).catch(() => {});
+        serverList = await serverApi.list();
+        setServerStatus('ok');
       } catch (err) {
-        // Server unreachable — fall back to local cache
+        setServerStatus('offline');
+        // Server unreachable — fall back to IndexedDB only
         try {
           const local = await dbGetAll('killSnapshots');
           const normalized = (local || []).map(s => s.account ? s : { ...s, account: extractAccount(s.label) });
           const sorted = normalized.sort((a, b) => (b.dateEnd || '').localeCompare(a.dateEnd || ''));
           setSnapshots(sorted);
-          if (sorted.length) {
-            setError(`Server unreachable. Showing local cache (${sorted.length} snapshot${sorted.length === 1 ? '' : 's'}).`);
-          }
+          if (sorted.length) setError(`Server unreachable. Showing local cache only (${sorted.length} snapshot${sorted.length === 1 ? '' : 's'}). Other devices won't see this data.`);
         } catch (e2) {
           setError(`Couldn't load snapshots: ${err?.message || err}`);
         }
+        return;
       }
+
+      // Server reachable. Read local cache to find any snapshots not yet on the server.
+      let local = [];
+      try { local = await dbGetAll('killSnapshots'); } catch {}
+      const serverIds = new Set(serverList.map(s => s.id));
+      const localOnly = (local || []).filter(s => !serverIds.has(s.id));
+
+      // Auto-push local-only snapshots to the server so they sync across devices.
+      if (localOnly.length) {
+        try {
+          await serverApi.save(localOnly);
+          serverList = serverList.concat(localOnly);
+          setError(`Synced ${localOnly.length} local snapshot${localOnly.length === 1 ? '' : 's'} up to the server.`);
+        } catch (err) {
+          // Save failed, but still show what's on server
+          setError(`Local snapshots exist that didn't sync up: ${err?.message || err}`);
+        }
+      }
+
+      const normalized = serverList.map(s => s.account ? s : { ...s, account: extractAccount(s.label) });
+      const sorted = normalized.sort((a, b) => (b.dateEnd || '').localeCompare(a.dateEnd || ''));
+      setSnapshots(sorted);
+      if (sorted.length) dbUpsert('killSnapshots', sorted).catch(() => {});
     }
     load();
   }, []);
@@ -507,6 +528,15 @@ function KillAnalysisInner() {
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 14, flexWrap: 'wrap' }}>
         <div style={{ fontSize: 20, fontWeight: 700 }}>Kill Analysis</div>
         <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>CPL target ${CPL_TARGET} · saved snapshots for fatigue tracking</div>
+
+        <span style={{
+          padding: '2px 8px', borderRadius: 4, fontSize: 10, fontWeight: 700,
+          background: serverStatus === 'ok' ? 'rgba(34,197,94,0.15)' : serverStatus === 'offline' ? 'rgba(220,38,38,0.15)' : 'var(--bg)',
+          color: serverStatus === 'ok' ? '#15803d' : serverStatus === 'offline' ? '#991b1b' : 'var(--text-muted)',
+          border: `1px solid ${serverStatus === 'ok' ? '#16a34a' : serverStatus === 'offline' ? '#dc2626' : 'var(--border)'}`,
+        }}>
+          {serverStatus === 'ok' ? '● synced' : serverStatus === 'offline' ? '● local only' : '● checking…'}
+        </span>
 
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
           <button onClick={() => setSnapMgrOpen(o => !o)} style={btnSm}>
