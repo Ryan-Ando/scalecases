@@ -232,13 +232,17 @@ export default function KillAnalysis() {
     setError(null);
     setLoading(true);
     try {
+      // Step 1: read all files in parallel — this is fast
       const texts = await Promise.all(files.map(f => f.text().then(t => ({ name: f.name, text: t }))));
+
+      // Step 2: parse synchronously — also fast
       const newSnaps = [];
+      const parseErrors = [];
       for (const { name, text } of texts) {
         try {
           const parsed = parseCsv(text).map(mapRow).filter(r => r.spend > 0 && r.name);
           if (!parsed.length) {
-            setError(prev => (prev ? prev + ' · ' : '') + `${name}: no rows with spend > 0`);
+            parseErrors.push(`${name}: no rows with spend > 0`);
             continue;
           }
           const dateStart = parsed[0]?.reportStart || '';
@@ -246,27 +250,23 @@ export default function KillAnalysis() {
           const id = `snap_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
           newSnaps.push({ id, label: name, dateStart, dateEnd, uploadedAt: new Date().toISOString(), rows: parsed });
         } catch (e) {
-          setError(prev => (prev ? prev + ' · ' : '') + `${name}: ${e.message}`);
+          parseErrors.push(`${name}: ${e.message}`);
         }
       }
-      if (!newSnaps.length) {
-        setLoading(false);
-        if (fileRef.current) fileRef.current.value = '';
-        return;
-      }
-      try {
-        await dbUpsert('killSnapshots', newSnaps);
-      } catch (e) {
-        setError(`DB write failed: ${e?.message || e}. If you just updated the app, try a hard refresh (Ctrl+Shift+R) to apply the DB schema upgrade.`);
-        setLoading(false);
-        if (fileRef.current) fileRef.current.value = '';
-        return;
-      }
+      if (parseErrors.length) setError(parseErrors.join(' · '));
+      if (!newSnaps.length) return;
+
+      // Step 3: update React state IMMEDIATELY so user sees data — don't wait for DB
       const all = [...snapshots, ...newSnaps].sort((a, b) => (b.dateEnd || '').localeCompare(a.dateEnd || ''));
       setSnapshots(all);
       setSelectedIds(new Set(newSnaps.map(s => s.id)));
       const prior = snapshots.find(s => !newSnaps.some(n => n.id === s.id));
       if (prior) setCompareId(prior.id);
+
+      // Step 4: persist in background — failures show a non-blocking warning
+      dbUpsert('killSnapshots', newSnaps).catch(err => {
+        setError(`Saved this session only — DB persistence failed: ${err?.message || err}. Hard refresh (Ctrl+Shift+R) may fix it for next time.`);
+      });
     } catch (e) {
       setError(`Upload failed: ${e?.message || e}`);
     } finally {
