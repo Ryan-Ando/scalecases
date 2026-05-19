@@ -29,8 +29,6 @@ services:
         sync: false  # Spreadsheet ID containing monthly tabs
       - key: MONTHLY_CASES_TAB
         sync: false  # Tab name to import, e.g. "March Signed Cases"
-      - key: DATA_DIR
-        value: /data  # Render persistent disk mount path for snapshot storage
 
   # React frontend (static site)
   - type: web
