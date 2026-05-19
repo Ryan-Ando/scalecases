@@ -223,6 +223,12 @@ function evaluateKill(r, baseline, prior) {
     if (r.spend >= 150 && r.lpv === 0 && r.linkClicks > 0) hard.push(`0 LPVs at $150+`);
   }
 
+  // Suspicious cheap traffic: very low CPULC + very high UCTR + no leads at $100+ spend
+  // Classic engagement-bait / bot-click pattern.
+  if (r.spend >= 100 && r.results === 0 && r.cpulc != null && r.cpulc < 1.0 && r.uctr != null && r.uctr > 10) {
+    soft.push(`Suspicious cheap traffic: CPULC $${r.cpulc.toFixed(2)} + UCTR ${r.uctr.toFixed(1)}% + 0 leads`);
+  }
+
   // No-lead spend rules — kill at baseline CPL (capped at $300 universal target)
   if (r.results === 0) {
     const hardLine = baseline?.noLeadsHardKill ?? CPL_TARGET;
@@ -676,14 +682,14 @@ function CampaignCard({ group, isOpen, onToggle, sortKey, sortDir, onSort, hasCo
   return (
     <div style={{ border: `1px solid ${cardBorderColor}`, borderLeft: `4px solid ${cardBorderColor}`, borderRadius: 10, background: 'var(--surface)', overflow: 'hidden' }}>
       <div onClick={onToggle} style={{ padding: '14px 16px', cursor: 'pointer', userSelect: 'none' }}>
-        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 14, flexWrap: 'wrap' }}>
+        {/* Row 1: name + counts + FEATURED kill thresholds (the visual focal point) */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap', marginBottom: 10 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 220 }}>
             <span style={{ fontSize: 14, color: 'var(--text-muted)' }}>{isOpen ? '▼' : '▶'}</span>
             <div>
-              <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text)' }}>{group.name}</div>
+              <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--text)' }}>{group.name}</div>
               <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
                 {group.rows.length} rated · ${group.ratedSpend.toFixed(0)} · {group.ratedLeads} leads
-                <span style={{ marginLeft: 6, opacity: 0.7 }}>(baselines from {b.adsetCount} all · ${b.totalSpend.toFixed(0)})</span>
               </div>
             </div>
           </div>
@@ -696,17 +702,45 @@ function CampaignCard({ group, isOpen, onToggle, sortKey, sortDir, onSort, hasCo
             {counts.pre   > 0 && <CountBadge n={counts.pre}   label="NEW"  color="var(--text-muted)" />}
           </div>
 
-          <div style={{ marginLeft: 'auto', display: 'flex', gap: 16, alignItems: 'center', flexWrap: 'wrap' }}>
-            <StatBlock label="Baseline CPULC" value={fmt$(b.cpulc)} sub="weighted" />
-            <StatBlock label="Baseline CPM"   value={fmt$(b.cpm)}   sub="weighted" />
-            <StatBlock label="Baseline CPL"   value={fmt$(b.cpl)}   sub="weighted" />
-            <div style={{ width: 1, height: 36, background: 'var(--border)' }} />
-            <StatBlock label="$50+ kill"  value={fmt$(b.thresholdS1)} sub="CPULC ≥" critical />
-            <StatBlock label="$150+ kill" value={fmt$(b.thresholdS2)} sub="CPULC ≥" critical />
-            <StatBlock label="No-leads kill" value={fmt$(b.noLeadsHardKill)} sub={b.cpl && b.cpl * NO_LEADS_HARD_MULT < CPL_TARGET ? `${NO_LEADS_HARD_MULT}× $${b.cpl.toFixed(0)} baseline` : `$${CPL_TARGET} cap`} critical />
-            <StatBlock label="CPL soft kill" value={fmt$(b.cplSoftKill)} sub={b.cpl ? `${CPL_SOFT_MULT}× base / $${CPL_SOFT_CAP} cap` : 'no baseline'} critical />
-            <StatBlock label="CPL hard kill" value={fmt$(b.cplHardKill)} sub={b.cpl ? `${CPL_HARD_MULT}× base / $${CPL_HARD_CAP} cap` : 'no baseline'} critical />
+          {/* FEATURED kill thresholds — the main attention area */}
+          <div style={{ marginLeft: 'auto', display: 'flex', gap: 10, alignItems: 'stretch', flexWrap: 'wrap' }}>
+            <FeaturedStat
+              label="$50+ kill"
+              value={fmt$(b.thresholdS1)}
+              sub="CPULC ≥"
+            />
+            <FeaturedStat
+              label="No-leads kill"
+              value={fmt$(b.noLeadsHardKill)}
+              sub={b.cpl && b.cpl * NO_LEADS_HARD_MULT < CPL_TARGET ? `${NO_LEADS_HARD_MULT}× baseline` : `$${CPL_TARGET} cap`}
+            />
+            <FeaturedStat
+              label="Min CPULC flag"
+              value="< $1"
+              sub="UCTR > 10% · 0 leads"
+              tone="warn"
+            />
           </div>
+        </div>
+
+        {/* Row 2: secondary baselines and thresholds, smaller and muted */}
+        <div style={{ display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap', paddingTop: 8, borderTop: '1px dashed var(--border)' }}>
+          <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em', marginRight: 4 }}>
+            Baselines:
+          </div>
+          <MiniStat label="CPULC" value={fmt$(b.cpulc)} />
+          <MiniStat label="CPM" value={fmt$(b.cpm)} />
+          <MiniStat label="CPL" value={fmt$(b.cpl)} />
+          <div style={{ width: 1, height: 22, background: 'var(--border)', margin: '0 4px' }} />
+          <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+            Other thresholds:
+          </div>
+          <MiniStat label="$150+ kill" value={fmt$(b.thresholdS2)} sub="CPULC ≥" />
+          <MiniStat label="CPL soft" value={fmt$(b.cplSoftKill)} sub={b.cpl ? `${CPL_SOFT_MULT}× / $${CPL_SOFT_CAP} cap` : ''} />
+          <MiniStat label="CPL hard" value={fmt$(b.cplHardKill)} sub={b.cpl ? `${CPL_HARD_MULT}× / $${CPL_HARD_CAP} cap` : ''} />
+          <span style={{ marginLeft: 'auto', fontSize: 10, color: 'var(--text-muted)' }}>
+            baselines from {b.adsetCount} all-status adsets · ${b.totalSpend.toFixed(0)}
+          </span>
         </div>
       </div>
 
@@ -779,6 +813,39 @@ function CampaignCard({ group, isOpen, onToggle, sortKey, sortDir, onSort, hasCo
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+function FeaturedStat({ label, value, sub, tone = 'danger' }) {
+  const palette = tone === 'warn'
+    ? { bg: 'rgba(245,158,11,0.10)', border: '#f59e0b', text: '#b45309' }
+    : { bg: 'rgba(220,38,38,0.10)', border: '#dc2626', text: '#991b1b' };
+  return (
+    <div style={{
+      padding: '8px 16px',
+      background: palette.bg,
+      border: `2px solid ${palette.border}`,
+      borderRadius: 10,
+      minWidth: 130,
+    }}>
+      <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: palette.text }}>
+        {label}
+      </div>
+      <div style={{ fontSize: 22, fontWeight: 800, color: palette.text, lineHeight: 1.05 }}>{value}</div>
+      {sub && <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 1 }}>{sub}</div>}
+    </div>
+  );
+}
+
+function MiniStat({ label, value, sub }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', minWidth: 70 }}>
+      <span style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)' }}>
+        {label}
+      </span>
+      <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)', lineHeight: 1.1 }}>{value}</span>
+      {sub && <span style={{ fontSize: 9, color: 'var(--text-muted)' }}>{sub}</span>}
     </div>
   );
 }
