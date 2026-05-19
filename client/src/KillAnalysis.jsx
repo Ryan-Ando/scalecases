@@ -44,6 +44,14 @@ function parseFloatSafe(s) {
   return Number.isFinite(v) ? v : null;
 }
 
+// Extract ad account name from a CSV filename like "Zemsky-&-Salomon-P.C.-Ad-sets-May-7-2026-May-12-2026.csv"
+function extractAccount(filename) {
+  const base = (filename || '').replace(/\.csv$/i, '');
+  const m = base.match(/^(.+?)[-\s]+Ad[-\s]?sets?[-\s]/i);
+  if (m) return m[1].replace(/[-\s]+$/, '').trim();
+  return base;
+}
+
 function parseCsv(text) {
   const lines = [];
   let cur = '', inQ = false, row = [];
@@ -257,9 +265,7 @@ export default function KillAnalysis() {
 }
 
 function KillAnalysisInner() {
-  const [snapshots, setSnapshots] = useState([]);  // [{ id, label, dateStart, dateEnd, uploadedAt, rows }]
-  const [selectedIds, setSelectedIds] = useState(new Set());
-  const [compareId, setCompareId] = useState(null);
+  const [snapshots, setSnapshots] = useState([]);  // [{ id, account, label, dateStart, dateEnd, uploadedAt, rows }]
   const [expanded, setExpanded] = useState({});
   const [search, setSearch] = useState('');
   const [sortKey, setSortKey] = useState('spend');
@@ -274,12 +280,10 @@ function KillAnalysisInner() {
   // Load saved snapshots on mount
   useEffect(() => {
     dbGetAll('killSnapshots').then(list => {
-      const sorted = (list || []).sort((a, b) => (b.dateEnd || '').localeCompare(a.dateEnd || ''));
+      // Backfill account on legacy snapshots saved before extractAccount existed
+      const normalized = (list || []).map(s => s.account ? s : { ...s, account: extractAccount(s.label) });
+      const sorted = normalized.sort((a, b) => (b.dateEnd || '').localeCompare(a.dateEnd || ''));
       setSnapshots(sorted);
-      if (sorted.length > 0) {
-        setSelectedIds(new Set([sorted[0].id]));
-        if (sorted.length > 1) setCompareId(sorted[1].id);
-      }
     }).catch(err => {
       setError(`Couldn't load saved snapshots: ${err?.message || err}. Try refreshing the page.`);
     });
@@ -306,8 +310,9 @@ function KillAnalysisInner() {
           }
           const dateStart = parsed[0]?.reportStart || '';
           const dateEnd = parsed[0]?.reportEnd || '';
+          const account = extractAccount(name);
           const id = `snap_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-          newSnaps.push({ id, label: name, dateStart, dateEnd, uploadedAt: new Date().toISOString(), rows: parsed });
+          newSnaps.push({ id, account, label: name, dateStart, dateEnd, uploadedAt: new Date().toISOString(), rows: parsed });
         } catch (e) {
           parseErrors.push(`${name}: ${e.message}`);
         }
@@ -318,9 +323,6 @@ function KillAnalysisInner() {
       // Step 3: update React state IMMEDIATELY so user sees data — don't wait for DB
       const all = [...snapshots, ...newSnaps].sort((a, b) => (b.dateEnd || '').localeCompare(a.dateEnd || ''));
       setSnapshots(all);
-      setSelectedIds(new Set(newSnaps.map(s => s.id)));
-      const prior = snapshots.find(s => !newSnaps.some(n => n.id === s.id));
-      if (prior) setCompareId(prior.id);
 
       // Step 4: persist in background — failures show a non-blocking warning
       dbUpsert('killSnapshots', newSnaps).catch(err => {
@@ -337,36 +339,47 @@ function KillAnalysisInner() {
   async function deleteSnapshot(id) {
     if (!confirm('Delete this snapshot permanently?')) return;
     await dbDelete('killSnapshots', id);
-    const remaining = snapshots.filter(s => s.id !== id);
-    setSnapshots(remaining);
-    setSelectedIds(prev => { const next = new Set(prev); next.delete(id); return next; });
-    if (compareId === id) setCompareId(null);
+    setSnapshots(snapshots.filter(s => s.id !== id));
   }
 
   async function clearAllSnapshots() {
     if (!confirm('Delete ALL saved snapshots? This cannot be undone.')) return;
     await dbClearStore('killSnapshots');
     setSnapshots([]);
-    setSelectedIds(new Set());
-    setCompareId(null);
   }
 
-  // Active set of rows from selected snapshots
-  const currentRows = useMemo(() => {
-    return snapshots
-      .filter(s => selectedIds.has(s.id))
-      .flatMap(s => s.rows);
-  }, [snapshots, selectedIds]);
+  // Auto-group snapshots by ad account, pick newest as current, second-newest as compare
+  const accountPairs = useMemo(() => {
+    const byAcc = {};
+    for (const s of snapshots) {
+      const a = s.account || extractAccount(s.label);
+      if (!byAcc[a]) byAcc[a] = [];
+      byAcc[a].push(s);
+    }
+    return Object.entries(byAcc).map(([account, list]) => {
+      const sorted = list.slice().sort((a, b) => (b.dateEnd || '').localeCompare(a.dateEnd || ''));
+      return { account, current: sorted[0] || null, compare: sorted[1] || null, all: sorted };
+    }).sort((a, b) => a.account.localeCompare(b.account));
+  }, [snapshots]);
 
-  // Prior snapshot for fatigue comparison
+  // Current view = all "current" snapshots merged
+  const currentRows = useMemo(() => {
+    return accountPairs.flatMap(p => p.current ? p.current.rows.map(r => ({ ...r, _account: p.account })) : []);
+  }, [accountPairs]);
+
+  // Per-account prior lookup, keyed by "account|adset name" to prevent cross-account name collisions
   const priorByAdset = useMemo(() => {
-    if (!compareId) return {};
-    const snap = snapshots.find(s => s.id === compareId);
-    if (!snap) return {};
     const map = {};
-    for (const r of snap.rows) map[r.name] = r;
+    for (const p of accountPairs) {
+      if (!p.compare) continue;
+      for (const r of p.compare.rows) {
+        map[`${p.account}|${r.name}`] = r;
+      }
+    }
     return map;
-  }, [compareId, snapshots]);
+  }, [accountPairs]);
+
+  const hasAnyCompare = accountPairs.some(p => p.compare);
 
   // Baselines: ALL ads with spend (active + inactive) for accurate campaign norms
   const baselines = useMemo(() => computeBaselines(currentRows), [currentRows]);
@@ -379,7 +392,7 @@ function KillAnalysisInner() {
 
   const enriched = useMemo(() => ratedRows.map(r => {
     const base = baselines[r.campaign];
-    const prior = priorByAdset[r.name];
+    const prior = priorByAdset[`${r._account}|${r.name}`];
     const ev = evaluateKill(r, base, prior);
     const quad = quadrant(r.cpm, r.cpulc);
     return { ...r, baseline: base, ...ev, quad };
@@ -433,13 +446,6 @@ function KillAnalysisInner() {
   function toggle(name) { setExpanded(e => ({ ...e, [name]: !e[name] })); }
   function expandAll() { setExpanded(Object.fromEntries(visibleGroups.map(g => [g.name, true]))); }
   function collapseAll() { setExpanded({}); }
-  function toggleSelected(id) {
-    setSelectedIds(prev => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id); else next.add(id);
-      return next;
-    });
-  }
 
   const grandHard = visibleGroups.reduce((s, g) => s + g.counts.hard, 0);
   const grandHardSpend = visibleGroups.reduce((s, g) => s + g.hardSpend, 0);
@@ -474,40 +480,43 @@ function KillAnalysisInner() {
         </div>
       )}
 
-      {/* Snapshot manager */}
+      {/* Account/snapshot manager */}
       {snapMgrOpen && (
         <div style={{ marginBottom: 14, padding: 12, border: '1px solid var(--border)', borderRadius: 8, background: 'var(--surface)' }}>
-          <div style={{ display: 'flex', alignItems: 'center', marginBottom: 8 }}>
-            <strong style={{ fontSize: 13 }}>Saved snapshots</strong>
-            <span style={{ marginLeft: 'auto', display: 'flex', gap: 6, alignItems: 'center' }}>
-              <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Compare to:</span>
-              <select value={compareId || ''} onChange={e => setCompareId(e.target.value || null)} style={selectStyle}>
-                <option value="">— none (no fatigue) —</option>
-                {snapshots.filter(s => !selectedIds.has(s.id)).map(s => (
-                  <option key={s.id} value={s.id}>{s.dateStart}→{s.dateEnd} · {s.label}</option>
-                ))}
-              </select>
-              {snapshots.length > 0 && (
-                <button onClick={clearAllSnapshots} style={{ ...btnSm, color: '#dc2626', borderColor: '#dc2626' }}>Clear all</button>
-              )}
+          <div style={{ display: 'flex', alignItems: 'center', marginBottom: 10 }}>
+            <strong style={{ fontSize: 13 }}>Ad accounts &amp; snapshots</strong>
+            <span style={{ marginLeft: 12, fontSize: 11, color: 'var(--text-muted)' }}>
+              Newest per account = current view · second-newest = fatigue compare
             </span>
+            {snapshots.length > 0 && (
+              <button onClick={clearAllSnapshots} style={{ marginLeft: 'auto', ...btnSm, color: '#dc2626', borderColor: '#dc2626' }}>Clear all</button>
+            )}
           </div>
-          {snapshots.length === 0 ? (
+          {accountPairs.length === 0 ? (
             <div style={{ fontSize: 12, color: 'var(--text-muted)', padding: '8px 0' }}>No snapshots saved yet. Upload a CSV to get started.</div>
           ) : (
-            <div style={{ display: 'grid', gridTemplateColumns: '24px 1fr 130px 110px 90px 70px', gap: '4px 12px', fontSize: 12, alignItems: 'center' }}>
-              <strong></strong><strong>File</strong><strong>Range</strong><strong>Uploaded</strong><strong style={{textAlign:'right'}}>Rows</strong><strong></strong>
-              {snapshots.map(s => (
-                <div key={s.id} style={{ display: 'contents' }}>
-                  <input type="checkbox" checked={selectedIds.has(s.id)} onChange={() => toggleSelected(s.id)} />
-                  <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={s.label}>
-                    {compareId === s.id && <span style={{ background: '#3b82f6', color: '#fff', padding: '1px 5px', borderRadius: 3, fontSize: 9, fontWeight: 700, marginRight: 6 }}>COMPARE</span>}
-                    {s.label}
-                  </span>
-                  <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>{s.dateStart} → {s.dateEnd}</span>
-                  <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>{(s.uploadedAt || '').slice(0, 10)}</span>
-                  <span style={{ textAlign: 'right', color: 'var(--text-muted)' }}>{s.rows.length}</span>
-                  <button onClick={() => deleteSnapshot(s.id)} style={{ ...btnSm, color: '#dc2626', padding: '2px 8px' }}>Delete</button>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              {accountPairs.map(p => (
+                <div key={p.account} style={{ border: '1px solid var(--border)', borderRadius: 6, padding: 8 }}>
+                  <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 6 }}>
+                    <strong style={{ fontSize: 12 }}>{p.account}</strong>
+                    <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>{p.all.length} snapshot{p.all.length === 1 ? '' : 's'}</span>
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '80px 1fr 130px 90px 70px', gap: '4px 10px', fontSize: 11, alignItems: 'center' }}>
+                    {p.all.map(s => {
+                      const role = s.id === p.current?.id ? 'CURRENT' : s.id === p.compare?.id ? 'COMPARE' : '';
+                      const color = role === 'CURRENT' ? '#16a34a' : role === 'COMPARE' ? '#3b82f6' : 'var(--text-muted)';
+                      return (
+                        <div key={s.id} style={{ display: 'contents' }}>
+                          <span style={{ background: role ? color : 'var(--bg)', color: role ? '#fff' : 'var(--text-muted)', padding: '1px 6px', borderRadius: 3, fontSize: 9, fontWeight: 700, textAlign: 'center' }}>{role || '—'}</span>
+                          <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={s.label}>{s.label}</span>
+                          <span style={{ color: 'var(--text-muted)' }}>{s.dateStart} → {s.dateEnd}</span>
+                          <span style={{ textAlign: 'right', color: 'var(--text-muted)' }}>{s.rows.length} rows</span>
+                          <button onClick={() => deleteSnapshot(s.id)} style={{ ...btnSm, color: '#dc2626', padding: '2px 8px' }}>Delete</button>
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
               ))}
             </div>
@@ -517,14 +526,27 @@ function KillAnalysisInner() {
 
       {currentRows.length === 0 && (
         <div style={{ padding: '40px 0', textAlign: 'center', color: 'var(--text-muted)', fontSize: 13 }}>
-          {snapshots.length === 0
-            ? <>Upload one or more Facebook ad set CSV exports to begin.<br /><span style={{ fontSize: 11 }}>Snapshots persist across sessions for fatigue tracking.</span></>
-            : 'Select a snapshot above to view its data.'}
+          Upload one or more Facebook ad set CSV exports to begin.<br />
+          <span style={{ fontSize: 11 }}>Filename should look like "AccountName-Ad-sets-{`{date range}`}.csv". Newest per account is the live view; second-newest is the fatigue compare.</span>
         </div>
       )}
 
       {currentRows.length > 0 && (
         <>
+          {/* Account status strip */}
+          <div style={{ display: 'flex', gap: 10, marginBottom: 12, flexWrap: 'wrap', fontSize: 11 }}>
+            {accountPairs.map(p => (
+              <div key={p.account} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 10px', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--surface)' }}>
+                <strong style={{ fontSize: 12 }}>{p.account}</strong>
+                <span style={{ color: 'var(--text-muted)' }}>
+                  current: <strong style={{ color: '#16a34a' }}>{p.current?.dateStart}→{p.current?.dateEnd}</strong>
+                  {p.compare && <> · compare: <strong style={{ color: '#3b82f6' }}>{p.compare.dateStart}→{p.compare.dateEnd}</strong></>}
+                  {!p.compare && <> · <span style={{ color: '#f59e0b' }}>no fatigue compare (need 2+ snapshots)</span></>}
+                </span>
+              </div>
+            ))}
+          </div>
+
           {/* Filter strip */}
           <div style={{ display: 'flex', gap: 10, marginBottom: 14, flexWrap: 'wrap', alignItems: 'center' }}>
             <Pill label="Hard kill" count={grandHard} sub={`$${grandHardSpend.toFixed(0)} wasted`} color="#dc2626" active={filterFlag==='hard'} onClick={() => setFilterFlag(filterFlag==='hard'?'all':'hard')} />
@@ -556,7 +578,7 @@ function KillAnalysisInner() {
                 sortKey={sortKey}
                 sortDir={sortDir}
                 onSort={clickSort}
-                hasCompare={!!compareId}
+                hasCompare={hasAnyCompare}
               />
             ))}
           </div>
