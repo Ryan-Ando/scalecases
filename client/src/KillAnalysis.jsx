@@ -208,6 +208,8 @@ export default function KillAnalysis() {
   const [filterFlag, setFilterFlag] = useState('all');
   const [filterDelivery, setFilterDelivery] = useState('active');
   const [snapMgrOpen, setSnapMgrOpen] = useState(false);
+  const [error, setError] = useState(null);
+  const [loading, setLoading] = useState(false);
   const fileRef = useRef(null);
 
   // Load saved snapshots on mount
@@ -215,35 +217,62 @@ export default function KillAnalysis() {
     dbGetAll('killSnapshots').then(list => {
       const sorted = (list || []).sort((a, b) => (b.dateEnd || '').localeCompare(a.dateEnd || ''));
       setSnapshots(sorted);
-      // Auto-select the most recent snapshot
       if (sorted.length > 0) {
         setSelectedIds(new Set([sorted[0].id]));
-        // Auto-pick compare as second most recent if it exists
         if (sorted.length > 1) setCompareId(sorted[1].id);
       }
-    }).catch(() => {});
+    }).catch(err => {
+      setError(`Couldn't load saved snapshots: ${err?.message || err}. Try refreshing the page.`);
+    });
   }, []);
 
   async function handleFiles(e) {
     const files = Array.from(e.target.files || []);
     if (!files.length) return;
-    const texts = await Promise.all(files.map(f => f.text().then(t => ({ name: f.name, text: t }))));
-    const newSnaps = texts.map(({ name, text }) => {
-      const parsed = parseCsv(text).map(mapRow).filter(r => r.spend > 0 && r.name);
-      const dateStart = parsed[0]?.reportStart || '';
-      const dateEnd = parsed[0]?.reportEnd || '';
-      const id = `snap_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-      return { id, label: name, dateStart, dateEnd, uploadedAt: new Date().toISOString(), rows: parsed };
-    });
-    await dbUpsert('killSnapshots', newSnaps);
-    const all = [...snapshots, ...newSnaps].sort((a, b) => (b.dateEnd || '').localeCompare(a.dateEnd || ''));
-    setSnapshots(all);
-    // Auto-select newly uploaded
-    setSelectedIds(new Set(newSnaps.map(s => s.id)));
-    // Auto-pick compare from existing prior snapshots
-    const prior = snapshots.find(s => !newSnaps.some(n => n.id === s.id));
-    if (prior) setCompareId(prior.id);
-    if (fileRef.current) fileRef.current.value = '';
+    setError(null);
+    setLoading(true);
+    try {
+      const texts = await Promise.all(files.map(f => f.text().then(t => ({ name: f.name, text: t }))));
+      const newSnaps = [];
+      for (const { name, text } of texts) {
+        try {
+          const parsed = parseCsv(text).map(mapRow).filter(r => r.spend > 0 && r.name);
+          if (!parsed.length) {
+            setError(prev => (prev ? prev + ' · ' : '') + `${name}: no rows with spend > 0`);
+            continue;
+          }
+          const dateStart = parsed[0]?.reportStart || '';
+          const dateEnd = parsed[0]?.reportEnd || '';
+          const id = `snap_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+          newSnaps.push({ id, label: name, dateStart, dateEnd, uploadedAt: new Date().toISOString(), rows: parsed });
+        } catch (e) {
+          setError(prev => (prev ? prev + ' · ' : '') + `${name}: ${e.message}`);
+        }
+      }
+      if (!newSnaps.length) {
+        setLoading(false);
+        if (fileRef.current) fileRef.current.value = '';
+        return;
+      }
+      try {
+        await dbUpsert('killSnapshots', newSnaps);
+      } catch (e) {
+        setError(`DB write failed: ${e?.message || e}. If you just updated the app, try a hard refresh (Ctrl+Shift+R) to apply the DB schema upgrade.`);
+        setLoading(false);
+        if (fileRef.current) fileRef.current.value = '';
+        return;
+      }
+      const all = [...snapshots, ...newSnaps].sort((a, b) => (b.dateEnd || '').localeCompare(a.dateEnd || ''));
+      setSnapshots(all);
+      setSelectedIds(new Set(newSnaps.map(s => s.id)));
+      const prior = snapshots.find(s => !newSnaps.some(n => n.id === s.id));
+      if (prior) setCompareId(prior.id);
+    } catch (e) {
+      setError(`Upload failed: ${e?.message || e}`);
+    } finally {
+      setLoading(false);
+      if (fileRef.current) fileRef.current.value = '';
+    }
   }
 
   async function deleteSnapshot(id) {
@@ -369,11 +398,22 @@ export default function KillAnalysis() {
             {snapMgrOpen ? '▲' : '▼'} Snapshots ({snapshots.length})
           </button>
           <input ref={fileRef} type="file" accept=".csv" multiple onChange={handleFiles} style={{ display: 'none' }} />
-          <button className="btn btn--sm btn--primary" onClick={() => fileRef.current?.click()}>
-            Upload CSV
+          <button className="btn btn--sm btn--primary" onClick={() => fileRef.current?.click()} disabled={loading}>
+            {loading ? 'Uploading…' : 'Upload CSV'}
           </button>
         </div>
       </div>
+
+      {error && (
+        <div style={{
+          padding: '10px 14px', marginBottom: 12, borderRadius: 6,
+          background: 'rgba(220,38,38,0.08)', border: '1px solid #dc2626',
+          color: '#991b1b', fontSize: 12, display: 'flex', alignItems: 'center', gap: 10,
+        }}>
+          <span style={{ flex: 1 }}>{error}</span>
+          <button onClick={() => setError(null)} style={{ background: 'none', border: 'none', color: '#991b1b', cursor: 'pointer', fontSize: 16, padding: 0 }}>×</button>
+        </div>
+      )}
 
       {/* Snapshot manager */}
       {snapMgrOpen && (

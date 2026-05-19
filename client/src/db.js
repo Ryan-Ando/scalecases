@@ -46,6 +46,7 @@ async function openDB() {
     };
     req.onsuccess = e => { _db = e.target.result; resolve(_db); };
     req.onerror = e => reject(e.target.error);
+    req.onblocked = () => reject(new Error('IndexedDB upgrade blocked — close other tabs of this site and reload.'));
   });
 }
 
