@@ -1003,10 +1003,15 @@ router.get('/debug/state-deep', async (req, res) => {
     const accounts = adAccounts();
     async function fetchLevel(level) {
       const out = [];
+      const idFields = level === 'campaign'
+        ? 'campaign_id,campaign_name'
+        : level === 'adset'
+        ? 'adset_id,adset_name,campaign_id,campaign_name'
+        : 'ad_id,ad_name,adset_id,adset_name,campaign_id,campaign_name';
       for (const account of accounts) {
         const params = new URLSearchParams({
           level,
-          fields: `${level}_id,${level}_name,campaign_id,campaign_name,adset_id,adset_name,${enrichedFields}`,
+          fields: `${idFields},${enrichedFields}`,
           date_preset: preset,
           access_token: token(),
           limit: 500,
