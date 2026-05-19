@@ -136,8 +136,8 @@ function computeBaselines(rows) {
 function stageOf(spend) {
   if (spend < 50) return 'pre';
   if (spend < 150) return 'S1';
-  if (spend < SPEND_SOFT_NO_LEADS) return 'S2';
-  if (spend < SPEND_BEFORE_KILL_NO_LEADS) return 'S3';
+  if (spend < 200) return 'S2';
+  if (spend < 300) return 'S3';
   return 'mature';
 }
 
