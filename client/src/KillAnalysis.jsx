@@ -188,20 +188,21 @@ export default function KillAnalysis() {
     });
   }
 
-  // Pre-filter rows by delivery so baselines, counts, and kill flags all reflect the same set
-  const scopedRows = useMemo(() => {
+  // Baselines always use ALL ads with spend (active + inactive) for accurate campaign norms
+  const baselines = useMemo(() => computeBaselines(rows), [rows]);
+
+  // But only rows matching the delivery filter get rated and displayed
+  const ratedRows = useMemo(() => {
     if (filterDelivery === 'all') return rows;
     return rows.filter(r => (r.delivery || '').toLowerCase() === filterDelivery);
   }, [rows, filterDelivery]);
 
-  const baselines = useMemo(() => computeBaselines(scopedRows), [scopedRows]);
-
-  const enriched = useMemo(() => scopedRows.map(r => {
+  const enriched = useMemo(() => ratedRows.map(r => {
     const base = baselines[r.campaign];
     const evalRes = evaluateKill(r, base);
     const quad = quadrant(r.cpm, r.cpulc);
     return { ...r, baseline: base, ...evalRes, quad };
-  }), [scopedRows, baselines]);
+  }), [ratedRows, baselines]);
 
   // Group by campaign
   const campaignGroups = useMemo(() => {
@@ -214,11 +215,15 @@ export default function KillAnalysis() {
           rows: [],
           counts: { hard: 0, soft: 0, watch: 0, safe: 0, pre: 0 },
           hardSpend: 0,
+          ratedSpend: 0,
+          ratedLeads: 0,
         };
       }
       groups[r.campaign].rows.push(r);
       groups[r.campaign].counts[r.flag] = (groups[r.campaign].counts[r.flag] || 0) + 1;
       if (r.flag === 'hard') groups[r.campaign].hardSpend += r.spend;
+      groups[r.campaign].ratedSpend += r.spend;
+      groups[r.campaign].ratedLeads += r.results;
     }
     // sort each group's rows by sortKey
     for (const g of Object.values(groups)) {
@@ -361,7 +366,8 @@ function CampaignCard({ group, isOpen, onToggle, sortKey, sortDir, onSort }) {
             <div>
               <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text)' }}>{group.name}</div>
               <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                {b.adsetCount} adsets · ${b.totalSpend.toFixed(0)} spent · {b.totalLeads} leads
+                {group.rows.length} rated · ${group.ratedSpend.toFixed(0)} · {group.ratedLeads} leads
+                <span style={{ marginLeft: 6, opacity: 0.7 }}>(baselines from {b.adsetCount} all · ${b.totalSpend.toFixed(0)})</span>
               </div>
             </div>
           </div>
