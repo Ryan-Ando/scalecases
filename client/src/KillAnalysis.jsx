@@ -1,8 +1,10 @@
-import { useState, useMemo, useRef } from 'react';
+import { useState, useMemo, useRef, useEffect } from 'react';
+import { dbGetAll, dbUpsert, dbDelete, dbClearStore } from './db.js';
 
-const CPL_TARGET = 300;
-const CPL_HARD_KILL = 600;
-const CPL_SOFT_KILL = 450;
+const CPL_TARGET = 300;                 // hard cap — no ad allowed above this
+const CPL_SOFT_TARGET = 225;            // 75% of target — soft warning
+const SPEND_BEFORE_KILL_NO_LEADS = 300; // hit target spend with 0 leads → kill
+const SPEND_SOFT_NO_LEADS = 200;        // approaching target with 0 leads → soft
 const UNIVERSAL_CPULC_S1 = 10;
 const UNIVERSAL_CPULC_S2 = 7;
 const UNIVERSAL_CPM = 150;
@@ -50,6 +52,8 @@ function mapRow(r) {
     campaign: r['Campaign name'],
     delivery: r['Ad set delivery'],
     budget: parseFloatSafe(r['Ad set budget']),
+    reportStart: r['Reporting starts'] || '',
+    reportEnd: r['Reporting ends'] || '',
     spend,
     results: parseFloatSafe(r['Results']) || 0,
     cpl: parseFloatSafe(r['Cost per results']),
@@ -84,10 +88,7 @@ function computeBaselines(rows) {
     const cpl = d.results > 0 ? d.spend / d.results : null;
     baselines[c] = {
       cpulc, cpm, cpl,
-      totalSpend: d.spend,
-      totalLeads: d.results,
-      adsetCount: d.count,
-      // Derived kill thresholds for this campaign
+      totalSpend: d.spend, totalLeads: d.results, adsetCount: d.count,
       thresholdS1: cpulc ? Math.min(UNIVERSAL_CPULC_S1, cpulc * 4) : UNIVERSAL_CPULC_S1,
       thresholdS2: cpulc ? Math.min(UNIVERSAL_CPULC_S2, cpulc * 3) : UNIVERSAL_CPULC_S2,
     };
@@ -98,8 +99,8 @@ function computeBaselines(rows) {
 function stageOf(spend) {
   if (spend < 50) return 'pre';
   if (spend < 150) return 'S1';
-  if (spend < 300) return 'S2';
-  if (spend < 500) return 'S3';
+  if (spend < SPEND_SOFT_NO_LEADS) return 'S2';
+  if (spend < SPEND_BEFORE_KILL_NO_LEADS) return 'S3';
   return 'mature';
 }
 
@@ -113,23 +114,23 @@ function quadrant(cpm, cpulc) {
   return { code: 'HH', label: 'High CPM · High CPULC', color: '#dc2626' };
 }
 
-function evaluateKill(r, baseline) {
+function evaluateKill(r, baseline, prior) {
   const stage = stageOf(r.spend);
   const reasons = [];
-  let flag = null;
 
+  // Layer 4 — Safe override: actively converting under target
   if (r.cpl != null && r.cpl <= CPL_TARGET) {
-    return { stage, flag: 'safe', reasons: [`CPL $${r.cpl.toFixed(0)} ≤ $${CPL_TARGET} target`] };
-  }
-  if (r.results >= 3 && r.cpl != null && r.cpl <= CPL_SOFT_KILL) {
-    return { stage, flag: 'safe', reasons: [`${r.results} leads at CPL $${r.cpl.toFixed(0)}`] };
+    return { stage, flag: 'safe', reasons: [`CPL $${r.cpl.toFixed(0)} ≤ $${CPL_TARGET} target`], fatigue: null };
   }
 
   const hard = [];
   const soft = [];
+
+  // Universal hard kills
   if (r.spend >= 50 && r.linkClicks === 0) hard.push('0 link clicks at $50+');
   if (r.cpm != null && r.cpm >= UNIVERSAL_CPM) hard.push(`CPM $${r.cpm.toFixed(0)} ≥ $${UNIVERSAL_CPM}`);
 
+  // CPULC stage rules
   if (stage === 'S1' && r.spend >= 50) {
     const t = baseline?.thresholdS1 ?? UNIVERSAL_CPULC_S1;
     if (r.cpulc != null && r.cpulc >= t) hard.push(`CPULC $${r.cpulc.toFixed(2)} ≥ $${t.toFixed(2)}`);
@@ -142,16 +143,40 @@ function evaluateKill(r, baseline) {
     if (r.uctr != null && r.uctr <= 0.4 && r.cpulc != null && r.cpulc >= 5) hard.push(`UCTR ${r.uctr.toFixed(2)}% + CPULC ≥$5`);
     if (r.spend >= 150 && r.lpv === 0 && r.linkClicks > 0) hard.push(`0 LPVs at $150+`);
   }
-  if (r.spend >= 300 && r.results === 0) hard.push(`$300+ spent, 0 leads`);
-  if (r.cpl != null && r.cpl >= CPL_HARD_KILL) hard.push(`CPL $${r.cpl.toFixed(0)} ≥ $${CPL_HARD_KILL}`);
-  if (r.cpl != null && r.cpl >= CPL_SOFT_KILL && r.cpl < CPL_HARD_KILL) soft.push(`CPL $${r.cpl.toFixed(0)} ≥ $${CPL_SOFT_KILL}`);
 
-  if (hard.length) { flag = 'hard'; reasons.push(...hard); }
-  else if (soft.length) { flag = 'soft'; reasons.push(...soft); }
-  else if (stage === 'pre') { flag = 'pre'; }
-  else { flag = 'watch'; }
+  // CPL / no-lead spend rules — tightened to $300 target
+  if (r.spend >= SPEND_BEFORE_KILL_NO_LEADS && r.results === 0) {
+    hard.push(`$${SPEND_BEFORE_KILL_NO_LEADS}+ spent, 0 leads`);
+  } else if (r.spend >= SPEND_SOFT_NO_LEADS && r.results === 0) {
+    soft.push(`$${SPEND_SOFT_NO_LEADS}+ spent, 0 leads (approaching target)`);
+  }
+  if (r.cpl != null && r.cpl > CPL_TARGET) {
+    hard.push(`CPL $${r.cpl.toFixed(0)} > $${CPL_TARGET} target`);
+  } else if (r.cpl != null && r.cpl >= CPL_SOFT_TARGET) {
+    soft.push(`CPL $${r.cpl.toFixed(0)} ≥ $${CPL_SOFT_TARGET} (75% of target)`);
+  }
 
-  return { stage, flag, reasons };
+  // Fatigue detection vs prior snapshot
+  let fatigue = null;
+  if (prior) {
+    const cplDelta = (prior.cpl && r.cpl) ? (r.cpl - prior.cpl) / prior.cpl : null;
+    const cpulcDelta = (prior.cpulc && r.cpulc) ? (r.cpulc - prior.cpulc) / prior.cpulc : null;
+    const leadsDelta = prior.results >= 3 ? (r.results - prior.results) / prior.results : null;
+    const uctrDelta = (prior.uctr && r.uctr) ? (r.uctr - prior.uctr) / prior.uctr : null;
+    fatigue = { cplDelta, cpulcDelta, leadsDelta, uctrDelta, prior };
+    if (cplDelta != null && cplDelta >= 1.0) hard.push(`CPL up ${(cplDelta*100).toFixed(0)}% vs prior`);
+    else if (cplDelta != null && cplDelta >= 0.5) soft.push(`CPL up ${(cplDelta*100).toFixed(0)}% vs prior`);
+    if (leadsDelta != null && leadsDelta <= -0.75 && prior.results >= 3) hard.push(`Leads dropped ${Math.abs(leadsDelta*100).toFixed(0)}% (prior had ${prior.results})`);
+    if (cpulcDelta != null && cpulcDelta >= 0.5 && uctrDelta != null && uctrDelta < 0) soft.push(`CPULC up + UCTR down vs prior`);
+  }
+
+  let flag;
+  if (hard.length) flag = 'hard';
+  else if (soft.length) flag = 'soft';
+  else if (stage === 'pre') flag = 'pre';
+  else flag = 'watch';
+
+  return { stage, flag, reasons: hard.concat(soft), fatigue };
 }
 
 const FLAG_COLORS = {
@@ -165,58 +190,121 @@ const FLAG_COLORS = {
 function fmt$(v) { return v == null ? '—' : `$${v.toFixed(v < 10 ? 2 : 0)}`; }
 function fmtPct(v) { return v == null ? '—' : `${v.toFixed(2)}%`; }
 function fmtNum(v) { return v == null ? '—' : v.toFixed(0); }
+function fmtDelta(v) {
+  if (v == null) return null;
+  const pct = (v * 100).toFixed(0);
+  const sign = v > 0 ? '+' : '';
+  return `${sign}${pct}%`;
+}
 
 export default function KillAnalysis() {
-  const [rows, setRows] = useState([]);
-  const [fileName, setFileName] = useState('');
+  const [snapshots, setSnapshots] = useState([]);  // [{ id, label, dateStart, dateEnd, uploadedAt, rows }]
+  const [selectedIds, setSelectedIds] = useState(new Set());
+  const [compareId, setCompareId] = useState(null);
   const [expanded, setExpanded] = useState({});
   const [search, setSearch] = useState('');
   const [sortKey, setSortKey] = useState('spend');
   const [sortDir, setSortDir] = useState('desc');
   const [filterFlag, setFilterFlag] = useState('all');
   const [filterDelivery, setFilterDelivery] = useState('active');
+  const [snapMgrOpen, setSnapMgrOpen] = useState(false);
   const fileRef = useRef(null);
 
-  function handleFiles(e) {
+  // Load saved snapshots on mount
+  useEffect(() => {
+    dbGetAll('killSnapshots').then(list => {
+      const sorted = (list || []).sort((a, b) => (b.dateEnd || '').localeCompare(a.dateEnd || ''));
+      setSnapshots(sorted);
+      // Auto-select the most recent snapshot
+      if (sorted.length > 0) {
+        setSelectedIds(new Set([sorted[0].id]));
+        // Auto-pick compare as second most recent if it exists
+        if (sorted.length > 1) setCompareId(sorted[1].id);
+      }
+    }).catch(() => {});
+  }, []);
+
+  async function handleFiles(e) {
     const files = Array.from(e.target.files || []);
     if (!files.length) return;
-    Promise.all(files.map(f => f.text())).then(texts => {
-      const all = texts.flatMap(parseCsv).map(mapRow).filter(r => r.spend > 0 && r.name);
-      setRows(all);
-      setFileName(files.map(f => f.name).join(', '));
-      setExpanded({});
+    const texts = await Promise.all(files.map(f => f.text().then(t => ({ name: f.name, text: t }))));
+    const newSnaps = texts.map(({ name, text }) => {
+      const parsed = parseCsv(text).map(mapRow).filter(r => r.spend > 0 && r.name);
+      const dateStart = parsed[0]?.reportStart || '';
+      const dateEnd = parsed[0]?.reportEnd || '';
+      const id = `snap_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      return { id, label: name, dateStart, dateEnd, uploadedAt: new Date().toISOString(), rows: parsed };
     });
+    await dbUpsert('killSnapshots', newSnaps);
+    const all = [...snapshots, ...newSnaps].sort((a, b) => (b.dateEnd || '').localeCompare(a.dateEnd || ''));
+    setSnapshots(all);
+    // Auto-select newly uploaded
+    setSelectedIds(new Set(newSnaps.map(s => s.id)));
+    // Auto-pick compare from existing prior snapshots
+    const prior = snapshots.find(s => !newSnaps.some(n => n.id === s.id));
+    if (prior) setCompareId(prior.id);
+    if (fileRef.current) fileRef.current.value = '';
   }
 
-  // Baselines always use ALL ads with spend (active + inactive) for accurate campaign norms
-  const baselines = useMemo(() => computeBaselines(rows), [rows]);
+  async function deleteSnapshot(id) {
+    if (!confirm('Delete this snapshot permanently?')) return;
+    await dbDelete('killSnapshots', id);
+    const remaining = snapshots.filter(s => s.id !== id);
+    setSnapshots(remaining);
+    setSelectedIds(prev => { const next = new Set(prev); next.delete(id); return next; });
+    if (compareId === id) setCompareId(null);
+  }
 
-  // But only rows matching the delivery filter get rated and displayed
+  async function clearAllSnapshots() {
+    if (!confirm('Delete ALL saved snapshots? This cannot be undone.')) return;
+    await dbClearStore('killSnapshots');
+    setSnapshots([]);
+    setSelectedIds(new Set());
+    setCompareId(null);
+  }
+
+  // Active set of rows from selected snapshots
+  const currentRows = useMemo(() => {
+    return snapshots
+      .filter(s => selectedIds.has(s.id))
+      .flatMap(s => s.rows);
+  }, [snapshots, selectedIds]);
+
+  // Prior snapshot for fatigue comparison
+  const priorByAdset = useMemo(() => {
+    if (!compareId) return {};
+    const snap = snapshots.find(s => s.id === compareId);
+    if (!snap) return {};
+    const map = {};
+    for (const r of snap.rows) map[r.name] = r;
+    return map;
+  }, [compareId, snapshots]);
+
+  // Baselines: ALL ads with spend (active + inactive) for accurate campaign norms
+  const baselines = useMemo(() => computeBaselines(currentRows), [currentRows]);
+
+  // Rated set: filter by delivery (default active)
   const ratedRows = useMemo(() => {
-    if (filterDelivery === 'all') return rows;
-    return rows.filter(r => (r.delivery || '').toLowerCase() === filterDelivery);
-  }, [rows, filterDelivery]);
+    if (filterDelivery === 'all') return currentRows;
+    return currentRows.filter(r => (r.delivery || '').toLowerCase() === filterDelivery);
+  }, [currentRows, filterDelivery]);
 
   const enriched = useMemo(() => ratedRows.map(r => {
     const base = baselines[r.campaign];
-    const evalRes = evaluateKill(r, base);
+    const prior = priorByAdset[r.name];
+    const ev = evaluateKill(r, base, prior);
     const quad = quadrant(r.cpm, r.cpulc);
-    return { ...r, baseline: base, ...evalRes, quad };
-  }), [ratedRows, baselines]);
+    return { ...r, baseline: base, ...ev, quad };
+  }), [ratedRows, baselines, priorByAdset]);
 
-  // Group by campaign
   const campaignGroups = useMemo(() => {
     const groups = {};
     for (const r of enriched) {
       if (!groups[r.campaign]) {
         groups[r.campaign] = {
-          name: r.campaign,
-          baseline: baselines[r.campaign],
-          rows: [],
+          name: r.campaign, baseline: baselines[r.campaign], rows: [],
           counts: { hard: 0, soft: 0, watch: 0, safe: 0, pre: 0 },
-          hardSpend: 0,
-          ratedSpend: 0,
-          ratedLeads: 0,
+          hardSpend: 0, ratedSpend: 0, ratedLeads: 0,
         };
       }
       groups[r.campaign].rows.push(r);
@@ -225,7 +313,6 @@ export default function KillAnalysis() {
       groups[r.campaign].ratedSpend += r.spend;
       groups[r.campaign].ratedLeads += r.results;
     }
-    // sort each group's rows by sortKey
     for (const g of Object.values(groups)) {
       g.rows.sort((a, b) => {
         const av = a[sortKey], bv = b[sortKey];
@@ -236,11 +323,9 @@ export default function KillAnalysis() {
         return sortDir === 'asc' ? av - bv : bv - av;
       });
     }
-    // sort groups by total spend descending
     return Object.values(groups).sort((a, b) => b.baseline.totalSpend - a.baseline.totalSpend);
   }, [enriched, baselines, sortKey, sortDir]);
 
-  // Apply flag + search filters to the groups (delivery already applied upstream)
   const visibleGroups = useMemo(() => {
     return campaignGroups.map(g => {
       let rs = g.rows;
@@ -257,10 +342,16 @@ export default function KillAnalysis() {
     if (sortKey === k) setSortDir(d => d === 'asc' ? 'desc' : 'asc');
     else { setSortKey(k); setSortDir(k === 'name' ? 'asc' : 'desc'); }
   }
-
   function toggle(name) { setExpanded(e => ({ ...e, [name]: !e[name] })); }
   function expandAll() { setExpanded(Object.fromEntries(visibleGroups.map(g => [g.name, true]))); }
   function collapseAll() { setExpanded({}); }
+  function toggleSelected(id) {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
 
   const grandHard = visibleGroups.reduce((s, g) => s + g.counts.hard, 0);
   const grandHardSpend = visibleGroups.reduce((s, g) => s + g.hardSpend, 0);
@@ -269,47 +360,85 @@ export default function KillAnalysis() {
 
   return (
     <div style={{ padding: '20px 24px' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16, flexWrap: 'wrap' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 14, flexWrap: 'wrap' }}>
         <div style={{ fontSize: 20, fontWeight: 700 }}>Kill Analysis</div>
-        <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Per-campaign kill thresholds · weekly CSV review</div>
+        <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>CPL target ${CPL_TARGET} · saved snapshots for fatigue tracking</div>
 
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
+          <button onClick={() => setSnapMgrOpen(o => !o)} style={btnSm}>
+            {snapMgrOpen ? '▲' : '▼'} Snapshots ({snapshots.length})
+          </button>
           <input ref={fileRef} type="file" accept=".csv" multiple onChange={handleFiles} style={{ display: 'none' }} />
           <button className="btn btn--sm btn--primary" onClick={() => fileRef.current?.click()}>
-            Upload CSV{rows.length ? 's (replace)' : ''}
+            Upload CSV
           </button>
-          {fileName && <span style={{ fontSize: 11, color: 'var(--text-muted)', maxWidth: 300, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{fileName}</span>}
         </div>
       </div>
 
-      {rows.length === 0 && (
-        <div style={{ padding: '40px 0', textAlign: 'center', color: 'var(--text-muted)', fontSize: 13 }}>
-          Upload one or more Facebook ad set CSV exports to begin.<br />
-          <span style={{ fontSize: 11 }}>Each campaign gets its own kill thresholds based on its weighted CPULC/CPM/CPL.</span>
+      {/* Snapshot manager */}
+      {snapMgrOpen && (
+        <div style={{ marginBottom: 14, padding: 12, border: '1px solid var(--border)', borderRadius: 8, background: 'var(--surface)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', marginBottom: 8 }}>
+            <strong style={{ fontSize: 13 }}>Saved snapshots</strong>
+            <span style={{ marginLeft: 'auto', display: 'flex', gap: 6, alignItems: 'center' }}>
+              <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Compare to:</span>
+              <select value={compareId || ''} onChange={e => setCompareId(e.target.value || null)} style={selectStyle}>
+                <option value="">— none (no fatigue) —</option>
+                {snapshots.filter(s => !selectedIds.has(s.id)).map(s => (
+                  <option key={s.id} value={s.id}>{s.dateStart}→{s.dateEnd} · {s.label}</option>
+                ))}
+              </select>
+              {snapshots.length > 0 && (
+                <button onClick={clearAllSnapshots} style={{ ...btnSm, color: '#dc2626', borderColor: '#dc2626' }}>Clear all</button>
+              )}
+            </span>
+          </div>
+          {snapshots.length === 0 ? (
+            <div style={{ fontSize: 12, color: 'var(--text-muted)', padding: '8px 0' }}>No snapshots saved yet. Upload a CSV to get started.</div>
+          ) : (
+            <div style={{ display: 'grid', gridTemplateColumns: '24px 1fr 130px 110px 90px 70px', gap: '4px 12px', fontSize: 12, alignItems: 'center' }}>
+              <strong></strong><strong>File</strong><strong>Range</strong><strong>Uploaded</strong><strong style={{textAlign:'right'}}>Rows</strong><strong></strong>
+              {snapshots.map(s => (
+                <div key={s.id} style={{ display: 'contents' }}>
+                  <input type="checkbox" checked={selectedIds.has(s.id)} onChange={() => toggleSelected(s.id)} />
+                  <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={s.label}>
+                    {compareId === s.id && <span style={{ background: '#3b82f6', color: '#fff', padding: '1px 5px', borderRadius: 3, fontSize: 9, fontWeight: 700, marginRight: 6 }}>COMPARE</span>}
+                    {s.label}
+                  </span>
+                  <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>{s.dateStart} → {s.dateEnd}</span>
+                  <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>{(s.uploadedAt || '').slice(0, 10)}</span>
+                  <span style={{ textAlign: 'right', color: 'var(--text-muted)' }}>{s.rows.length}</span>
+                  <button onClick={() => deleteSnapshot(s.id)} style={{ ...btnSm, color: '#dc2626', padding: '2px 8px' }}>Delete</button>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
-      {rows.length > 0 && (
+      {currentRows.length === 0 && (
+        <div style={{ padding: '40px 0', textAlign: 'center', color: 'var(--text-muted)', fontSize: 13 }}>
+          {snapshots.length === 0
+            ? <>Upload one or more Facebook ad set CSV exports to begin.<br /><span style={{ fontSize: 11 }}>Snapshots persist across sessions for fatigue tracking.</span></>
+            : 'Select a snapshot above to view its data.'}
+        </div>
+      )}
+
+      {currentRows.length > 0 && (
         <>
-          {/* Top filter strip */}
+          {/* Filter strip */}
           <div style={{ display: 'flex', gap: 10, marginBottom: 14, flexWrap: 'wrap', alignItems: 'center' }}>
             <Pill label="Hard kill" count={grandHard} sub={`$${grandHardSpend.toFixed(0)} wasted`} color="#dc2626" active={filterFlag==='hard'} onClick={() => setFilterFlag(filterFlag==='hard'?'all':'hard')} />
-            <Pill label="Soft"      count={grandSoft} color="#f59e0b" active={filterFlag==='soft'} onClick={() => setFilterFlag(filterFlag==='soft'?'all':'soft')} />
-            <Pill label="Safe"      count={grandSafe} color="#16a34a" active={filterFlag==='safe'} onClick={() => setFilterFlag(filterFlag==='safe'?'all':'safe')} />
+            <Pill label="Soft" count={grandSoft} color="#f59e0b" active={filterFlag==='soft'} onClick={() => setFilterFlag(filterFlag==='soft'?'all':'soft')} />
+            <Pill label="Safe" count={grandSafe} color="#16a34a" active={filterFlag==='safe'} onClick={() => setFilterFlag(filterFlag==='safe'?'all':'safe')} />
 
             <div style={{ marginLeft: 16, display: 'flex', gap: 8, alignItems: 'center' }}>
               <select value={filterDelivery} onChange={e => setFilterDelivery(e.target.value)} style={selectStyle}>
-                <option value="all">All delivery</option>
                 <option value="active">Active only</option>
                 <option value="inactive">Inactive only</option>
+                <option value="all">All delivery</option>
               </select>
-              <input
-                type="text"
-                placeholder="Search ad set…"
-                value={search}
-                onChange={e => setSearch(e.target.value)}
-                style={{ ...selectStyle, minWidth: 200 }}
-              />
+              <input type="text" placeholder="Search ad set…" value={search} onChange={e => setSearch(e.target.value)} style={{ ...selectStyle, minWidth: 200 }} />
             </div>
 
             <div style={{ marginLeft: 'auto', display: 'flex', gap: 6, fontSize: 11 }}>
@@ -318,7 +447,6 @@ export default function KillAnalysis() {
             </div>
           </div>
 
-          {/* Campaign cards */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             {visibleGroups.map(g => (
               <CampaignCard
@@ -329,6 +457,7 @@ export default function KillAnalysis() {
                 sortKey={sortKey}
                 sortDir={sortDir}
                 onSort={clickSort}
+                hasCompare={!!compareId}
               />
             ))}
           </div>
@@ -338,29 +467,16 @@ export default function KillAnalysis() {
   );
 }
 
-function CampaignCard({ group, isOpen, onToggle, sortKey, sortDir, onSort }) {
+function CampaignCard({ group, isOpen, onToggle, sortKey, sortDir, onSort, hasCompare }) {
   const b = group.baseline;
   const { counts, hardSpend, visibleRows } = group;
-
-  // Severity-based border
   const cardBorderColor = counts.hard > 0 ? '#dc2626' : counts.soft > 0 ? '#f59e0b' : 'var(--border)';
-
-  // Kill thresholds derived for this campaign
   const cplOverTarget = b.cpl != null && b.cpl > CPL_TARGET;
 
   return (
-    <div style={{
-      border: `1px solid ${cardBorderColor}`,
-      borderLeft: `4px solid ${cardBorderColor}`,
-      borderRadius: 10, background: 'var(--surface)', overflow: 'hidden',
-    }}>
-      {/* HEADER — always visible. THIS is the main focus. */}
-      <div
-        onClick={onToggle}
-        style={{ padding: '14px 16px', cursor: 'pointer', userSelect: 'none' }}
-      >
+    <div style={{ border: `1px solid ${cardBorderColor}`, borderLeft: `4px solid ${cardBorderColor}`, borderRadius: 10, background: 'var(--surface)', overflow: 'hidden' }}>
+      <div onClick={onToggle} style={{ padding: '14px 16px', cursor: 'pointer', userSelect: 'none' }}>
         <div style={{ display: 'flex', alignItems: 'flex-start', gap: 14, flexWrap: 'wrap' }}>
-          {/* Name + arrow */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 220 }}>
             <span style={{ fontSize: 14, color: 'var(--text-muted)' }}>{isOpen ? '▼' : '▶'}</span>
             <div>
@@ -372,7 +488,6 @@ function CampaignCard({ group, isOpen, onToggle, sortKey, sortDir, onSort }) {
             </div>
           </div>
 
-          {/* Counts strip */}
           <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
             {counts.hard  > 0 && <CountBadge n={counts.hard} label="KILL"  color="#dc2626" sub={`$${hardSpend.toFixed(0)}`} />}
             {counts.soft  > 0 && <CountBadge n={counts.soft} label="SOFT" color="#f59e0b" />}
@@ -381,28 +496,22 @@ function CampaignCard({ group, isOpen, onToggle, sortKey, sortDir, onSort }) {
             {counts.pre   > 0 && <CountBadge n={counts.pre}   label="NEW"  color="var(--text-muted)" />}
           </div>
 
-          {/* MAIN FOCUS: kill threshold stats */}
           <div style={{ marginLeft: 'auto', display: 'flex', gap: 16, alignItems: 'center', flexWrap: 'wrap' }}>
             <StatBlock label="Baseline CPULC" value={fmt$(b.cpulc)} sub="weighted" />
             <StatBlock label="Baseline CPM"   value={fmt$(b.cpm)}   sub="weighted" />
             <StatBlock label="Baseline CPL"   value={fmt$(b.cpl)}   sub={cplOverTarget ? `> $${CPL_TARGET} target` : 'weighted'} valueColor={cplOverTarget ? '#dc2626' : null} />
-
             <div style={{ width: 1, height: 36, background: 'var(--border)' }} />
-
             <StatBlock label="$50+ kill"  value={fmt$(b.thresholdS1)} sub="CPULC ≥" critical />
             <StatBlock label="$150+ kill" value={fmt$(b.thresholdS2)} sub="CPULC ≥" critical />
-            <StatBlock label="$300+ kill" value={`$${CPL_HARD_KILL}`} sub="CPL ≥ / 0 leads" critical />
+            <StatBlock label="CPL kill"   value={`$${CPL_TARGET}`} sub="any spend" critical />
           </div>
         </div>
       </div>
 
-      {/* ADSET TABLE — collapsible */}
       {isOpen && (
         <div style={{ borderTop: '1px solid var(--border)', overflow: 'auto', maxHeight: '70vh' }}>
           {visibleRows.length === 0 ? (
-            <div style={{ padding: 20, textAlign: 'center', color: 'var(--text-muted)', fontSize: 12 }}>
-              No adsets match the current filters.
-            </div>
+            <div style={{ padding: 20, textAlign: 'center', color: 'var(--text-muted)', fontSize: 12 }}>No adsets match current filters.</div>
           ) : (
             <table style={{ borderCollapse: 'collapse', width: '100%', fontVariantNumeric: 'tabular-nums' }}>
               <thead>
@@ -419,6 +528,8 @@ function CampaignCard({ group, isOpen, onToggle, sortKey, sortDir, onSort }) {
                   <SortableTh keyName="freq" label="Freq" sortKey={sortKey} sortDir={sortDir} onSort={onSort} />
                   <SortableTh keyName="results" label="Leads" sortKey={sortKey} sortDir={sortDir} onSort={onSort} />
                   <SortableTh keyName="cpl" label="CPL" sortKey={sortKey} sortDir={sortDir} onSort={onSort} />
+                  {hasCompare && <th style={th}>Δ CPL</th>}
+                  {hasCompare && <th style={th}>Δ leads</th>}
                   <th style={thL}>Reasons</th>
                 </tr>
               </thead>
@@ -427,6 +538,8 @@ function CampaignCard({ group, isOpen, onToggle, sortKey, sortDir, onSort }) {
                   const color = FLAG_COLORS[r.flag] || FLAG_COLORS.watch;
                   const cpulcMul = b?.cpulc && r.cpulc ? r.cpulc / b.cpulc : null;
                   const cplOver = r.cpl != null && r.cpl > CPL_TARGET;
+                  const dCpl = r.fatigue?.cplDelta;
+                  const dLeads = r.fatigue?.leadsDelta;
                   return (
                     <tr key={i} style={{ background: color.bg, borderLeft: `3px solid ${color.border}` }}>
                       <td style={tdL}>
@@ -436,11 +549,7 @@ function CampaignCard({ group, isOpen, onToggle, sortKey, sortDir, onSort }) {
                       <td style={td}>${r.spend.toFixed(0)}</td>
                       <td style={{ ...td, fontSize: 10, color: 'var(--text-muted)' }}>{r.stage}</td>
                       <td style={td}>
-                        {r.quad && (
-                          <span style={{ background: r.quad.color, color: '#fff', padding: '1px 6px', borderRadius: 3, fontSize: 10, fontWeight: 700 }} title={r.quad.label}>
-                            {r.quad.code}
-                          </span>
-                        )}
+                        {r.quad && <span style={{ background: r.quad.color, color: '#fff', padding: '1px 6px', borderRadius: 3, fontSize: 10, fontWeight: 700 }} title={r.quad.label}>{r.quad.code}</span>}
                       </td>
                       <td style={td}>{fmt$(r.cpulc)}</td>
                       <td style={{ ...td, color: cpulcMul && cpulcMul >= 3 ? '#dc2626' : cpulcMul && cpulcMul >= 2 ? '#f59e0b' : 'var(--text-muted)', fontWeight: cpulcMul && cpulcMul >= 2 ? 600 : 400 }}>
@@ -450,10 +559,10 @@ function CampaignCard({ group, isOpen, onToggle, sortKey, sortDir, onSort }) {
                       <td style={td}>{fmtPct(r.uctr)}</td>
                       <td style={td}>{r.freq ? r.freq.toFixed(2) : '—'}</td>
                       <td style={td}>{fmtNum(r.results)}</td>
-                      <td style={{ ...td, color: cplOver ? '#dc2626' : 'var(--text)', fontWeight: cplOver ? 600 : 400 }}>
-                        {fmt$(r.cpl)}
-                      </td>
-                      <td style={{ ...tdL, fontSize: 11, color: color.text, maxWidth: 360, whiteSpace: 'normal' }}>
+                      <td style={{ ...td, color: cplOver ? '#dc2626' : 'var(--text)', fontWeight: cplOver ? 600 : 400 }}>{fmt$(r.cpl)}</td>
+                      {hasCompare && <td style={{ ...td, color: dCpl == null ? 'var(--text-muted)' : dCpl > 0.5 ? '#dc2626' : dCpl > 0 ? '#f59e0b' : '#16a34a' }}>{fmtDelta(dCpl) || '—'}</td>}
+                      {hasCompare && <td style={{ ...td, color: dLeads == null ? 'var(--text-muted)' : dLeads < -0.5 ? '#dc2626' : dLeads < 0 ? '#f59e0b' : '#16a34a' }}>{fmtDelta(dLeads) || '—'}</td>}
+                      <td style={{ ...tdL, fontSize: 11, color: color.text, maxWidth: 340, whiteSpace: 'normal' }}>
                         {(r.reasons || []).join(' · ')}
                       </td>
                     </tr>
@@ -470,13 +579,7 @@ function CampaignCard({ group, isOpen, onToggle, sortKey, sortDir, onSort }) {
 
 function StatBlock({ label, value, sub, critical, valueColor }) {
   return (
-    <div style={{
-      minWidth: 95,
-      padding: '6px 12px',
-      background: critical ? 'rgba(220,38,38,0.06)' : 'transparent',
-      border: critical ? '1px solid rgba(220,38,38,0.25)' : '1px solid transparent',
-      borderRadius: 6,
-    }}>
+    <div style={{ minWidth: 95, padding: '6px 12px', background: critical ? 'rgba(220,38,38,0.06)' : 'transparent', border: critical ? '1px solid rgba(220,38,38,0.25)' : '1px solid transparent', borderRadius: 6 }}>
       <div style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: critical ? '#dc2626' : 'var(--text-muted)' }}>{label}</div>
       <div style={{ fontSize: 15, fontWeight: 700, color: valueColor || (critical ? '#dc2626' : 'var(--text)'), lineHeight: 1.1 }}>{value}</div>
       {sub && <div style={{ fontSize: 9, color: 'var(--text-muted)' }}>{sub}</div>}
@@ -486,12 +589,7 @@ function StatBlock({ label, value, sub, critical, valueColor }) {
 
 function CountBadge({ n, label, color, sub }) {
   return (
-    <div style={{
-      display: 'flex', flexDirection: 'column', alignItems: 'center',
-      background: color === 'var(--text-muted)' ? 'var(--bg)' : `${color}22`,
-      border: `1px solid ${color === 'var(--text-muted)' ? 'var(--border)' : color}`,
-      borderRadius: 6, padding: '4px 10px', minWidth: 50,
-    }}>
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', background: color === 'var(--text-muted)' ? 'var(--bg)' : `${color}22`, border: `1px solid ${color === 'var(--text-muted)' ? 'var(--border)' : color}`, borderRadius: 6, padding: '4px 10px', minWidth: 50 }}>
       <div style={{ fontSize: 14, fontWeight: 700, color: color === 'var(--text-muted)' ? 'var(--text)' : color, lineHeight: 1 }}>{n}</div>
       <div style={{ fontSize: 9, fontWeight: 700, color, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{label}</div>
       {sub && <div style={{ fontSize: 9, color: 'var(--text-muted)' }}>{sub}</div>}
@@ -514,27 +612,12 @@ const thL = { ...th, textAlign: 'left' };
 const td = { padding: '6px 10px', fontSize: 12, textAlign: 'right', borderBottom: '1px solid var(--border)', whiteSpace: 'nowrap' };
 const tdL = { ...td, textAlign: 'left' };
 
-const selectStyle = {
-  background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6,
-  color: 'var(--text)', padding: '5px 8px', fontSize: 12, outline: 'none',
-};
-const btnSm = {
-  background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 5,
-  padding: '4px 10px', fontSize: 11, cursor: 'pointer', color: 'var(--text-muted)',
-};
+const selectStyle = { background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text)', padding: '5px 8px', fontSize: 12, outline: 'none' };
+const btnSm = { background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 5, padding: '4px 10px', fontSize: 11, cursor: 'pointer', color: 'var(--text-muted)' };
 
 function Pill({ label, count, sub, color, active, onClick }) {
   return (
-    <button
-      onClick={onClick}
-      style={{
-        display: 'flex', flexDirection: 'column', alignItems: 'flex-start',
-        background: active ? color : 'var(--surface)',
-        border: `1px solid ${color === 'var(--text-muted)' ? 'var(--border)' : color}`,
-        borderRadius: 8, padding: '6px 12px', cursor: 'pointer',
-        color: active ? '#fff' : 'var(--text)', minWidth: 95,
-      }}
-    >
+    <button onClick={onClick} style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', background: active ? color : 'var(--surface)', border: `1px solid ${color === 'var(--text-muted)' ? 'var(--border)' : color}`, borderRadius: 8, padding: '6px 12px', cursor: 'pointer', color: active ? '#fff' : 'var(--text)', minWidth: 95 }}>
       <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', opacity: 0.85 }}>{label}</div>
       <div style={{ fontSize: 18, fontWeight: 700, lineHeight: 1.1 }}>{count}</div>
       {sub && <div style={{ fontSize: 10, opacity: 0.75 }}>{sub}</div>}

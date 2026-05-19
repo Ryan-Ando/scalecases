@@ -2,7 +2,7 @@
 // Stores GHL contacts, FB daily insights, and FB ads across sessions.
 
 const DB_NAME = 'scalecases_v1';
-const DB_VERSION = 5; // v5 adds campaignKpis store
+const DB_VERSION = 6; // v6 adds killSnapshots store
 let _db = null;
 
 async function openDB() {
@@ -38,6 +38,10 @@ async function openDB() {
       // v5: per-campaign KPI settings (keyed by campaign id)
       if (!db.objectStoreNames.contains('campaignKpis')) {
         db.createObjectStore('campaignKpis', { keyPath: 'id' });
+      }
+      // v6: saved CSV exports for kill analysis (snapshots over time)
+      if (!db.objectStoreNames.contains('killSnapshots')) {
+        db.createObjectStore('killSnapshots', { keyPath: 'id' });
       }
     };
     req.onsuccess = e => { _db = e.target.result; resolve(_db); };
