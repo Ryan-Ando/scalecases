@@ -10,6 +10,7 @@ import reportsRoutes from './routes/reports.js';
 import launcherRoutes from './routes/launcher.js';
 import variationsRoutes from './routes/variations.js';
 import hyrosRoutes from './routes/hyros.js';
+import snapshotsRoutes from './routes/snapshots.js';
 
 dotenv.config();
 
@@ -31,6 +32,7 @@ app.use('/api/reports', reportsRoutes);
 app.use('/api/launcher', launcherRoutes);
 app.use('/api/variations', variationsRoutes);
 app.use('/api/hyros', hyrosRoutes);
+app.use('/api/snapshots', snapshotsRoutes);
 
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 

@@ -1,6 +1,37 @@
 import { useState, useMemo, useRef, useEffect, Component } from 'react';
 import { dbGetAll, dbUpsert, dbDelete, dbClearStore } from './db.js';
 
+const BASE = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+
+// Server-side snapshot store — shared across devices
+const serverApi = {
+  async list() {
+    const r = await fetch(`${BASE}/api/snapshots`);
+    if (!r.ok) throw new Error(`list failed: ${r.status}`);
+    const d = await r.json();
+    return d.snapshots || [];
+  },
+  async save(snapshots) {
+    const r = await fetch(`${BASE}/api/snapshots`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ snapshots }),
+    });
+    if (!r.ok) throw new Error(`save failed: ${r.status}`);
+    return r.json();
+  },
+  async delete(id) {
+    const r = await fetch(`${BASE}/api/snapshots/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    if (!r.ok) throw new Error(`delete failed: ${r.status}`);
+    return r.json();
+  },
+  async clear() {
+    const r = await fetch(`${BASE}/api/snapshots`, { method: 'DELETE' });
+    if (!r.ok) throw new Error(`clear failed: ${r.status}`);
+    return r.json();
+  },
+};
+
 class KillErrorBoundary extends Component {
   constructor(props) { super(props); this.state = { err: null }; }
   static getDerivedStateFromError(err) { return { err }; }
@@ -277,16 +308,32 @@ function KillAnalysisInner() {
   const [loading, setLoading] = useState(false);
   const fileRef = useRef(null);
 
-  // Load saved snapshots on mount
+  // Load snapshots — server is source of truth; IndexedDB is offline fallback
   useEffect(() => {
-    dbGetAll('killSnapshots').then(list => {
-      // Backfill account on legacy snapshots saved before extractAccount existed
-      const normalized = (list || []).map(s => s.account ? s : { ...s, account: extractAccount(s.label) });
-      const sorted = normalized.sort((a, b) => (b.dateEnd || '').localeCompare(a.dateEnd || ''));
-      setSnapshots(sorted);
-    }).catch(err => {
-      setError(`Couldn't load saved snapshots: ${err?.message || err}. Try refreshing the page.`);
-    });
+    async function load() {
+      try {
+        const serverList = await serverApi.list();
+        const normalized = serverList.map(s => s.account ? s : { ...s, account: extractAccount(s.label) });
+        const sorted = normalized.sort((a, b) => (b.dateEnd || '').localeCompare(a.dateEnd || ''));
+        setSnapshots(sorted);
+        // Mirror to local IndexedDB for offline use
+        if (sorted.length) dbUpsert('killSnapshots', sorted).catch(() => {});
+      } catch (err) {
+        // Server unreachable — fall back to local cache
+        try {
+          const local = await dbGetAll('killSnapshots');
+          const normalized = (local || []).map(s => s.account ? s : { ...s, account: extractAccount(s.label) });
+          const sorted = normalized.sort((a, b) => (b.dateEnd || '').localeCompare(a.dateEnd || ''));
+          setSnapshots(sorted);
+          if (sorted.length) {
+            setError(`Server unreachable. Showing local cache (${sorted.length} snapshot${sorted.length === 1 ? '' : 's'}).`);
+          }
+        } catch (e2) {
+          setError(`Couldn't load snapshots: ${err?.message || err}`);
+        }
+      }
+    }
+    load();
   }, []);
 
   async function handleFiles(e) {
@@ -320,14 +367,15 @@ function KillAnalysisInner() {
       if (parseErrors.length) setError(parseErrors.join(' · '));
       if (!newSnaps.length) return;
 
-      // Step 3: update React state IMMEDIATELY so user sees data — don't wait for DB
+      // Step 3: update React state IMMEDIATELY so user sees data
       const all = [...snapshots, ...newSnaps].sort((a, b) => (b.dateEnd || '').localeCompare(a.dateEnd || ''));
       setSnapshots(all);
 
-      // Step 4: persist in background — failures show a non-blocking warning
-      dbUpsert('killSnapshots', newSnaps).catch(err => {
-        setError(`Saved this session only — DB persistence failed: ${err?.message || err}. Hard refresh (Ctrl+Shift+R) may fix it for next time.`);
+      // Step 4: persist to server (source of truth) + local cache, both in background
+      serverApi.save(newSnaps).catch(err => {
+        setError(`Saved locally only — server save failed: ${err?.message || err}. Other devices won't see these snapshots.`);
       });
+      dbUpsert('killSnapshots', newSnaps).catch(() => {});
     } catch (e) {
       setError(`Upload failed: ${e?.message || e}`);
     } finally {
@@ -338,14 +386,16 @@ function KillAnalysisInner() {
 
   async function deleteSnapshot(id) {
     if (!confirm('Delete this snapshot permanently?')) return;
-    await dbDelete('killSnapshots', id);
     setSnapshots(snapshots.filter(s => s.id !== id));
+    serverApi.delete(id).catch(err => setError(`Server delete failed: ${err?.message || err}`));
+    dbDelete('killSnapshots', id).catch(() => {});
   }
 
   async function clearAllSnapshots() {
     if (!confirm('Delete ALL saved snapshots? This cannot be undone.')) return;
-    await dbClearStore('killSnapshots');
     setSnapshots([]);
+    serverApi.clear().catch(err => setError(`Server clear failed: ${err?.message || err}`));
+    dbClearStore('killSnapshots').catch(() => {});
   }
 
   // Auto-group snapshots by ad account, pick newest as current, second-newest as compare
