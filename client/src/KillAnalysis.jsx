@@ -67,7 +67,10 @@ const CPL_HARD_CAP = 600;               // ceiling on with-leads hard kill
 const CPL_SOFT_CAP = 450;               // ceiling on with-leads soft kill
 const UNIVERSAL_CPULC_S1 = 10;
 const UNIVERSAL_CPULC_S2 = 7;
-const UNIVERSAL_CPULC_MIN = 0.50;       // below this CPULC, traffic is bait/bot (0 winners in dataset)
+const MIN_CPULC_RATIO = 0.25;           // suspicious bait traffic threshold = 25% of campaign baseline CPULC
+const MIN_CPULC_FLOOR = 0.30;           // floor — never kill above zero unless CPULC is below this absolute minimum
+const MIN_CPULC_CAP = 1.50;             // ceiling — even for very expensive baselines, don't claim bait above this
+const UNIVERSAL_CPULC_MIN_FALLBACK = 0.50; // fallback when baseline is unknown (no clicks yet)
 const UNIVERSAL_CPM = 150;
 
 function parseFloatSafe(s) {
@@ -160,6 +163,10 @@ function computeBaselines(rows) {
       totalSpend: d.spend, totalLeads: d.results, adsetCount: d.count,
       thresholdS1: cpulc ? Math.min(UNIVERSAL_CPULC_S1, cpulc * 4) : UNIVERSAL_CPULC_S1,
       thresholdS2: cpulc ? Math.min(UNIVERSAL_CPULC_S2, cpulc * 3) : UNIVERSAL_CPULC_S2,
+      // Min CPULC = 25% of campaign baseline, floored at $0.30, capped at $1.50
+      minCpulc: cpulc
+        ? Math.min(Math.max(cpulc * MIN_CPULC_RATIO, MIN_CPULC_FLOOR), MIN_CPULC_CAP)
+        : UNIVERSAL_CPULC_MIN_FALLBACK,
       // No-leads kill: 1.25× baseline CPL with 0 leads, capped at $300
       noLeadsHardKill: cpl ? Math.min(cpl * NO_LEADS_HARD_MULT, CPL_TARGET) : CPL_TARGET,
       noLeadsSoftKill: cpl
@@ -224,9 +231,11 @@ function evaluateKill(r, baseline, prior) {
     if (r.spend >= 150 && r.lpv === 0 && r.linkClicks > 0) hard.push(`0 LPVs at $150+`);
   }
 
-  // Minimum CPULC — clicks too cheap to be real (bait / bot traffic)
-  if (r.spend >= 50 && r.cpulc != null && r.cpulc < UNIVERSAL_CPULC_MIN) {
-    hard.push(`CPULC $${r.cpulc.toFixed(2)} < $${UNIVERSAL_CPULC_MIN.toFixed(2)} min (bait traffic)`);
+  // Minimum CPULC — clicks too cheap to be real (bait / bot traffic). Per-campaign baseline-relative.
+  const minCpulcLine = baseline?.minCpulc ?? UNIVERSAL_CPULC_MIN_FALLBACK;
+  if (r.spend >= 50 && r.cpulc != null && r.cpulc < minCpulcLine) {
+    const baseStr = baseline?.cpulc ? ` (< 25% of $${baseline.cpulc.toFixed(2)} baseline)` : '';
+    hard.push(`CPULC $${r.cpulc.toFixed(2)} < $${minCpulcLine.toFixed(2)} min${baseStr} (bait traffic)`);
   }
 
   // No-lead spend rules — kill at baseline CPL (capped at $300 universal target)
@@ -724,8 +733,8 @@ function CampaignCard({ group, isOpen, onToggle, sortKey, sortDir, onSort, hasCo
           />
           <FeaturedStat
             label="Min CPULC"
-            value={fmt$(UNIVERSAL_CPULC_MIN)}
-            sub="CPULC <  (bait)"
+            value={fmt$(b.minCpulc)}
+            sub={b.cpulc ? `25% × baseline (bait)` : 'no baseline (bait)'}
           />
 
           <div style={{ width: 2, alignSelf: 'stretch', background: 'var(--border)', margin: '0 4px' }} />
