@@ -174,7 +174,7 @@ export default function KillAnalysis() {
   const [sortKey, setSortKey] = useState('spend');
   const [sortDir, setSortDir] = useState('desc');
   const [filterFlag, setFilterFlag] = useState('all');
-  const [filterDelivery, setFilterDelivery] = useState('all');
+  const [filterDelivery, setFilterDelivery] = useState('active');
   const fileRef = useRef(null);
 
   function handleFiles(e) {
@@ -188,14 +188,20 @@ export default function KillAnalysis() {
     });
   }
 
-  const baselines = useMemo(() => computeBaselines(rows), [rows]);
+  // Pre-filter rows by delivery so baselines, counts, and kill flags all reflect the same set
+  const scopedRows = useMemo(() => {
+    if (filterDelivery === 'all') return rows;
+    return rows.filter(r => (r.delivery || '').toLowerCase() === filterDelivery);
+  }, [rows, filterDelivery]);
 
-  const enriched = useMemo(() => rows.map(r => {
+  const baselines = useMemo(() => computeBaselines(scopedRows), [scopedRows]);
+
+  const enriched = useMemo(() => scopedRows.map(r => {
     const base = baselines[r.campaign];
     const evalRes = evaluateKill(r, base);
     const quad = quadrant(r.cpm, r.cpulc);
     return { ...r, baseline: base, ...evalRes, quad };
-  }), [rows, baselines]);
+  }), [scopedRows, baselines]);
 
   // Group by campaign
   const campaignGroups = useMemo(() => {
@@ -229,19 +235,18 @@ export default function KillAnalysis() {
     return Object.values(groups).sort((a, b) => b.baseline.totalSpend - a.baseline.totalSpend);
   }, [enriched, baselines, sortKey, sortDir]);
 
-  // Apply top-level filters to the groups (filter rows within each)
+  // Apply flag + search filters to the groups (delivery already applied upstream)
   const visibleGroups = useMemo(() => {
     return campaignGroups.map(g => {
       let rs = g.rows;
       if (filterFlag !== 'all') rs = rs.filter(r => r.flag === filterFlag);
-      if (filterDelivery !== 'all') rs = rs.filter(r => (r.delivery || '').toLowerCase() === filterDelivery);
       if (search) {
         const s = search.toLowerCase();
         rs = rs.filter(r => r.name.toLowerCase().includes(s));
       }
       return { ...g, visibleRows: rs };
     }).filter(g => search ? g.visibleRows.length > 0 : true);
-  }, [campaignGroups, filterFlag, filterDelivery, search]);
+  }, [campaignGroups, filterFlag, search]);
 
   function clickSort(k) {
     if (sortKey === k) setSortDir(d => d === 'asc' ? 'desc' : 'asc');
