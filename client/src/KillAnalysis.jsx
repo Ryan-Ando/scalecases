@@ -1,5 +1,30 @@
-import { useState, useMemo, useRef, useEffect } from 'react';
+import { useState, useMemo, useRef, useEffect, Component } from 'react';
 import { dbGetAll, dbUpsert, dbDelete, dbClearStore } from './db.js';
+
+class KillErrorBoundary extends Component {
+  constructor(props) { super(props); this.state = { err: null }; }
+  static getDerivedStateFromError(err) { return { err }; }
+  componentDidCatch(err, info) { console.error('Kill Analysis crash:', err, info); }
+  render() {
+    if (this.state.err) {
+      return (
+        <div style={{ padding: 24 }}>
+          <h3 style={{ color: '#dc2626', marginTop: 0 }}>Kill Analysis crashed</h3>
+          <pre style={{ background: 'rgba(220,38,38,0.08)', padding: 12, borderRadius: 6, fontSize: 12, overflow: 'auto', whiteSpace: 'pre-wrap' }}>
+            {String(this.state.err?.stack || this.state.err)}
+          </pre>
+          <button onClick={() => this.setState({ err: null })} style={{ marginTop: 12, padding: '6px 12px', background: '#dc2626', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer' }}>
+            Try again
+          </button>
+          <p style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 12 }}>
+            If this keeps happening, open the Snapshots panel and try "Clear all" to wipe corrupt saved data.
+          </p>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 const CPL_TARGET = 300;                 // universal target ceiling — no-leads kill caps here
 const NO_LEADS_HARD_MULT = 1.25;        // no-leads kill at 1.25× baseline (small buffer for lead-arrival lumpiness)
@@ -228,6 +253,10 @@ function fmtDelta(v) {
 }
 
 export default function KillAnalysis() {
+  return <KillErrorBoundary><KillAnalysisInner /></KillErrorBoundary>;
+}
+
+function KillAnalysisInner() {
   const [snapshots, setSnapshots] = useState([]);  // [{ id, label, dateStart, dateEnd, uploadedAt, rows }]
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [compareId, setCompareId] = useState(null);
