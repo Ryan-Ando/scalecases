@@ -719,30 +719,32 @@ function CampaignCard({ group, isOpen, onToggle, sortKey, sortDir, onSort, hasCo
           </div>
         </div>
 
-        {/* Row 2: all kill thresholds as equal-sized boxes, with a divider between primary and secondary */}
+        {/* Row 2: kill thresholds grouped — CPULC-based on left, spend/CPL-based on right */}
         <div style={{ display: 'flex', gap: 8, alignItems: 'stretch', flexWrap: 'wrap', paddingTop: 10, borderTop: '1px dashed var(--border)' }}>
+          {/* CPULC-based thresholds */}
           <FeaturedStat
             label="$50+ kill"
             value={fmt$(b.thresholdS1)}
             sub="CPULC ≥"
           />
           <FeaturedStat
-            label="No-leads kill"
-            value={fmt$(b.noLeadsHardKill)}
-            sub={b.cpl && b.cpl * NO_LEADS_HARD_MULT < CPL_TARGET ? `${NO_LEADS_HARD_MULT}× baseline` : `$${CPL_TARGET} cap`}
-          />
-          <FeaturedStat
             label="Min CPULC"
             value={fmt$(b.minCpulc)}
             sub={b.cpulc ? `25% × baseline (bait)` : 'no baseline (bait)'}
           />
-
-          <div style={{ width: 2, alignSelf: 'stretch', background: 'var(--border)', margin: '0 4px' }} />
-
           <FeaturedStat
             label="$150+ kill"
             value={fmt$(b.thresholdS2)}
             sub="CPULC ≥"
+          />
+
+          <div style={{ width: 2, alignSelf: 'stretch', background: 'var(--border)', margin: '0 4px' }} />
+
+          {/* Spend / CPL-based thresholds */}
+          <FeaturedStat
+            label="No-leads kill"
+            value={fmt$(b.noLeadsHardKill)}
+            sub={b.cpl && b.cpl * NO_LEADS_HARD_MULT < CPL_TARGET ? `${NO_LEADS_HARD_MULT}× baseline` : `$${CPL_TARGET} cap`}
           />
           <FeaturedStat
             label="CPL soft"
