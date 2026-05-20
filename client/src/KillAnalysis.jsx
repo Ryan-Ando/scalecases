@@ -67,6 +67,7 @@ const CPL_HARD_CAP = 600;               // ceiling on with-leads hard kill
 const CPL_SOFT_CAP = 450;               // ceiling on with-leads soft kill
 const UNIVERSAL_CPULC_S1 = 10;
 const UNIVERSAL_CPULC_S2 = 7;
+const OUTBOUND_CTR_RATIO = 0.6;         // outbound ÷ link CTR below this = clicks not actually leaving FB (curiosity/fake)
 const MIN_CPULC_RATIO = 0.25;           // suspicious bait traffic threshold = 25% of campaign baseline CPULC
 const MIN_CPULC_FLOOR = 0.30;           // floor — never kill above zero unless CPULC is below this absolute minimum
 const MIN_CPULC_CAP = 1.50;             // ceiling — even for very expensive baselines, don't claim bait above this
@@ -135,6 +136,8 @@ function mapRow(r) {
     cpm,
     impressions,
     uctr: parseFloatSafe(r['Unique CTR (link click-through rate)']),
+    outboundCtr: parseFloatSafe(r['Unique outbound CTR (click-through rate)']),
+    reach: parseFloatSafe(r['Reach']) || 0,
     hookRate: parseFloatSafe(r['3-second video plays rate per impressions']),
     freq: parseFloatSafe(r['Frequency']) || 0,
     lpv,
@@ -231,6 +234,14 @@ function evaluateKill(r, baseline, prior) {
     if (r.spend >= 150 && r.lpv === 0 && r.linkClicks > 0) hard.push(`0 LPVs at $150+`);
   }
 
+  // Outbound CTR gap — clicks aren't actually leaving FB to the landing page
+  if (r.spend >= 100 && r.uctr != null && r.uctr > 0 && r.outboundCtr != null) {
+    const ratio = r.outboundCtr / r.uctr;
+    if (ratio <= OUTBOUND_CTR_RATIO) {
+      soft.push(`Outbound CTR ${r.outboundCtr.toFixed(2)}% / link CTR ${r.uctr.toFixed(2)}% = ${(ratio*100).toFixed(0)}% (clicks not leaving FB)`);
+    }
+  }
+
   // Minimum CPULC — clicks too cheap to be real (bait / bot traffic). Per-campaign baseline-relative.
   const minCpulcLine = baseline?.minCpulc ?? UNIVERSAL_CPULC_MIN_FALLBACK;
   if (r.spend >= 50 && r.cpulc != null && r.cpulc < minCpulcLine) {
@@ -259,9 +270,6 @@ function evaluateKill(r, baseline, prior) {
     if (r.cpl >= hardLine) {
       const baseStr = baselineCpl ? ` (≥${CPL_HARD_MULT}× $${baselineCpl.toFixed(0)} baseline)` : '';
       hard.push(`CPL $${r.cpl.toFixed(0)} ≥ $${hardLine.toFixed(0)}${baseStr}`);
-    } else if (r.cpl >= softLine) {
-      const baseStr = baselineCpl ? ` (≥${CPL_SOFT_MULT}× $${baselineCpl.toFixed(0)} baseline)` : '';
-      soft.push(`CPL $${r.cpl.toFixed(0)} ≥ $${softLine.toFixed(0)}${baseStr}`);
     }
   }
 
@@ -719,9 +727,9 @@ function CampaignCard({ group, isOpen, onToggle, sortKey, sortDir, onSort, hasCo
           </div>
         </div>
 
-        {/* Row 2: kill thresholds grouped — CPULC-based on left, spend/CPL-based on right */}
+        {/* Row 2: kill thresholds grouped — click-quality stats left, spend/CPL stats right */}
         <div style={{ display: 'flex', gap: 8, alignItems: 'stretch', flexWrap: 'wrap', paddingTop: 10, borderTop: '1px dashed var(--border)' }}>
-          {/* CPULC-based thresholds */}
+          {/* Click-quality / CPULC thresholds (4) */}
           <FeaturedStat
             label="$50+ kill"
             value={fmt$(b.thresholdS1)}
@@ -737,20 +745,20 @@ function CampaignCard({ group, isOpen, onToggle, sortKey, sortDir, onSort, hasCo
             value={fmt$(b.thresholdS2)}
             sub="CPULC ≥"
           />
+          <FeaturedStat
+            label="Outbound CTR"
+            value={`< ${Math.round(OUTBOUND_CTR_RATIO * 100)}%`}
+            sub="of link CTR (fake)"
+            tone="warn"
+          />
 
           <div style={{ width: 2, alignSelf: 'stretch', background: 'var(--border)', margin: '0 4px' }} />
 
-          {/* Spend / CPL-based thresholds */}
+          {/* Spend / CPL thresholds (2) */}
           <FeaturedStat
             label="No-leads kill"
             value={fmt$(b.noLeadsHardKill)}
             sub={b.cpl && b.cpl * NO_LEADS_HARD_MULT < CPL_TARGET ? `${NO_LEADS_HARD_MULT}× baseline` : `$${CPL_TARGET} cap`}
-          />
-          <FeaturedStat
-            label="CPL soft"
-            value={fmt$(b.cplSoftKill)}
-            sub={b.cpl ? `${CPL_SOFT_MULT}× / $${CPL_SOFT_CAP} cap` : 'no baseline'}
-            tone="warn"
           />
           <FeaturedStat
             label="CPL hard"
@@ -777,7 +785,9 @@ function CampaignCard({ group, isOpen, onToggle, sortKey, sortDir, onSort, hasCo
                   <th style={th}>× base</th>
                   <SortableTh keyName="cpm" label="CPM" sortKey={sortKey} sortDir={sortDir} onSort={onSort} />
                   <SortableTh keyName="uctr" label="U-CTR" sortKey={sortKey} sortDir={sortDir} onSort={onSort} />
+                  <SortableTh keyName="outboundCtr" label="Outb-CTR" sortKey={sortKey} sortDir={sortDir} onSort={onSort} />
                   <SortableTh keyName="freq" label="Freq" sortKey={sortKey} sortDir={sortDir} onSort={onSort} />
+                  <SortableTh keyName="reach" label="Reach" sortKey={sortKey} sortDir={sortDir} onSort={onSort} />
                   <SortableTh keyName="results" label="Leads" sortKey={sortKey} sortDir={sortDir} onSort={onSort} />
                   <SortableTh keyName="cpl" label="CPL" sortKey={sortKey} sortDir={sortDir} onSort={onSort} />
                   {hasCompare && <th style={th}>Δ CPL</th>}
@@ -789,11 +799,9 @@ function CampaignCard({ group, isOpen, onToggle, sortKey, sortDir, onSort, hasCo
                 {visibleRows.map((r, i) => {
                   const color = FLAG_COLORS[r.flag] || FLAG_COLORS.watch;
                   const cpulcMul = b?.cpulc && r.cpulc ? r.cpulc / b.cpulc : null;
-                  // CPL coloring: red if at hard kill, yellow if at soft kill, default otherwise
+                  // CPL coloring: red if at hard kill, default otherwise
                   const cplHardLine = b?.cplHardKill ?? CPL_HARD_CAP;
-                  const cplSoftLine = b?.cplSoftKill ?? CPL_SOFT_CAP;
                   const cplOver = r.cpl != null && r.results >= 1 && r.cpl >= cplHardLine;
-                  const cplWarn = r.cpl != null && r.results >= 1 && r.cpl >= cplSoftLine && r.cpl < cplHardLine;
                   const dCpl = r.fatigue?.cplDelta;
                   const dLeads = r.fatigue?.leadsDelta;
                   return (
@@ -813,9 +821,13 @@ function CampaignCard({ group, isOpen, onToggle, sortKey, sortDir, onSort, hasCo
                       </td>
                       <td style={td}>{fmt$(r.cpm)}</td>
                       <td style={td}>{fmtPct(r.uctr)}</td>
+                      <td style={{ ...td, color: r.uctr && r.outboundCtr != null && r.uctr > 0 && (r.outboundCtr / r.uctr) <= OUTBOUND_CTR_RATIO ? '#dc2626' : 'var(--text)' }}>
+                        {fmtPct(r.outboundCtr)}
+                      </td>
                       <td style={td}>{r.freq ? r.freq.toFixed(2) : '—'}</td>
+                      <td style={td}>{r.reach ? r.reach.toLocaleString() : '—'}</td>
                       <td style={td}>{fmtNum(r.results)}</td>
-                      <td style={{ ...td, color: cplOver ? '#dc2626' : cplWarn ? '#f59e0b' : 'var(--text)', fontWeight: cplOver || cplWarn ? 600 : 400 }}>{fmt$(r.cpl)}</td>
+                      <td style={{ ...td, color: cplOver ? '#dc2626' : 'var(--text)', fontWeight: cplOver ? 600 : 400 }}>{fmt$(r.cpl)}</td>
                       {hasCompare && <td style={{ ...td, color: dCpl == null ? 'var(--text-muted)' : dCpl > 0.5 ? '#dc2626' : dCpl > 0 ? '#f59e0b' : '#16a34a' }}>{fmtDelta(dCpl) || '—'}</td>}
                       {hasCompare && <td style={{ ...td, color: dLeads == null ? 'var(--text-muted)' : dLeads < -0.5 ? '#dc2626' : dLeads < 0 ? '#f59e0b' : '#16a34a' }}>{fmtDelta(dLeads) || '—'}</td>}
                       <td style={{ ...tdL, fontSize: 11, color: color.text, maxWidth: 340, whiteSpace: 'normal' }}>
