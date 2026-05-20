@@ -67,7 +67,6 @@ const CPL_HARD_CAP = 600;               // ceiling on with-leads hard kill
 const CPL_SOFT_CAP = 450;               // ceiling on with-leads soft kill
 const UNIVERSAL_CPULC_S1 = 10;
 const UNIVERSAL_CPULC_S2 = 7;
-const OUTBOUND_CTR_RATIO = 0.6;         // outbound ÷ link CTR below this = clicks not actually leaving FB (curiosity/fake)
 const MIN_CPULC_RATIO = 0.25;           // suspicious bait traffic threshold = 25% of campaign baseline CPULC
 const MIN_CPULC_FLOOR = 0.30;           // floor — never kill above zero unless CPULC is below this absolute minimum
 const MIN_CPULC_CAP = 1.50;             // ceiling — even for very expensive baselines, don't claim bait above this
@@ -136,7 +135,6 @@ function mapRow(r) {
     cpm,
     impressions,
     uctr: parseFloatSafe(r['Unique CTR (link click-through rate)']),
-    outboundCtr: parseFloatSafe(r['Unique outbound CTR (click-through rate)']),
     reach: parseFloatSafe(r['Reach']) || 0,
     hookRate: parseFloatSafe(r['3-second video plays rate per impressions']),
     freq: parseFloatSafe(r['Frequency']) || 0,
@@ -232,14 +230,6 @@ function evaluateKill(r, baseline, prior) {
     if (r.cpulc != null && r.cpulc >= 5 && r.cpm != null && r.cpm >= 60) hard.push(`Combo: CPULC ≥$5 + CPM ≥$60`);
     if (r.uctr != null && r.uctr <= 0.4 && r.cpulc != null && r.cpulc >= 5) hard.push(`UCTR ${r.uctr.toFixed(2)}% + CPULC ≥$5`);
     if (r.spend >= 150 && r.lpv === 0 && r.linkClicks > 0) hard.push(`0 LPVs at $150+`);
-  }
-
-  // Outbound CTR gap — clicks aren't actually leaving FB to the landing page
-  if (r.spend >= 100 && r.uctr != null && r.uctr > 0 && r.outboundCtr != null) {
-    const ratio = r.outboundCtr / r.uctr;
-    if (ratio <= OUTBOUND_CTR_RATIO) {
-      soft.push(`Outbound CTR ${r.outboundCtr.toFixed(2)}% / link CTR ${r.uctr.toFixed(2)}% = ${(ratio*100).toFixed(0)}% (clicks not leaving FB)`);
-    }
   }
 
   // Minimum CPULC — clicks too cheap to be real (bait / bot traffic). Per-campaign baseline-relative.
@@ -745,12 +735,6 @@ function CampaignCard({ group, isOpen, onToggle, sortKey, sortDir, onSort, hasCo
             value={fmt$(b.thresholdS2)}
             sub="CPULC ≥"
           />
-          <FeaturedStat
-            label="Outbound CTR"
-            value={`< ${Math.round(OUTBOUND_CTR_RATIO * 100)}%`}
-            sub="of link CTR (fake)"
-            tone="warn"
-          />
 
           <div style={{ width: 2, alignSelf: 'stretch', background: 'var(--border)', margin: '0 4px' }} />
 
@@ -785,7 +769,6 @@ function CampaignCard({ group, isOpen, onToggle, sortKey, sortDir, onSort, hasCo
                   <th style={th}>× base</th>
                   <SortableTh keyName="cpm" label="CPM" sortKey={sortKey} sortDir={sortDir} onSort={onSort} />
                   <SortableTh keyName="uctr" label="U-CTR" sortKey={sortKey} sortDir={sortDir} onSort={onSort} />
-                  <SortableTh keyName="outboundCtr" label="Outb-CTR" sortKey={sortKey} sortDir={sortDir} onSort={onSort} />
                   <SortableTh keyName="freq" label="Freq" sortKey={sortKey} sortDir={sortDir} onSort={onSort} />
                   <SortableTh keyName="reach" label="Reach" sortKey={sortKey} sortDir={sortDir} onSort={onSort} />
                   <SortableTh keyName="results" label="Leads" sortKey={sortKey} sortDir={sortDir} onSort={onSort} />
@@ -821,9 +804,6 @@ function CampaignCard({ group, isOpen, onToggle, sortKey, sortDir, onSort, hasCo
                       </td>
                       <td style={td}>{fmt$(r.cpm)}</td>
                       <td style={td}>{fmtPct(r.uctr)}</td>
-                      <td style={{ ...td, color: r.uctr && r.outboundCtr != null && r.uctr > 0 && (r.outboundCtr / r.uctr) <= OUTBOUND_CTR_RATIO ? '#dc2626' : 'var(--text)' }}>
-                        {fmtPct(r.outboundCtr)}
-                      </td>
                       <td style={td}>{r.freq ? r.freq.toFixed(2) : '—'}</td>
                       <td style={td}>{r.reach ? r.reach.toLocaleString() : '—'}</td>
                       <td style={td}>{fmtNum(r.results)}</td>
