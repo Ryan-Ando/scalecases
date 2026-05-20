@@ -75,6 +75,10 @@ export default function App() {
         <a href="/privacy-policy.html" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--text-muted)', textDecoration: 'underline' }}>
           Privacy Policy
         </a>
+        <span style={{ margin: '0 8px', opacity: 0.5 }}>·</span>
+        <a href="/terms.html" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--text-muted)', textDecoration: 'underline' }}>
+          Terms of Use
+        </a>
       </footer>
     </div>
     </LoginGate>
