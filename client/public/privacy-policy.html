@@ -28,7 +28,7 @@
   <div class="wrap">
 
     <h1>Privacy Policy</h1>
-    <p class="subtitle">ScaleCases &nbsp;·&nbsp; Last Updated: April 1, 2025 &nbsp;·&nbsp; Effective Date: April 1, 2025</p>
+    <p class="subtitle">ScaleCases &nbsp;·&nbsp; Last Updated: May 20, 2026 &nbsp;·&nbsp; Effective Date: May 20, 2026</p>
 
     <p>This Privacy Policy describes how ScaleCases ("ScaleCases," "Company," "we," "us," or "our") collects, uses, shares, and protects personal information when you access or use our websites, including scalecases.com, carcrashcompensate.com, and any related domains or landing pages, as well as our advertisements, contact forms, text messaging programs, and other services (together, the "Services").</p>
     <p>We are not a law firm and do not provide legal advice. We operate a nationwide advertising and matching service that connects consumers with sponsoring law firms or legal service providers ("Law Firms"). Submitting information through our Services does not create an attorney-client relationship with ScaleCases.</p>
@@ -46,6 +46,7 @@
     <p>By accessing or using the Services or submitting information to us, you acknowledge this Privacy Policy and consent to our collection, use, and sharing of information as described here. If you do not agree, please do not use the Services.</p>
 
     <h2>4. Information We Collect</h2>
+    <p><em>The categories below apply primarily to consumers who visit our public lead-generation websites and submit forms. Our Meta-connected developer application (described in Section 10) is a server-to-server internal tool — it accesses only the aggregate advertising performance data described in Section 10 and does not collect personal information about consumers through Meta's APIs.</em></p>
     <h3>4.1 Information You Provide</h3>
     <p>When you use our forms, respond to our ads, communicate with us, or opt into SMS/email, we may collect:</p>
     <ul>
@@ -81,7 +82,7 @@
       <li>Detect, prevent, and investigate fraud, abuse, and security incidents.</li>
       <li>Comply with legal obligations and enforce our terms.</li>
       <li>Create aggregated or de-identified data for reporting and business purposes.</li>
-      <li>Develop, test, and maintain integrations with Meta's platforms for internal business and advertising purposes.</li>
+      <li>Operate our internal marketing analytics dashboard, which reads aggregate ad performance data from our own ad accounts via Meta's Marketing API.</li>
     </ul>
 
     <h2>6. How We Share Information</h2>
@@ -120,21 +121,28 @@
     <p>We retain personal information as long as reasonably necessary to provide and improve the Services, communicate with you and Law Firms about a potential claim, comply with legal and regulatory requirements, and resolve disputes and enforce agreements. When no longer needed, we will delete, de-identify, or aggregate information consistent with applicable law. Data received via Meta's APIs is retained only as long as necessary for active development, testing, or authorized business purposes, and is deleted upon request or when no longer required.</p>
 
     <h2>10. Meta Platform &amp; Developer Application</h2>
-    <p>This section applies to our use of Meta's platforms (Facebook and Instagram) through registered developer applications and supplements the rest of this Policy. Our applications are developed and operated in accordance with <a href="https://developers.facebook.com/terms" target="_blank" rel="noopener">Meta's Platform Terms</a> and <a href="https://developers.facebook.com/devpolicy" target="_blank" rel="noopener">Developer Policies</a>.</p>
+    <p>This section applies to our use of Meta's platforms (Facebook and Instagram) through our registered developer application and supplements the rest of this Policy. Our application is developed and operated in accordance with <a href="https://developers.facebook.com/terms" target="_blank" rel="noopener">Meta's Platform Terms</a> and <a href="https://developers.facebook.com/devpolicy" target="_blank" rel="noopener">Developer Policies</a>.</p>
+
+    <h3>10.0 Authentication Method (Server-to-Server)</h3>
+    <p>Our Meta-connected application is a server-to-server (S2S) integration. Authentication uses a Meta System User Access Token generated in our Meta Business Manager (Users → System Users) and stored encrypted on our backend server. <strong>No end-user Facebook Login flow is offered or used.</strong> Users do not log into Meta or grant OAuth permissions through this application. The application accesses data only from ad accounts owned and controlled by ScaleCases and assigned to that System User.</p>
+
     <h3>10.1 What We Access via Meta's APIs</h3>
-    <p>Through Meta's APIs, our application may access:</p>
+    <p>Through Meta's Marketing API, using a System User Access Token granted the <code>ads_read</code> permission, our application accesses the following information from ScaleCases' own ad accounts:</p>
     <ul>
-      <li>Basic profile information (such as name and email address) of authorized test users only.</li>
-      <li>Ad account performance data, campaign metrics, and related advertising insights associated with our own business accounts.</li>
-      <li>Any other data explicitly authorized through the permissions granted in our Meta App Dashboard.</li>
+      <li>Campaign, ad set, and ad metadata (names, IDs, status, budget, dates, creative references).</li>
+      <li>Performance metrics including impressions, reach, spend, link clicks, unique link clicks, click-through rate, frequency, video play metrics, and landing page views.</li>
+      <li>Conversion and result counts associated with our own advertising campaigns.</li>
     </ul>
-    <p>This application is not a publicly available consumer product. It is operated for internal development, testing, and business management purposes only.</p>
+    <p><strong>No personal information about consumers, advertisers, or third parties is accessed via the Meta API.</strong> The application accesses only aggregate advertising performance data for ad accounts owned and controlled by ScaleCases. It is not a publicly available consumer product. It is operated for internal business management, campaign analysis, and reporting purposes only by authorized ScaleCases staff.</p>
+
     <h3>10.2 How We Use Meta Platform Data</h3>
-    <p>Any data accessed via Meta's platform is used exclusively to develop, test, and maintain the application's functionality; manage and optimize our advertising campaigns on Facebook and Instagram; and facilitate internal business analytics and reporting. Meta Platform data is not sold, transferred to data brokers, or used for any purpose not disclosed in this Policy or authorized under Meta's Platform Terms. It is not used to make decisions about individuals outside of the stated purposes above.</p>
+    <p>Data accessed via Meta's Marketing API is used exclusively to operate our internal marketing analytics dashboard — measuring campaign performance, identifying underperforming ads for pause/kill decisions, and reporting on advertising spend and outcomes to ScaleCases management. Meta Platform data is not sold, transferred to data brokers, or used for any purpose not disclosed in this Policy or authorized under Meta's Platform Terms. It is not used to make decisions about individual consumers; it relates only to ad-level performance.</p>
+
     <h3>10.3 Sharing of Meta Platform Data</h3>
-    <p>Meta Platform data is not shared with third parties except with service providers who process data strictly on our behalf under contractual obligations consistent with Meta's Platform Terms, or as required by law or to comply with a valid legal request.</p>
-    <h3>10.4 Requesting Deletion of Meta-Related Data</h3>
-    <p>To request deletion of any personal data collected through our Meta-connected application, email <a href="mailto:leads@scalecases.com">leads@scalecases.com</a> with the subject line "Data Deletion Request – Meta." We will process your request within 30 days. You may also request deletion of your Facebook data directly through Meta's platforms.</p>
+    <p>Meta Platform data is not shared with third parties except with service providers who process data strictly on our behalf under contractual obligations consistent with Meta's Platform Terms (e.g., our hosting provider), or as required by law or to comply with a valid legal request.</p>
+
+    <h3>10.4 Data Retention &amp; Deletion (Meta Data)</h3>
+    <p>Data accessed via the Meta Marketing API is retained on our backend server only for as long as needed for active analysis and reporting. To request deletion of any data derived from your Meta-controlled assets that we have stored, email <a href="mailto:leads@scalecases.com">leads@scalecases.com</a> with subject line "Data Deletion Request – Meta." We will process the request within 30 days. Note that the application accesses only ScaleCases' own ad account data — we do not store data about third-party Facebook or Instagram users.</p>
     <h3>10.5 Meta Pixel &amp; Advertising</h3>
     <p>We use Meta Pixel (formerly Facebook Pixel) on our websites to measure the effectiveness of our advertising, understand how users interact with our sites after seeing our ads, and build custom and lookalike audiences. This activity is governed by Meta's Data Policy as well as this Privacy Policy. California users may opt out as described in Section 13.</p>
 
