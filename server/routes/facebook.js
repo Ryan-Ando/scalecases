@@ -196,37 +196,35 @@ const INSIGHTS_FIELDS = [
   'actions',                 // re-added — gives the canonical result count via extractResults()
 ].join(',');
 
-// Extract lead/result count from the actions array.
-// Facebook returns actions as [{ action_type, value }, ...].
-// For law firm lead gen campaigns the relevant types are checked in priority order.
+// Extract lead/result count.
+// Primary: spend ÷ cost_per_result — FB computes CPR against the campaign's configured
+// result type with the configured attribution window, so this matches what FB Ads Manager
+// reports under "Results". Distribution is consistent across pixel-based and lead-form ads.
+// Fallback: actions[] (raw event count, can include view-through pixel fires and over-counts
+// some states). Only used when CPR is unavailable.
 function extractResults(insightRow) {
-  const actions = insightRow.actions || [];
-
-  const leadTypes = [
-    'offsite_conversion.fb_pixel_lead', // pixel-only — excludes CAPI/server events
-    'onsite_conversion.lead_grouped',   // lead form submissions
-    'contact',
-    'schedule',
-    'submit_application',
-    // NOTE: 'lead' intentionally excluded — it aggregates CAPI + pixel and inflates counts when CAPI dupes occur
-  ];
-
-  for (const type of leadTypes) {
-    const action = actions.find(a => a.action_type === type);
-    if (action) return { results: parseInt(action.value, 10) || 0, resultType: 'Leads' };
-  }
-
-  // Broad fallback: any lead-related type EXCEPT 'lead' (which includes CAPI)
-  const broadLead = actions.find(a => a.action_type !== 'lead' && a.action_type.includes('lead'));
-  if (broadLead) return { results: parseInt(broadLead.value, 10) || 0, resultType: 'Leads' };
-
-  // Fall back to computing from spend ÷ cost_per_result if available
   const cprStr = parseCpr(insightRow.cost_per_result);
   const cpr = parseFloat(cprStr);
   const spend = parseFloat(insightRow.spend);
   if (cpr > 0 && spend > 0) {
     return { results: Math.round(spend / cpr), resultType: 'Results' };
   }
+
+  const actions = insightRow.actions || [];
+  const leadTypes = [
+    'offsite_conversion.fb_pixel_lead',
+    'onsite_conversion.lead_grouped',
+    'contact',
+    'schedule',
+    'submit_application',
+  ];
+  for (const type of leadTypes) {
+    const action = actions.find(a => a.action_type === type);
+    if (action) return { results: parseInt(action.value, 10) || 0, resultType: 'Leads' };
+  }
+
+  const broadLead = actions.find(a => a.action_type !== 'lead' && a.action_type.includes('lead'));
+  if (broadLead) return { results: parseInt(broadLead.value, 10) || 0, resultType: 'Leads' };
 
   return { results: 0, resultType: 'Leads' };
 }
