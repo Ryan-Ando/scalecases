@@ -867,15 +867,7 @@ export default function CampaignReports() {
   const [loading, setLoading]     = useState(true);
   const [error, setError]         = useState('');
 
-  // GHL leads — fetched for the current date range
-  const [ghlLeads, setGhlLeads] = useState({ byAdId: {}, byDate: {}, byCampaign: {}, ready: false });
-  useEffect(() => {
-    if (!start || !end) return;
-    fetch(`${BASE}/api/ghl/leads-by-adid?start=${start}&end=${end}`)
-      .then(r => r.json())
-      .then(d => setGhlLeads(d))
-      .catch(() => {});
-  }, [start, end]);
+  // Lead counts come from FB result data on each campaign/adset/ad — no GHL fetch.
 
   // Accordion data
   const [allAdsets, setAllAdsets] = useState({});     // campaignId → adsets[]
@@ -1398,16 +1390,10 @@ export default function CampaignReports() {
           return fmtBudget(c);
         case 'spend':
           return fmt$(c.spend);
-        case 'results': {
-          const ghlCount = ghlLeads.byCampaign[c.name];
-          return ghlCount != null ? ghlCount : (c.results ?? '—');
-        }
-        case 'cost_per_result': {
-          const ghlCount = ghlLeads.byCampaign[c.name];
-          const spend = parseFloat(c.spend) || 0;
-          if (ghlCount > 0 && spend > 0) return fmt$(spend / ghlCount);
-          return ghlCount === 0 ? '—' : fmt$(clientCpl(c));
-        }
+        case 'results':
+          return c.results ?? '—';
+        case 'cost_per_result':
+          return fmt$(clientCpl(c));
         case 'unique_clicks':
           return fmtN(c.unique_clicks);
         case 'cost_per_unique_click':
@@ -1529,14 +1515,9 @@ export default function CampaignReports() {
             if (col.key === 'aiStatus') content = renderAiCell(a, 'adset', campaignId);
             else if (col.key === 'status') content = renderStatusCell(a, 'adset');
             else if (col.key === 'name') content = <span style={{ fontWeight: 600, paddingLeft: 4 }} title={a.name}>{a.name}</span>;
-            else if (col.key === 'results') {
-              const ghlCount = ghlLeads.byAdId[a.id]?.total;
-              content = ghlCount != null ? ghlCount : (a.results ?? '—');
-            } else if (col.key === 'cost_per_result') {
-              const ghlCount = ghlLeads.byAdId[a.id]?.total;
-              const spend = parseFloat(a.spend) || 0;
-              content = (ghlCount > 0 && spend > 0) ? fmt$(spend / ghlCount) : (ghlCount === 0 ? '—' : fmt$(clientCpl(a)));
-            } else content = cellVal(a, col.key);
+            else if (col.key === 'results') content = a.results ?? '—';
+            else if (col.key === 'cost_per_result') content = fmt$(clientCpl(a));
+            else content = cellVal(a, col.key);
             return (
               <td key={col.key} style={{
                 ...tdBase, textAlign: col.align || 'right',
@@ -1597,14 +1578,9 @@ export default function CampaignReports() {
                 style={{ fontSize: 10, padding: '1px 6px', flexShrink: 0 }}>👁 Preview</button>
             </div>
           );
-          else if (col.key === 'results') {
-            const ghlCount = ghlLeads.byAdId[ad.adsetId]?.total;
-            content = ghlCount != null ? ghlCount : (ad.results ?? '—');
-          } else if (col.key === 'cost_per_result') {
-            const ghlCount = ghlLeads.byAdId[ad.adsetId]?.total;
-            const spend = parseFloat(ad.spend) || 0;
-            content = (ghlCount > 0 && spend > 0) ? fmt$(spend / ghlCount) : (ghlCount === 0 ? '—' : fmt$(clientCpl(ad)));
-          } else content = cellVal(ad, col.key);
+          else if (col.key === 'results') content = ad.results ?? '—';
+          else if (col.key === 'cost_per_result') content = fmt$(clientCpl(ad));
+          else content = cellVal(ad, col.key);
           return (
             <td key={col.key} style={{
               ...adTdBase, textAlign: col.align || 'right',

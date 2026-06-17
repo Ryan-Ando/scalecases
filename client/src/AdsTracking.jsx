@@ -1008,7 +1008,12 @@ export default function AdsTracking() {
     }
   }
 
-  useEffect(() => { loadCases(); }, []);
+  // Load cases on-demand only — fires when the user opens the per-ad case modal.
+  // Previously ran on every Ads Tracking mount, which triggered a 2-year GHL contacts
+  // pagination (~26k+ contacts) regardless of whether the user looked at any cases.
+  useEffect(() => {
+    if (adDetail) loadCases();
+  }, [adDetail]);
 
   // ── Monthly sheet import ─────────────────────────────────────────────────────
   async function importMonth() {

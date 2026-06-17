@@ -1,8 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
 import { dbGetAll } from './db.js';
 
-const BASE = import.meta.env.VITE_API_URL || 'http://localhost:3001';
-
 const NO_ANGLE = '(no angle)';
 
 // Normalize: strip -copy and trailing fractions like 1/2, 2/2 before matching
@@ -35,7 +33,6 @@ function getBase(name, angle) {
 
 export default function AngleMatrix() {
   const [ads, setAds]           = useState([]);
-  const [ghlLeads, setGhlLeads] = useState({});
   const [angles, setAngles]     = useState(() => {
     try { return JSON.parse(localStorage.getItem('angleMatrix_angles') || '[]'); } catch { return []; }
   });
@@ -46,13 +43,15 @@ export default function AngleMatrix() {
     dbGetAll('fbAds').then(setAds).catch(() => {});
   }, []);
 
-  // Load GHL lead counts (server cache — no FB API call)
-  useEffect(() => {
-    fetch(`${BASE}/api/ghl/leads-by-adid`)
-      .then(r => r.json())
-      .then(d => { if (d.byAdId) setGhlLeads(d.byAdId); })
-      .catch(() => {});
-  }, []);
+  // Sum FB result counts per adsetId across all ads — replaces GHL lead lookup
+  const leadsByAdsetId = useMemo(() => {
+    const map = {};
+    for (const a of ads) {
+      if (!a.adsetId) continue;
+      map[a.adsetId] = (map[a.adsetId] || 0) + (a.results || 0);
+    }
+    return map;
+  }, [ads]);
 
   function addAngle() {
     const val = input.trim();
@@ -91,7 +90,7 @@ export default function AngleMatrix() {
     for (const adset of adsets) {
       const angle = findAngle(adset.adsetName, angles);
       const base  = getBase(adset.adsetName, angle);
-      const leads = ghlLeads[adset.adsetId]?.total || 0;
+      const leads = leadsByAdsetId[adset.adsetId] || 0;
       if (!matrix[base]) matrix[base] = {};
       if (!matrix[base][angle]) matrix[base][angle] = 0;
       matrix[base][angle] += leads;
@@ -102,7 +101,7 @@ export default function AngleMatrix() {
       return tb - ta;
     });
     return { matrix, bases };
-  }, [adsets, angles, allCols, ghlLeads]);
+  }, [adsets, angles, allCols, leadsByAdsetId]);
 
   const totalRow = useMemo(() => {
     const t = {};
