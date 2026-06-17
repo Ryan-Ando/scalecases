@@ -175,8 +175,11 @@ async function refreshGhlCache() {
   }
 }
 
-setTimeout(refreshGhlCache, 10_000);
-setInterval(refreshGhlCache, 60 * 60 * 1000);
+// Auto-prefetch removed — Ads Tracking no longer uses /leads-by-adid.
+// The cache can still be populated on-demand via POST /api/ghl/refresh if needed.
+// To re-enable scheduled prefetch:
+//   setTimeout(refreshGhlCache, 10_000);
+//   setInterval(refreshGhlCache, 60 * 60 * 1000);
 
 // GET /api/ghl/leads-by-adid?start=YYYY-MM-DD&end=YYYY-MM-DD
 // Returns GHL "new lead" contacts aggregated by FB ad ID, state, campaign, and date.
