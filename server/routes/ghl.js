@@ -22,13 +22,29 @@ const GHL_HEADERS = () => ({
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-// Fetch one page with automatic retry on 429 (up to 5 attempts).
+// Fetch one page with automatic retry on transient errors (up to 5 attempts).
+// Retries: 429 rate limit, 5xx server errors, and 400 "Request Timeout" (GHL's
+// own server-side timeout returns a quirky 400 with that body text).
 async function fetchPage(url) {
   const MAX_RETRIES = 5;
   let delay = 2000;
+  let lastErrText = '';
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-    const res  = await fetch(url, { headers: GHL_HEADERS() });
-    const text = await res.text();
+    let res, text;
+    try {
+      res  = await fetch(url, { headers: GHL_HEADERS() });
+      text = await res.text();
+    } catch (netErr) {
+      // Network-level failure (connection reset, DNS, etc.) — retry with backoff
+      lastErrText = `network: ${netErr.message}`;
+      console.warn(`[GHL] network error — retry in ${delay}ms (attempt ${attempt}/${MAX_RETRIES}): ${netErr.message}`);
+      if (attempt === MAX_RETRIES) throw new Error(`GHL API error after ${MAX_RETRIES} retries: ${lastErrText}`);
+      await sleep(delay);
+      delay = Math.min(delay * 2, 30000);
+      continue;
+    }
+
+    // 429 — rate limit, honor Retry-After
     if (res.status === 429) {
       const retryAfter = parseInt(res.headers.get('Retry-After') || '0') * 1000 || delay;
       console.warn(`[GHL] 429 rate limit — waiting ${retryAfter}ms (attempt ${attempt}/${MAX_RETRIES})`);
@@ -37,6 +53,18 @@ async function fetchPage(url) {
       delay = Math.min(delay * 2, 30000);
       continue;
     }
+
+    // GHL quirk: their server-side timeouts come back as 400 with this body
+    const isGhlTimeout = res.status === 400 && /Request Timeout/i.test(text);
+    if (isGhlTimeout || (res.status >= 500 && res.status < 600)) {
+      lastErrText = `${res.status}: ${text.slice(0, 200)}`;
+      console.warn(`[GHL] transient ${res.status} — retry in ${delay}ms (attempt ${attempt}/${MAX_RETRIES})`);
+      if (attempt === MAX_RETRIES) throw new Error(`GHL API error after ${MAX_RETRIES} retries: ${lastErrText}`);
+      await sleep(delay);
+      delay = Math.min(delay * 2, 30000);
+      continue;
+    }
+
     if (!res.ok) throw new Error(`GHL API error ${res.status}: ${text.slice(0, 200)}`);
     return JSON.parse(text);
   }
