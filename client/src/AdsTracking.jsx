@@ -297,21 +297,8 @@ function AdDetailModal({ adName, state, allAds, sheetByName, accountLabel, merge
   const [tableStart, setTableStart]   = useState('');
   const [tableEnd, setTableEnd]       = useState('');
 
-  // GHL leads cache — fetched from server, filtered by date range
-  const [ghlLeads, setGhlLeads] = useState({ byAdId: {}, byDate: {}, byCampaign: {}, ready: false, loading: true });
-
-  useEffect(() => {
-    let cancelled = false;
-    setGhlLeads(g => ({ ...g, loading: true }));
-    const params = tableStart && tableEnd ? `?start=${tableStart}&end=${tableEnd}` : '';
-    fetch(`${BASE}/api/ghl/leads-by-adid${params}`)
-      .then(r => r.json())
-      .then(d => { if (!cancelled) setGhlLeads({ ...d, loading: false }); })
-      .catch(() => { if (!cancelled) setGhlLeads(g => ({ ...g, loading: false })); });
-    return () => { cancelled = true; };
-  }, [tableStart, tableEnd]);
-
-  // GHL contacts + sheet cases — fetched on-demand when modal opens
+  // GHL lead counts removed — modal uses FB result data (a.results) for lead counts.
+  // GHL contacts + sheet cases still fetched on-demand for case attribution.
   const [ghlContacts, setGhlContacts] = useState([]);
   const [sheetCases, setSheetCases]   = useState([]);
   const [loadingGhl, setLoadingGhl]   = useState(false);
@@ -508,7 +495,7 @@ function AdDetailModal({ adName, state, allAds, sheetByName, accountLabel, merge
         created:      a.createdTime || '',
       };
     }),
-    [fbInstances, modalDailyInsights, ghlLeads]
+    [fbInstances, modalDailyInsights]
   );
 
   const sortedRows = useMemo(() => {
@@ -690,8 +677,6 @@ function AdDetailModal({ adName, state, allAds, sheetByName, accountLabel, merge
               <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
                 <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)' }}>
                   Ads ({fbInstances.length}){tableStart && tableEnd ? ` · ${tableStart} – ${tableEnd}` : ' · all time'}
-                  {ghlLeads.loading && <span style={{ fontWeight: 400, color: '#94a3b8', marginLeft: 6 }}>· loading leads…</span>}
-                  {!ghlLeads.loading && !ghlLeads.ready && <span style={{ fontWeight: 400, color: '#f59e0b', marginLeft: 6 }}>· leads not ready</span>}
                 </div>
                 <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 6 }}>
                   <DateRangePicker
@@ -911,33 +896,8 @@ export default function AdsTracking() {
   const [cplLoading, setCplLoading] = useState(false);
   const [cplError, setCplError]   = useState('');
 
-  // GHL leads cache — fetched by main grid date range (rangeStart/rangeEnd)
-  // Retries every 20s until the server cache is ready (cache build can take 1-2 min on cold start)
-  const [ghlLeads, setGhlLeads] = useState({ byAdId: {}, byDate: {}, byCampaign: {}, ready: false, loading: true });
-  const [ghlLeadsKey, setGhlLeadsKey] = useState(0); // increment to force a manual refresh
-
-  useEffect(() => {
-    let cancelled = false;
-    let retryTimer = null;
-
-    function doFetch() {
-      setGhlLeads(g => ({ ...g, loading: true }));
-      const params = rangeStart && rangeEnd ? `?start=${rangeStart}&end=${rangeEnd}` : '';
-      fetch(`${BASE}/api/ghl/leads-by-adid${params}`)
-        .then(r => r.json())
-        .then(d => {
-          if (cancelled) return;
-          setGhlLeads({ ...d, loading: false });
-          if (!d.ready) retryTimer = setTimeout(doFetch, 20000);
-        })
-        .catch(() => {
-          if (!cancelled) setGhlLeads(g => ({ ...g, loading: false }));
-        });
-    }
-
-    doFetch();
-    return () => { cancelled = true; if (retryTimer) clearTimeout(retryTimer); };
-  }, [rangeStart, rangeEnd, ghlLeadsKey]);
+  // GHL lead counts removed — Ads Tracking now sources all lead counts from FB result data (a.results).
+  // GHL is still used for Cases (ghlContacts below).
 
   // Hyros CSV reports — thank you page UTM data (PST dates)
   const [hyrosReportsByDate, setHyrosReportsByDate] = useState({});
@@ -1273,36 +1233,35 @@ export default function AdsTracking() {
       const last7Start = new Date(Date.now() - 6 * 864e5);
       const fmtDate   = d => d.toISOString().slice(0, 10);
 
-      const [prevFbRes, last7FbRes, prevGhlRes, last7GhlRes] = await Promise.all([
+      const [prevFbRes, last7FbRes] = await Promise.all([
         fetch(`${BASE}/api/facebook/campaigns?start=${fmtDate(prevStart)}&end=${fmtDate(prevEnd)}`),
         fetch(`${BASE}/api/facebook/campaigns?date_preset=last_7d`),
-        fetch(`${BASE}/api/ghl/leads-by-adid?start=${fmtDate(prevStart)}&end=${fmtDate(prevEnd)}`),
-        fetch(`${BASE}/api/ghl/leads-by-adid?start=${fmtDate(last7Start)}&end=${fmtDate(last7End)}`),
       ]);
       if (!prevFbRes.ok || !last7FbRes.ok) throw new Error('Failed to fetch campaign data');
-      const [prevCampaigns, last7Campaigns, prevGhl, last7Ghl] = await Promise.all([
-        prevFbRes.json(), last7FbRes.json(), prevGhlRes.json(), last7GhlRes.json(),
+      const [prevCampaigns, last7Campaigns] = await Promise.all([
+        prevFbRes.json(), last7FbRes.json(),
       ]);
 
-      // FB gives us spend; GHL gives us accurate lead counts by campaign name
+      // FB provides both spend and result (lead) counts via extractResults() on each campaign.
       const prevMap  = Object.fromEntries(prevCampaigns.map(c => [c.name, c]));
       const last7Map = Object.fromEntries(last7Campaigns.map(c => [c.name, c]));
       const names    = [...new Set([...Object.keys(prevMap), ...Object.keys(last7Map)])].sort();
 
-      const cpl = (fbCampaign, ghlLeadCount) => {
+      const cpl = (fbCampaign) => {
         const spend = parseFloat(fbCampaign?.spend) || 0;
-        return ghlLeadCount > 0 ? spend / ghlLeadCount : null;
+        const leads = parseFloat(fbCampaign?.results) || 0;
+        return leads > 0 ? spend / leads : null;
       };
 
       const rows = names
         .map(name => ({
           name,
-          prevCpl:    cpl(prevMap[name],   prevGhl.byCampaign?.[name]  || 0),
-          last7Cpl:   cpl(last7Map[name],  last7Ghl.byCampaign?.[name] || 0),
-          prevSpend:  parseFloat(prevMap[name]?.spend)  || 0,
-          last7Spend: parseFloat(last7Map[name]?.spend) || 0,
-          prevLeads:  prevGhl.byCampaign?.[name]  || 0,
-          last7Leads: last7Ghl.byCampaign?.[name] || 0,
+          prevCpl:    cpl(prevMap[name]),
+          last7Cpl:   cpl(last7Map[name]),
+          prevSpend:  parseFloat(prevMap[name]?.spend)   || 0,
+          last7Spend: parseFloat(last7Map[name]?.spend)  || 0,
+          prevLeads:  parseFloat(prevMap[name]?.results) || 0,
+          last7Leads: parseFloat(last7Map[name]?.results) || 0,
         }))
         .filter(r => r.prevCpl != null || r.last7Cpl != null);
 
@@ -1326,18 +1285,12 @@ export default function AdsTracking() {
   // ── Derived data ────────────────────────────────────────────────────────────
   const states = useMemo(() => {
     const set = new Set();
-    // From FB ad campaign names (primary source)
     for (const a of allAds) {
       const s = extractState(a.campaignName);
       if (s) set.add(s);
     }
-    // From GHL utm_campaign keys — ensures state columns appear even when FB is unavailable
-    for (const campaignName of Object.keys(ghlLeads.byCampaign || {})) {
-      const s = extractState(campaignName);
-      if (s) set.add(s);
-    }
     return [...set].sort();
-  }, [allAds, ghlLeads.byCampaign]);
+  }, [allAds]);
 
   const orderedStates = useMemo(() => {
     if (!colOrder) return states;
@@ -2071,24 +2024,6 @@ export default function AdsTracking() {
           />
         </label>
         {loadingCases && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Loading cases…</span>}
-        {ghlLeads.loading && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Loading leads…</span>}
-        {!ghlLeads.loading && !ghlLeads.ready && <span style={{ fontSize: 11, color: '#f59e0b' }}>Leads not ready — server cache still building</span>}
-        {!ghlLeads.loading && <button onClick={() => setGhlLeadsKey(k => k + 1)} style={{ fontSize: 11, padding: '2px 8px', borderRadius: 4, border: '1px solid var(--border)', background: 'none', cursor: 'pointer', color: 'var(--text-muted)' }}>↻ Refresh leads</button>}
-        {!ghlLeads.loading && (
-          <button
-            onClick={async () => {
-              if (!window.confirm('Clear all GHL lead data and re-fetch from scratch? This will take 1–2 minutes.')) return;
-              await fetch(`${BASE}/api/ghl/reset`, { method: 'POST' });
-              // Mark as not ready so the retry loop kicks in
-              setGhlLeads(g => ({ ...g, ready: false, loading: true }));
-              setGhlLeadsKey(k => k + 1);
-            }}
-            style={{ fontSize: 11, padding: '2px 8px', borderRadius: 4, border: '1px solid #fca5a5', background: 'none', cursor: 'pointer', color: '#dc2626' }}
-            title="Wipe all GHL lead data and re-fetch everything from scratch"
-          >
-            ⚠ Reset GHL Data
-          </button>
-        )}
         {casesError && <span style={{ fontSize: 11, color: '#dc2626' }}>{casesError}</span>}
         {importing && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Importing monthly cases…</span>}
         {!importing && importResult && (
