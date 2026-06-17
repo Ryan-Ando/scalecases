@@ -193,6 +193,7 @@ const INSIGHTS_FIELDS = [
   'frequency',
   'cost_per_unique_inline_link_click',
   'cost_per_result',
+  'actions',                 // re-added — gives the canonical result count via extractResults()
 ].join(',');
 
 // Extract lead/result count from the actions array.
