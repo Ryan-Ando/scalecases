@@ -852,8 +852,11 @@ export default function AdsTracking() {
   const [sortDir, setSortDir]           = useState('desc');
   const [cutoffEnabled, setCutoffEnabled] = useState(true);
   const [cutoffDate, setCutoffDate]       = useState('2026-03-08');
-  const [leadCutoffEnabled, setLeadCutoffEnabled] = useState(false);
-  const [leadCutoffDate, setLeadCutoffDate]       = useState('2026-03-08');
+  const [leadCutoffEnabled, setLeadCutoffEnabled] = useState(true);
+  const [leadCutoffDate, setLeadCutoffDate]       = useState('2026-04-20');
+  const [leadCutoffAds, setLeadCutoffAds]         = useState(null);
+  const [leadCutoffLoading, setLeadCutoffLoading] = useState(false);
+  const [leadCutoffError, setLeadCutoffError]     = useState('');
   const [filterTags, setFilterTags]       = useState([]);
   const [filterMode, setFilterMode]       = useState('or');
   const [filterInput, setFilterInput]     = useState('');
@@ -941,8 +944,25 @@ export default function AdsTracking() {
     return () => { cancelled = true; };
   }, [rangeStart, rangeEnd]);
 
-  // Grid uses range-filtered ads when a range is set, otherwise all-time aggregated ads
-  const activeAds = rangeAds ?? allAds;
+  // Fetch ad-level insights restricted to the lead-cutoff window.
+  // FB returns each ad with results/spend aggregated over [leadCutoffDate, today], so the
+  // cells become "leads generated since X" instead of lifetime totals.
+  useEffect(() => {
+    if (!leadCutoffEnabled || !leadCutoffDate) {
+      setLeadCutoffAds(null); setLeadCutoffError(''); return;
+    }
+    let cancelled = false;
+    setLeadCutoffLoading(true); setLeadCutoffError('');
+    const today = new Date().toISOString().slice(0, 10);
+    apiFetch(`/api/facebook/ads?start=${leadCutoffDate}&end=${today}`)
+      .then(data => { if (!cancelled) { setLeadCutoffAds(data); setLeadCutoffLoading(false); } })
+      .catch(err  => { if (!cancelled) { setLeadCutoffError(err.message); setLeadCutoffLoading(false); } });
+    return () => { cancelled = true; };
+  }, [leadCutoffEnabled, leadCutoffDate]);
+
+  // Grid source priority: manual range > lead cutoff window > lifetime
+  // adNames (row visibility) is still derived from allAds + ad-creation cutoff elsewhere.
+  const activeAds = rangeAds ?? (leadCutoffEnabled && leadCutoffAds ? leadCutoffAds : allAds);
 
   // ── Load from IndexedDB ─────────────────────────────────────────────────────
   async function loadFromDB() {
@@ -1339,34 +1359,30 @@ export default function AdsTracking() {
   const sheetByName = {};
 
   // Grid: FB result counts per ad per state, summed from each ad's insights.
-  // Two independent cutoffs:
-  //   - cutoffDate (ad name cutoff): which ads to display in the grid (handled in adNames)
-  //   - leadCutoffDate: which ads to count leads from. An ad created before the lead
-  //     cutoff contributes zero leads (its lifetime totals include pre-cutoff data we
-  //     consider unreliable). The ad still appears in the grid if cutoffDate permits it.
+  // Two independent cutoffs with different semantics:
+  //   - cutoffDate (ad name cutoff): which ads to DISPLAY in the grid — filters adNames
+  //     by ad creation date. Ads created before this date don't get a row at all.
+  //   - leadCutoffDate: WHICH LEADS TO COUNT — only leads generated on or after this date
+  //     contribute to each cell. Implemented via activeAds being fetched from FB with
+  //     time_range=[leadCutoffDate, today], so a.results already represents leads in that
+  //     window (not lifetime). Ads that existed before the lead cutoff still appear in the
+  //     grid; their cell shows only the leads they generated after the cutoff.
   const leadsMap = useMemo(() => {
     const map = {};
     for (const adName of adNames) { map[adName] = {}; for (const st of states) map[adName][st] = 0; }
 
-    for (const a of allAds) {
+    for (const a of activeAds) {
       const rawName = (a.name || '').trim();
       const state   = extractState(a.campaignName);
       if (!rawName || !state || deletedAds.has(rawName)) continue;
       const adName  = memberToCanonical[rawName] || rawName;
-
-      // Lead cutoff: skip ads created before the lead cutoff date.
-      // Uses earliest-creation-date for canonical name (handles merged ads).
-      if (leadCutoffEnabled && leadCutoffDate) {
-        const created = firstCreated[adName];
-        if (created && created < leadCutoffDate) continue;
-      }
 
       const fbResults = a.results || 0;
       if (map[adName]?.[state] !== undefined)
         map[adName][state] += fbResults;
     }
     return map;
-  }, [adNames, states, allAds, deletedAds, memberToCanonical, firstCreated, leadCutoffEnabled, leadCutoffDate]);
+  }, [adNames, states, activeAds, deletedAds, memberToCanonical]);
 
   // Alias for backward-compat with existing grid render references
   const grid = leadsMap;
@@ -2006,15 +2022,15 @@ export default function AdsTracking() {
             }}
           />
         </label>
-        {/* Lead cutoff — independent of the ad cutoff. Skips lead counting for ads created before this date. */}
-        <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, color: 'var(--text-muted)', userSelect: 'none' }} title="Count leads only from ads created after this date. Ads created before still appear in the grid (subject to the ad name cutoff) but contribute zero leads.">
+        {/* Lead cutoff — restricts cell values to leads GENERATED on/after this date (and matching spend). Independent of the ad cutoff. */}
+        <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, color: 'var(--text-muted)', userSelect: 'none' }} title="Only counts leads generated on or after this date. Ads created earlier still appear in the grid (subject to the ad name cutoff) — they show just the leads they earned in this window. Spend in cells is also restricted to this window so CPL stays meaningful.">
           <input
             type="checkbox"
             checked={leadCutoffEnabled}
             onChange={e => setLeadCutoffEnabled(e.target.checked)}
             style={{ accentColor: 'var(--green)', width: 13, height: 13 }}
           />
-          Leads from ads created after
+          Leads generated after
           <input
             type="date"
             value={leadCutoffDate}
