@@ -497,8 +497,8 @@ function AdDetailModal({ adName, state, allAds, sheetByName, accountLabel, merge
                     : a.lifetime_budget ? `$${(a.lifetime_budget/100).toFixed(0)} lifetime` : '—',
         adset:        a.adsetName    || '—',
         spend,
-        fbLeads:      ghlLeads.byAdId[a.adsetId]?.total || 0,
-        cpl:          (ghlLeads.byAdId[a.adsetId]?.total > 0) && spend > 0 ? spend / ghlLeads.byAdId[a.adsetId].total : null,
+        fbLeads:      a.results || 0,
+        cpl:          (a.results || 0) > 0 && spend > 0 ? spend / a.results : null,
         uniqueClicks: uclicks,
         costPerClick: uclicks > 0 && spend > 0 ? spend / uclicks : null,
         cpm:          impr > 0 ? spend / impr * 1000 : null,
@@ -1378,11 +1378,10 @@ export default function AdsTracking() {
 
   const sheetByName = {};
 
-  // Grid: GHL "new lead" contacts per ad per state, matched by FB adset ID (utm_term).
-  // Always uses allAds for structure (adsetId → campaignName → state) regardless of
-  // date range — GHL data is already date-filtered server-side via the leads fetch params.
-  // Using activeAds here was wrong: rate-limited range fetches produced partial adset ID
-  // lists, causing whole accounts' leads to disappear.
+  // Grid: FB result counts per ad per state, summed from each ad's insights.
+  // The `adNames` filter already excludes ads created before cutoffDate, so leads from
+  // pre-cutoff ads are naturally excluded — an ad's lifetime results can't be older
+  // than the ad itself.
   const leadsMap = useMemo(() => {
     const map = {};
     for (const adName of adNames) { map[adName] = {}; for (const st of states) map[adName][st] = 0; }
@@ -1392,24 +1391,14 @@ export default function AdsTracking() {
       const state   = extractState(a.campaignName);
       if (!rawName || !state || deletedAds.has(rawName)) continue;
       const adName  = memberToCanonical[rawName] || rawName;
-      const adsetBucket = ghlLeads.byAdId[a.adsetId];
-      // Use utm_content (ad name) for exact per-ad match within the adset.
-      // Falls back to adset-level byState only when no byContent exists at all
-      // (i.e. none of the leads in this adset had utm_content set).
-      let leads = 0;
-      if (adsetBucket) {
-        const contentBucket = adsetBucket.byContent?.[rawName];
-        if (contentBucket) {
-          leads = contentBucket.byState[state] || 0;
-        } else if (!adsetBucket.byContent || Object.keys(adsetBucket.byContent).length === 0) {
-          leads = adsetBucket.byState[state] || 0;
-        }
-      }
+      // FB result count from /act_<id>/insights — counted only for ads that passed
+      // the cutoff filter (since map[adName] only exists for adNames in the cutoff set).
+      const fbResults = a.results || 0;
       if (map[adName]?.[state] !== undefined)
-        map[adName][state] += leads;
+        map[adName][state] += fbResults;
     }
     return map;
-  }, [adNames, states, allAds, deletedAds, memberToCanonical, ghlLeads]);
+  }, [adNames, states, allAds, deletedAds, memberToCanonical]);
 
   // Alias for backward-compat with existing grid render references
   const grid = leadsMap;
