@@ -867,6 +867,8 @@ export default function AdsTracking() {
   const [sortDir, setSortDir]           = useState('desc');
   const [cutoffEnabled, setCutoffEnabled] = useState(true);
   const [cutoffDate, setCutoffDate]       = useState('2026-03-08');
+  const [leadCutoffEnabled, setLeadCutoffEnabled] = useState(false);
+  const [leadCutoffDate, setLeadCutoffDate]       = useState('2026-03-08');
   const [filterTags, setFilterTags]       = useState([]);
   const [filterMode, setFilterMode]       = useState('or');
   const [filterInput, setFilterInput]     = useState('');
@@ -1379,9 +1381,11 @@ export default function AdsTracking() {
   const sheetByName = {};
 
   // Grid: FB result counts per ad per state, summed from each ad's insights.
-  // The `adNames` filter already excludes ads created before cutoffDate, so leads from
-  // pre-cutoff ads are naturally excluded — an ad's lifetime results can't be older
-  // than the ad itself.
+  // Two independent cutoffs:
+  //   - cutoffDate (ad name cutoff): which ads to display in the grid (handled in adNames)
+  //   - leadCutoffDate: which ads to count leads from. An ad created before the lead
+  //     cutoff contributes zero leads (its lifetime totals include pre-cutoff data we
+  //     consider unreliable). The ad still appears in the grid if cutoffDate permits it.
   const leadsMap = useMemo(() => {
     const map = {};
     for (const adName of adNames) { map[adName] = {}; for (const st of states) map[adName][st] = 0; }
@@ -1391,14 +1395,20 @@ export default function AdsTracking() {
       const state   = extractState(a.campaignName);
       if (!rawName || !state || deletedAds.has(rawName)) continue;
       const adName  = memberToCanonical[rawName] || rawName;
-      // FB result count from /act_<id>/insights — counted only for ads that passed
-      // the cutoff filter (since map[adName] only exists for adNames in the cutoff set).
+
+      // Lead cutoff: skip ads created before the lead cutoff date.
+      // Uses earliest-creation-date for canonical name (handles merged ads).
+      if (leadCutoffEnabled && leadCutoffDate) {
+        const created = firstCreated[adName];
+        if (created && created < leadCutoffDate) continue;
+      }
+
       const fbResults = a.results || 0;
       if (map[adName]?.[state] !== undefined)
         map[adName][state] += fbResults;
     }
     return map;
-  }, [adNames, states, allAds, deletedAds, memberToCanonical]);
+  }, [adNames, states, allAds, deletedAds, memberToCanonical, firstCreated, leadCutoffEnabled, leadCutoffDate]);
 
   // Alias for backward-compat with existing grid render references
   const grid = leadsMap;
@@ -2016,15 +2026,15 @@ export default function AdsTracking() {
           {deletedAds.size > 0 && ` · ${deletedAds.size} hidden`}
           {(rangeStart && rangeEnd) && ` · ${rangeStart} – ${rangeEnd}`}
         </span>
-        {/* Ad creation cutoff filter */}
-        <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, color: 'var(--text-muted)', userSelect: 'none' }}>
+        {/* Ad name cutoff — controls which ads appear in the grid */}
+        <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, color: 'var(--text-muted)', userSelect: 'none' }} title="Hide ads whose earliest creation date is before this date">
           <input
             type="checkbox"
             checked={cutoffEnabled}
             onChange={e => setCutoffEnabled(e.target.checked)}
             style={{ accentColor: 'var(--green)', width: 13, height: 13 }}
           />
-          Created after
+          Ads created after
           <input
             type="date"
             value={cutoffDate}
@@ -2035,6 +2045,28 @@ export default function AdsTracking() {
               border: '1px solid var(--border)', background: 'var(--bg)',
               color: cutoffEnabled ? 'var(--text)' : 'var(--text-muted)',
               opacity: cutoffEnabled ? 1 : 0.5,
+            }}
+          />
+        </label>
+        {/* Lead cutoff — independent of the ad cutoff. Skips lead counting for ads created before this date. */}
+        <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, color: 'var(--text-muted)', userSelect: 'none' }} title="Count leads only from ads created after this date. Ads created before still appear in the grid (subject to the ad name cutoff) but contribute zero leads.">
+          <input
+            type="checkbox"
+            checked={leadCutoffEnabled}
+            onChange={e => setLeadCutoffEnabled(e.target.checked)}
+            style={{ accentColor: 'var(--green)', width: 13, height: 13 }}
+          />
+          Leads from ads created after
+          <input
+            type="date"
+            value={leadCutoffDate}
+            onChange={e => setLeadCutoffDate(e.target.value)}
+            disabled={!leadCutoffEnabled}
+            style={{
+              fontSize: 11, padding: '1px 4px', borderRadius: 4,
+              border: '1px solid var(--border)', background: 'var(--bg)',
+              color: leadCutoffEnabled ? 'var(--text)' : 'var(--text-muted)',
+              opacity: leadCutoffEnabled ? 1 : 0.5,
             }}
           />
         </label>
