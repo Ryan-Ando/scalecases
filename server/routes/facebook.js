@@ -575,12 +575,14 @@ router.get('/ads', async (req, res) => {
 });
 
 // ── Shared daily-insights fetcher (used by /daily endpoint + prefetch) ───────
+// Pulls cost_per_result + actions so every daily row gets a per-day `results` count via
+// extractResults (matches Ads Manager — spend÷CPR first, raw event count as fallback).
 async function fetchDailyInsights({ level, datePreset, start, end, date, adIdList, adsetIdList, full }) {
   const fields = level === 'ad'
-    ? `ad_id,ad_name,campaign_name,spend,impressions,unique_inline_link_clicks,cpm,date_start,date_stop`
+    ? `ad_id,ad_name,campaign_name,spend,impressions,unique_inline_link_clicks,cpm,date_start,date_stop,cost_per_result,actions`
     : level === 'adset'
-    ? `adset_id,adset_name,campaign_name,spend,impressions,unique_inline_link_clicks,cpm,date_start,date_stop`
-    : `campaign_id,campaign_name,spend,impressions,cpm,date_start,date_stop`;
+    ? `adset_id,adset_name,campaign_name,spend,impressions,unique_inline_link_clicks,cpm,date_start,date_stop,cost_per_result,actions`
+    : `campaign_id,campaign_name,spend,impressions,cpm,date_start,date_stop,cost_per_result,actions`;
 
   const accounts = adAccounts();
   const all = [];
@@ -609,8 +611,9 @@ async function fetchDailyInsights({ level, datePreset, start, end, date, adIdLis
 
   const idKey = level === 'ad' ? 'ad_id' : level === 'adset' ? 'adset_id' : 'campaign_id';
   const deduped = [...new Map(all.map(r => [`${r[idKey]}:${r.date_start}`, r])).values()];
+  const enriched = deduped.map(r => ({ ...r, ...extractResults(r) }));
   const isSpendTracker = level === 'campaign' && start && end && !adIdList && !adsetIdList;
-  return (full || isSpendTracker) ? deduped : deduped.filter(r => !BLACKLIST_DATES.has(r.date_start));
+  return (full || isSpendTracker) ? enriched : enriched.filter(r => !BLACKLIST_DATES.has(r.date_start));
 }
 
 // GET /api/facebook/daily?date_preset=&level=campaign&ad_ids=id1,id2&date=YYYY-MM-DD
