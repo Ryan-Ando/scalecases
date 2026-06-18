@@ -1,36 +1,28 @@
-import { useState, useMemo, useRef, useEffect, Component } from 'react';
-import { dbGetAll, dbUpsert, dbDelete, dbClearStore } from './db.js';
+import { useState, useMemo, useEffect, useCallback, Component } from 'react';
 
 const BASE = import.meta.env.VITE_API_URL || 'http://localhost:3001';
 
-// Server-side snapshot store — shared across devices
-const serverApi = {
-  async list() {
-    const r = await fetch(`${BASE}/api/snapshots`);
-    if (!r.ok) throw new Error(`list failed: ${r.status}`);
-    const d = await r.json();
-    return d.snapshots || [];
-  },
-  async save(snapshots) {
-    const r = await fetch(`${BASE}/api/snapshots`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ snapshots }),
-    });
-    if (!r.ok) throw new Error(`save failed: ${r.status}`);
-    return r.json();
-  },
-  async delete(id) {
-    const r = await fetch(`${BASE}/api/snapshots/${encodeURIComponent(id)}`, { method: 'DELETE' });
-    if (!r.ok) throw new Error(`delete failed: ${r.status}`);
-    return r.json();
-  },
-  async clear() {
-    const r = await fetch(`${BASE}/api/snapshots`, { method: 'DELETE' });
-    if (!r.ok) throw new Error(`clear failed: ${r.status}`);
-    return r.json();
-  },
-};
+// Most recently completed Sunday-Saturday week + the prior one.
+// "Latest full week" = a week whose Saturday has already passed; today's date never counts.
+function ymd(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+function lastFullSunSat() {
+  const now = new Date();
+  const daysBackToLastSat = now.getDay() + 1; // Sun→1, Mon→2, ..., Sat→7 (skip today even if it's Sat)
+  const curEnd = new Date(now);
+  curEnd.setDate(now.getDate() - daysBackToLastSat);
+  const curStart = new Date(curEnd);
+  curStart.setDate(curEnd.getDate() - 6);
+  const priorEnd = new Date(curEnd);
+  priorEnd.setDate(curEnd.getDate() - 7);
+  const priorStart = new Date(priorEnd);
+  priorStart.setDate(priorEnd.getDate() - 6);
+  return {
+    current: { start: ymd(curStart), end: ymd(curEnd) },
+    prior:   { start: ymd(priorStart), end: ymd(priorEnd) },
+  };
+}
 
 class KillErrorBoundary extends Component {
   constructor(props) { super(props); this.state = { err: null }; }
@@ -79,67 +71,40 @@ function parseFloatSafe(s) {
   return Number.isFinite(v) ? v : null;
 }
 
-// Extract ad account name from a CSV filename like "Zemsky-&-Salomon-P.C.-Ad-sets-May-7-2026-May-12-2026.csv"
-function extractAccount(filename) {
-  const base = (filename || '').replace(/\.csv$/i, '');
-  const m = base.match(/^(.+?)[-\s]+Ad[-\s]?sets?[-\s]/i);
-  if (m) return m[1].replace(/[-\s]+$/, '').trim();
-  return base;
-}
-
-function parseCsv(text) {
-  const lines = [];
-  let cur = '', inQ = false, row = [];
-  for (let i = 0; i < text.length; i++) {
-    const c = text[i], next = text[i + 1];
-    if (inQ) {
-      if (c === '"' && next === '"') { cur += '"'; i++; }
-      else if (c === '"') { inQ = false; }
-      else cur += c;
-    } else {
-      if (c === '"') inQ = true;
-      else if (c === ',') { row.push(cur); cur = ''; }
-      else if (c === '\n') { row.push(cur); lines.push(row); cur = ''; row = []; }
-      else if (c === '\r') {} else cur += c;
-    }
-  }
-  if (cur || row.length) { row.push(cur); lines.push(row); }
-  const headers = lines[0];
-  return lines.slice(1).filter(r => r.length > 1).map(r => {
-    const o = {};
-    headers.forEach((h, i) => o[h] = r[i] ?? '');
-    return o;
-  });
-}
-
-function mapRow(r) {
-  const spend = parseFloatSafe(r['Amount spent (USD)']) || 0;
-  const cpm = parseFloatSafe(r['CPM (cost per 1,000 impressions) (USD)']);
-  const uclicks = parseFloatSafe(r['Unique link clicks']) || 0;
-  const linkClicks = parseFloatSafe(r['Link clicks']) || 0;
-  const impressions = cpm && cpm > 0 ? (spend / cpm) * 1000 : 0;
-  const lpv = parseFloatSafe(r['Landing page views']) || 0;
+// Transform a FB adset insight row (from GET /api/facebook/adsets) into the row shape
+// that evaluateKill/computeBaselines expect. Field names mirror the CSV-derived shape.
+function mapFbAdset(a, dateStart, dateEnd) {
+  const spend = parseFloat(a.spend) || 0;
+  const cpm = parseFloatSafe(a.cpm);
+  const uclicks = parseInt(a.unique_inline_link_clicks, 10) || 0;
+  const linkClicks = parseInt(a.clicks, 10) || 0;
+  const impressions = parseInt(a.impressions, 10) || 0;
+  const reach = parseInt(a.reach, 10) || 0;
+  const eff = (a.effectiveStatus || '').toUpperCase();
+  // FB returns ACTIVE / PAUSED / DELETED / CAMPAIGN_PAUSED / ADSET_PAUSED / ...
+  const delivery = eff === 'ACTIVE' ? 'active' : 'inactive';
   return {
-    name: r['Ad set name'],
-    campaign: r['Campaign name'],
-    delivery: r['Ad set delivery'],
-    budget: parseFloatSafe(r['Ad set budget']),
-    reportStart: r['Reporting starts'] || '',
-    reportEnd: r['Reporting ends'] || '',
+    id: a.id,
+    name: a.name,
+    campaign: a.campaignName,
+    delivery,
+    budget: (parseFloat(a.dailyBudget ?? a.lifetimeBudget) || 0) / 100,
+    reportStart: dateStart,
+    reportEnd: dateEnd,
     spend,
-    results: parseFloatSafe(r['Results']) || 0,
-    cpl: parseFloatSafe(r['Cost per results']),
+    results: parseFloat(a.results) || 0,
+    cpl: parseFloatSafe(a.cost_per_result),
     uclicks,
     linkClicks,
-    cpulc: parseFloatSafe(r['Cost per unique link click (USD)']),
+    cpulc: parseFloatSafe(a.cost_per_unique_click),
     cpm,
     impressions,
-    uctr: parseFloatSafe(r['Unique CTR (link click-through rate)']),
-    reach: parseFloatSafe(r['Reach']) || 0,
-    hookRate: parseFloatSafe(r['3-second video plays rate per impressions']),
-    freq: parseFloatSafe(r['Frequency']) || 0,
-    lpv,
-    lpvRate: linkClicks > 0 ? (lpv / linkClicks) * 100 : null,
+    uctr: parseFloatSafe(a.unique_ctr),
+    reach,
+    hookRate: null, // FB API path doesn't include video_p25 metrics
+    freq: parseFloat(a.frequency) || 0,
+    lpv: null,      // requires actions[landing_page_view] — not currently fetched
+    lpvRate: null,
   };
 }
 
@@ -309,134 +274,56 @@ export default function KillAnalysis() {
 }
 
 function KillAnalysisInner() {
-  const [snapshots, setSnapshots] = useState([]);  // [{ id, account, label, dateStart, dateEnd, uploadedAt, rows }]
+  const [snapshots, setSnapshots] = useState([]);  // synthesized from FB API: [current, prior]
   const [expanded, setExpanded] = useState({});
   const [search, setSearch] = useState('');
   const [sortKey, setSortKey] = useState('spend');
   const [sortDir, setSortDir] = useState('desc');
   const [filterFlag, setFilterFlag] = useState('all');
   const [filterDelivery, setFilterDelivery] = useState('active');
-  const [snapMgrOpen, setSnapMgrOpen] = useState(false);
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [serverStatus, setServerStatus] = useState('unknown'); // 'unknown' | 'ok' | 'offline'
-  const fileRef = useRef(null);
+  const [lastFetched, setLastFetched] = useState(null);
 
-  // Load snapshots — server is source of truth; auto-sync any local-only snapshots up.
-  useEffect(() => {
-    async function load() {
-      let serverList = [];
-      try {
-        serverList = await serverApi.list();
-        setServerStatus('ok');
-      } catch (err) {
-        setServerStatus('offline');
-        // Server unreachable — fall back to IndexedDB only
-        try {
-          const local = await dbGetAll('killSnapshots');
-          const normalized = (local || []).map(s => s.account ? s : { ...s, account: extractAccount(s.label) });
-          const sorted = normalized.sort((a, b) => (b.dateEnd || '').localeCompare(a.dateEnd || ''));
-          setSnapshots(sorted);
-          if (sorted.length) setError(`Server unreachable. Showing local cache only (${sorted.length} snapshot${sorted.length === 1 ? '' : 's'}). Other devices won't see this data.`);
-        } catch (e2) {
-          setError(`Couldn't load snapshots: ${err?.message || err}`);
-        }
-        return;
-      }
+  const weeks = useMemo(() => lastFullSunSat(), []);
 
-      // Server reachable. Read local cache to find any snapshots not yet on the server.
-      let local = [];
-      try { local = await dbGetAll('killSnapshots'); } catch {}
-      const serverIds = new Set(serverList.map(s => s.id));
-      const localOnly = (local || []).filter(s => !serverIds.has(s.id));
-
-      // Auto-push local-only snapshots to the server so they sync across devices.
-      if (localOnly.length) {
-        try {
-          await serverApi.save(localOnly);
-          serverList = serverList.concat(localOnly);
-          setError(`Synced ${localOnly.length} local snapshot${localOnly.length === 1 ? '' : 's'} up to the server.`);
-        } catch (err) {
-          // Save failed, but still show what's on server
-          setError(`Local snapshots exist that didn't sync up: ${err?.message || err}`);
-        }
-      }
-
-      const normalized = serverList.map(s => s.account ? s : { ...s, account: extractAccount(s.label) });
-      const sorted = normalized.sort((a, b) => (b.dateEnd || '').localeCompare(a.dateEnd || ''));
-      setSnapshots(sorted);
-      if (sorted.length) dbUpsert('killSnapshots', sorted).catch(() => {});
-    }
-    load();
-  }, []);
-
-  async function handleFiles(e) {
-    const files = Array.from(e.target.files || []);
-    if (!files.length) return;
-    setError(null);
+  // Fetch current full-week adset insights + the prior week's adset insights from FB.
+  // Both go through /api/facebook/adsets which aggregates spend, clicks, results, etc. across
+  // a date range. The two synthesized snapshots feed straight into the existing pipeline.
+  const loadFb = useCallback(async () => {
     setLoading(true);
+    setError(null);
     try {
-      // Step 1: read all files in parallel — this is fast
-      const texts = await Promise.all(files.map(f => f.text().then(t => ({ name: f.name, text: t }))));
-
-      // Step 2: parse synchronously — also fast
-      const newSnaps = [];
-      const parseErrors = [];
-      for (const { name, text } of texts) {
-        try {
-          const parsed = parseCsv(text).map(mapRow).filter(r => r.spend > 0 && r.name);
-          if (!parsed.length) {
-            parseErrors.push(`${name}: no rows with spend > 0`);
-            continue;
-          }
-          const dateStart = parsed[0]?.reportStart || '';
-          const dateEnd = parsed[0]?.reportEnd || '';
-          const account = extractAccount(name);
-          const id = `snap_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-          newSnaps.push({ id, account, label: name, dateStart, dateEnd, uploadedAt: new Date().toISOString(), rows: parsed });
-        } catch (e) {
-          parseErrors.push(`${name}: ${e.message}`);
-        }
-      }
-      if (parseErrors.length) setError(parseErrors.join(' · '));
-      if (!newSnaps.length) return;
-
-      // Step 3: update React state IMMEDIATELY so user sees data
-      const all = [...snapshots, ...newSnaps].sort((a, b) => (b.dateEnd || '').localeCompare(a.dateEnd || ''));
-      setSnapshots(all);
-
-      // Step 4: persist to server (source of truth) + local cache, both in background
-      serverApi.save(newSnaps).catch(err => {
-        setError(`Saved locally only — server save failed: ${err?.message || err}. Other devices won't see these snapshots.`);
-      });
-      dbUpsert('killSnapshots', newSnaps).catch(() => {});
+      const fetchWeek = async (w) => {
+        const url = `${BASE}/api/facebook/adsets?start=${w.start}&end=${w.end}&force=1`;
+        const r = await fetch(url);
+        if (!r.ok) throw new Error(`FB adsets ${w.start}→${w.end}: ${r.status}`);
+        const data = await r.json();
+        return data.map(a => mapFbAdset(a, w.start, w.end)).filter(r => r.spend > 0 && r.name);
+      };
+      const [curRows, priorRows] = await Promise.all([
+        fetchWeek(weeks.current),
+        fetchWeek(weeks.prior),
+      ]);
+      setSnapshots([
+        { id: 'fb_current', account: 'Facebook', label: `Current week`, dateStart: weeks.current.start, dateEnd: weeks.current.end, rows: curRows },
+        { id: 'fb_prior',   account: 'Facebook', label: `Previous week`, dateStart: weeks.prior.start,   dateEnd: weeks.prior.end,   rows: priorRows },
+      ]);
+      setLastFetched(new Date());
     } catch (e) {
-      setError(`Upload failed: ${e?.message || e}`);
+      setError(`Failed to fetch FB data: ${e?.message || e}`);
     } finally {
       setLoading(false);
-      if (fileRef.current) fileRef.current.value = '';
     }
-  }
+  }, [weeks]);
 
-  async function deleteSnapshot(id) {
-    if (!confirm('Delete this snapshot permanently?')) return;
-    setSnapshots(snapshots.filter(s => s.id !== id));
-    serverApi.delete(id).catch(err => setError(`Server delete failed: ${err?.message || err}`));
-    dbDelete('killSnapshots', id).catch(() => {});
-  }
-
-  async function clearAllSnapshots() {
-    if (!confirm('Delete ALL saved snapshots? This cannot be undone.')) return;
-    setSnapshots([]);
-    serverApi.clear().catch(err => setError(`Server clear failed: ${err?.message || err}`));
-    dbClearStore('killSnapshots').catch(() => {});
-  }
+  useEffect(() => { loadFb(); }, [loadFb]);
 
   // Auto-group snapshots by ad account, pick newest as current, second-newest as compare
   const accountPairs = useMemo(() => {
     const byAcc = {};
     for (const s of snapshots) {
-      const a = s.account || extractAccount(s.label);
+      const a = s.account || 'Facebook';
       if (!byAcc[a]) byAcc[a] = [];
       byAcc[a].push(s);
     }
@@ -451,12 +338,14 @@ function KillAnalysisInner() {
     return accountPairs.flatMap(p => p.current ? p.current.rows.map(r => ({ ...r, _account: p.account })) : []);
   }, [accountPairs]);
 
-  // Per-account prior lookup, keyed by "account|adset name" to prevent cross-account name collisions
+  // Prior-week lookup. Prefer adset ID (stable across weeks); fall back to "account|name"
+  // for any row missing an id.
   const priorByAdset = useMemo(() => {
     const map = {};
     for (const p of accountPairs) {
       if (!p.compare) continue;
       for (const r of p.compare.rows) {
+        if (r.id) map[`id:${r.id}`] = r;
         map[`${p.account}|${r.name}`] = r;
       }
     }
@@ -476,7 +365,7 @@ function KillAnalysisInner() {
 
   const enriched = useMemo(() => ratedRows.map(r => {
     const base = baselines[r.campaign];
-    const prior = priorByAdset[`${r._account}|${r.name}`];
+    const prior = priorByAdset[`id:${r.id}`] || priorByAdset[`${r._account}|${r.name}`];
     const ev = evaluateKill(r, base, prior);
     const quad = quadrant(r.cpm, r.cpulc);
     return { ...r, baseline: base, ...ev, quad };
@@ -540,24 +429,18 @@ function KillAnalysisInner() {
     <div style={{ padding: '20px 24px' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 14, flexWrap: 'wrap' }}>
         <div style={{ fontSize: 20, fontWeight: 700 }}>Kill Analysis</div>
-        <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>CPL target ${CPL_TARGET} · saved snapshots for fatigue tracking</div>
+        <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+          CPL target ${CPL_TARGET} · live FB data, week-over-week fatigue tracking
+        </div>
 
-        <span style={{
-          padding: '2px 8px', borderRadius: 4, fontSize: 10, fontWeight: 700,
-          background: serverStatus === 'ok' ? 'rgba(34,197,94,0.15)' : serverStatus === 'offline' ? 'rgba(220,38,38,0.15)' : 'var(--bg)',
-          color: serverStatus === 'ok' ? '#15803d' : serverStatus === 'offline' ? '#991b1b' : 'var(--text-muted)',
-          border: `1px solid ${serverStatus === 'ok' ? '#16a34a' : serverStatus === 'offline' ? '#dc2626' : 'var(--border)'}`,
-        }}>
-          {serverStatus === 'ok' ? '● synced' : serverStatus === 'offline' ? '● local only' : '● checking…'}
-        </span>
-
-        <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
-          <button onClick={() => setSnapMgrOpen(o => !o)} style={btnSm}>
-            {snapMgrOpen ? '▲' : '▼'} Snapshots ({snapshots.length})
-          </button>
-          <input ref={fileRef} type="file" accept=".csv" multiple onChange={handleFiles} style={{ display: 'none' }} />
-          <button className="btn btn--sm btn--primary" onClick={() => fileRef.current?.click()} disabled={loading}>
-            {loading ? 'Uploading…' : 'Upload CSV'}
+        <div style={{ marginLeft: 'auto', display: 'flex', gap: 10, alignItems: 'center' }}>
+          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+            <strong style={{ color: '#16a34a' }}>This week:</strong> {weeks.current.start} → {weeks.current.end}
+            <span style={{ margin: '0 6px', opacity: 0.5 }}>·</span>
+            <strong style={{ color: '#3b82f6' }}>Prior:</strong> {weeks.prior.start} → {weeks.prior.end}
+          </span>
+          <button className="btn btn--sm btn--primary" onClick={loadFb} disabled={loading}>
+            {loading ? 'Loading…' : 'Refresh'}
           </button>
         </div>
       </div>
@@ -573,72 +456,22 @@ function KillAnalysisInner() {
         </div>
       )}
 
-      {/* Account/snapshot manager */}
-      {snapMgrOpen && (
-        <div style={{ marginBottom: 14, padding: 12, border: '1px solid var(--border)', borderRadius: 8, background: 'var(--surface)' }}>
-          <div style={{ display: 'flex', alignItems: 'center', marginBottom: 10 }}>
-            <strong style={{ fontSize: 13 }}>Ad accounts &amp; snapshots</strong>
-            <span style={{ marginLeft: 12, fontSize: 11, color: 'var(--text-muted)' }}>
-              Newest per account = current view · second-newest = fatigue compare
-            </span>
-            {snapshots.length > 0 && (
-              <button onClick={clearAllSnapshots} style={{ marginLeft: 'auto', ...btnSm, color: '#dc2626', borderColor: '#dc2626' }}>Clear all</button>
-            )}
-          </div>
-          {accountPairs.length === 0 ? (
-            <div style={{ fontSize: 12, color: 'var(--text-muted)', padding: '8px 0' }}>No snapshots saved yet. Upload a CSV to get started.</div>
-          ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-              {accountPairs.map(p => (
-                <div key={p.account} style={{ border: '1px solid var(--border)', borderRadius: 6, padding: 8 }}>
-                  <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 6 }}>
-                    <strong style={{ fontSize: 12 }}>{p.account}</strong>
-                    <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>{p.all.length} snapshot{p.all.length === 1 ? '' : 's'}</span>
-                  </div>
-                  <div style={{ display: 'grid', gridTemplateColumns: '80px 1fr 130px 90px 70px', gap: '4px 10px', fontSize: 11, alignItems: 'center' }}>
-                    {p.all.map(s => {
-                      const role = s.id === p.current?.id ? 'CURRENT' : s.id === p.compare?.id ? 'COMPARE' : '';
-                      const color = role === 'CURRENT' ? '#16a34a' : role === 'COMPARE' ? '#3b82f6' : 'var(--text-muted)';
-                      return (
-                        <div key={s.id} style={{ display: 'contents' }}>
-                          <span style={{ background: role ? color : 'var(--bg)', color: role ? '#fff' : 'var(--text-muted)', padding: '1px 6px', borderRadius: 3, fontSize: 9, fontWeight: 700, textAlign: 'center' }}>{role || '—'}</span>
-                          <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={s.label}>{s.label}</span>
-                          <span style={{ color: 'var(--text-muted)' }}>{s.dateStart} → {s.dateEnd}</span>
-                          <span style={{ textAlign: 'right', color: 'var(--text-muted)' }}>{s.rows.length} rows</span>
-                          <button onClick={() => deleteSnapshot(s.id)} style={{ ...btnSm, color: '#dc2626', padding: '2px 8px' }}>Delete</button>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
+      {loading && currentRows.length === 0 && (
+        <div style={{ padding: '40px 0', textAlign: 'center', color: 'var(--text-muted)', fontSize: 13 }}>
+          Fetching the last two full weeks from Facebook…
         </div>
       )}
 
-      {currentRows.length === 0 && (
+      {!loading && currentRows.length === 0 && !error && (
         <div style={{ padding: '40px 0', textAlign: 'center', color: 'var(--text-muted)', fontSize: 13 }}>
-          Upload one or more Facebook ad set CSV exports to begin.<br />
-          <span style={{ fontSize: 11 }}>Filename should look like "AccountName-Ad-sets-{`{date range}`}.csv". Newest per account is the live view; second-newest is the fatigue compare.</span>
+          No adsets with spend in {weeks.current.start} → {weeks.current.end}.
         </div>
       )}
 
       {currentRows.length > 0 && (
         <>
-          {/* Account status strip */}
-          <div style={{ display: 'flex', gap: 10, marginBottom: 12, flexWrap: 'wrap', fontSize: 11 }}>
-            {accountPairs.map(p => (
-              <div key={p.account} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 10px', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--surface)' }}>
-                <strong style={{ fontSize: 12 }}>{p.account}</strong>
-                <span style={{ color: 'var(--text-muted)' }}>
-                  current: <strong style={{ color: '#16a34a' }}>{p.current?.dateStart}→{p.current?.dateEnd}</strong>
-                  {p.compare && <> · compare: <strong style={{ color: '#3b82f6' }}>{p.compare.dateStart}→{p.compare.dateEnd}</strong></>}
-                  {!p.compare && <> · <span style={{ color: '#f59e0b' }}>no fatigue compare (need 2+ snapshots)</span></>}
-                </span>
-              </div>
-            ))}
-          </div>
+          {/* Week-over-week totals strip */}
+          <WeekTotalsStrip current={snapshots[0]} prior={snapshots[1]} />
 
           {/* Filter strip */}
           <div style={{ display: 'flex', gap: 10, marginBottom: 14, flexWrap: 'wrap', alignItems: 'center' }}>
@@ -895,6 +728,57 @@ const tdL = { ...td, textAlign: 'left' };
 
 const selectStyle = { background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text)', padding: '5px 8px', fontSize: 12, outline: 'none' };
 const btnSm = { background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 5, padding: '4px 10px', fontSize: 11, cursor: 'pointer', color: 'var(--text-muted)' };
+
+function WeekTotalsStrip({ current, prior }) {
+  if (!current) return null;
+  const sum = (rows, key) => rows.reduce((s, r) => s + (parseFloat(r[key]) || 0), 0);
+  const stats = (rows) => {
+    const spend = sum(rows, 'spend');
+    const leads = sum(rows, 'results');
+    const cpl = leads > 0 ? spend / leads : null;
+    return { spend, leads, cpl, count: rows.length };
+  };
+  const cur = stats(current.rows);
+  const pri = prior ? stats(prior.rows) : null;
+  const delta = (now, then) => {
+    if (then == null || then === 0 || now == null) return null;
+    return (now - then) / then;
+  };
+  const cells = [
+    { label: 'Spend',  value: `$${cur.spend.toLocaleString('en-US', { maximumFractionDigits: 0 })}`, delta: pri ? delta(cur.spend, pri.spend) : null, betterUp: false },
+    { label: 'Leads',  value: cur.leads.toFixed(0),                                                  delta: pri ? delta(cur.leads, pri.leads) : null, betterUp: true  },
+    { label: 'CPL',    value: cur.cpl == null ? '—' : `$${cur.cpl.toFixed(0)}`,                      delta: pri && pri.cpl != null ? delta(cur.cpl, pri.cpl) : null, betterUp: false },
+    { label: 'Adsets', value: cur.count.toFixed(0),                                                  delta: pri ? delta(cur.count, pri.count) : null, betterUp: null },
+  ];
+  return (
+    <div style={{ display: 'flex', gap: 10, marginBottom: 14, flexWrap: 'wrap' }}>
+      {cells.map((c, i) => {
+        const deltaPct = c.delta == null ? null : (c.delta * 100);
+        const isUp = deltaPct != null && deltaPct > 0;
+        const isDown = deltaPct != null && deltaPct < 0;
+        // Color rule: green if "better", red if "worse", grey if neutral metric (e.g. adset count)
+        let color = 'var(--text-muted)';
+        if (deltaPct != null && c.betterUp != null) {
+          const good = (c.betterUp && isUp) || (!c.betterUp && isDown);
+          color = good ? '#16a34a' : (isUp || isDown) ? '#dc2626' : 'var(--text-muted)';
+        }
+        return (
+          <div key={i} style={{ padding: '8px 14px', border: '1px solid var(--border)', borderRadius: 8, background: 'var(--surface)', minWidth: 130 }}>
+            <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)' }}>{c.label}</div>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+              <div style={{ fontSize: 20, fontWeight: 700, color: 'var(--text)', lineHeight: 1.1 }}>{c.value}</div>
+              {deltaPct != null && (
+                <div style={{ fontSize: 12, fontWeight: 600, color }}>
+                  {isUp ? '▲' : isDown ? '▼' : ''} {Math.abs(deltaPct).toFixed(0)}%
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
 
 function Pill({ label, count, sub, color, active, onClick }) {
   return (
