@@ -181,17 +181,24 @@ async function pushSpendToSheet({ year, monthIndex, tabName, preview = false }) 
   // 4. Build the FB grid and queue per-cell updates.
   const { states, days, grid } = await buildMonthGrid(year, monthIndex);
 
+  // Today (ET) — if we're pushing the current month, skip today + future days so
+  // an in-progress day doesn't get logged as a partial number.
+  const todayET = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(new Date());
+  const [tY, tM, tD] = todayET.split('-').map(n => parseInt(n, 10));
+  const isCurrentMonth = (tY === year) && (tM === monthIndex + 1);
+
   const updates = [];
   const skippedStates = new Set();
-  // For every (state, day) the SHEET knows about, write the FB value (or 0).
+  // For every (state, day) the SHEET knows about, write FB spend (or '' if zero/missing).
   for (const st of Object.keys(colByState)) {
     const col = colByState[st];
     for (const day of Object.keys(rowByDay).map(Number)) {
+      if (isCurrentMonth && day >= tD) continue; // skip today + future
       const row = rowByDay[day];
       const spend = grid[day]?.[st] || 0;
       updates.push({
         range: `'${resolvedTab}'!${colLetter(col + 1)}${row + 1}`,
-        values: [[spend]],
+        values: [[spend > 0 ? spend : '']],
       });
     }
   }
@@ -199,7 +206,10 @@ async function pushSpendToSheet({ year, monthIndex, tabName, preview = false }) 
   for (const st of states) if (colByState[st] == null) skippedStates.add(st);
 
   // Sample of cells we'll write — useful for debugging when the sheet appears unchanged.
-  const nonZero = updates.filter(u => u.values[0][0] !== 0);
+  const nonZero = updates.filter(u => {
+    const v = u.values[0][0];
+    return typeof v === 'number' && v > 0;
+  });
   const sample = nonZero.slice(0, 5).map(u => `${u.range}=${u.values[0][0]}`);
 
   if (preview) {
