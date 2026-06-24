@@ -86,6 +86,7 @@ export default function SpendSheet() {
   const [insights, setInsights]     = useState([]);
   const [adsets, setAdsets]         = useState([]);
   const [loadingBudget, setLoadingBudget] = useState(false);
+  const [budgetError, setBudgetError] = useState('');
   const [loading, setLoading]       = useState(true);
   const [syncing, setSyncing]       = useState(false);
   const [syncError, setSyncError]   = useState('');
@@ -120,6 +121,7 @@ export default function SpendSheet() {
 
   async function fetchAdsets(force = false) {
     setLoadingBudget(true);
+    setBudgetError('');
     try {
       const res  = await fetch(`${BASE}/api/facebook/adsets${force ? '?force=true' : ''}`);
       const data = await res.json();
@@ -127,6 +129,7 @@ export default function SpendSheet() {
       setAdsets(data);
     } catch (e) {
       console.warn('Adset budget fetch failed:', e.message);
+      setBudgetError(e.message);
     } finally {
       setLoadingBudget(false);
     }
@@ -475,20 +478,33 @@ export default function SpendSheet() {
       </div>
 
       {/* ── Live Daily Budget ─────────────────────────────────────────────── */}
-      {loadingBudget && (
-        <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 16 }}>Loading live budgets…</div>
-      )}
-      {!loadingBudget && budgetStates.length > 0 && (
-        <div style={{ marginBottom: 28 }}>
-          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10, color: 'var(--text)', display: 'flex', alignItems: 'center', gap: 10 }}>
-            Live Daily Budget
-            <span style={{ fontSize: 11, fontWeight: 400, color: 'var(--text-muted)' }}>
-              sum of active adset/campaign daily budgets
-            </span>
-            <button onClick={() => fetchAdsets(true)} disabled={loadingBudget} style={{ fontSize: 11, padding: '2px 8px', background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 4, cursor: 'pointer', color: 'var(--text-muted)' }}>
-              {loadingBudget ? 'Refreshing…' : '↺ Refresh'}
-            </button>
+      <div style={{ marginBottom: 28 }}>
+        <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10, color: 'var(--text)', display: 'flex', alignItems: 'center', gap: 10 }}>
+          Live Daily Budget
+          <span style={{ fontSize: 11, fontWeight: 400, color: 'var(--text-muted)' }}>
+            sum of active adset/campaign daily budgets
+          </span>
+          <button onClick={() => fetchAdsets(true)} disabled={loadingBudget} style={{ fontSize: 11, padding: '2px 8px', background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 4, cursor: 'pointer', color: 'var(--text-muted)' }}>
+            {loadingBudget ? 'Refreshing…' : '↺ Refresh'}
+          </button>
+          <span style={{ fontSize: 10, color: 'var(--text-muted)', marginLeft: 8 }}>
+            {adsets.length} adsets fetched · {adsets.filter(a => a.effectiveStatus === 'ACTIVE').length} active
+          </span>
+        </div>
+        {loadingBudget && (
+          <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Loading live budgets…</div>
+        )}
+        {budgetError && (
+          <div style={{ fontSize: 12, color: '#dc2626', padding: '8px 12px', background: 'rgba(220,38,38,0.06)', border: '1px solid #dc2626', borderRadius: 6 }}>
+            Fetch failed: {budgetError}
           </div>
+        )}
+        {!loadingBudget && !budgetError && budgetStates.length === 0 && (
+          <div style={{ fontSize: 12, color: 'var(--text-muted)', padding: '8px 12px', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 6 }}>
+            No active adsets with a daily budget tied to a state campaign. Hit Refresh, or check that adsets are ACTIVE and their campaigns end in a US state code.
+          </div>
+        )}
+        {!loadingBudget && budgetStates.length > 0 && (
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'flex-end' }}>
             {budgetStates.map(st => (
               <div key={st} style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 8, padding: '10px 16px', minWidth: 90 }}>
@@ -501,8 +517,8 @@ export default function SpendSheet() {
               <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--green-dark)' }}>{fmt(totalDailyBudget)}</div>
             </div>
           </div>
-        </div>
-      )}
+        )}
+      </div>
 
       {/* ── Budget Pacing ─────────────────────────────────────────────────── */}
       {pacingStates.length > 0 && (
