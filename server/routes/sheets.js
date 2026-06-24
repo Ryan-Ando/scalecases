@@ -1,7 +1,179 @@
 import { Router } from 'express';
 import { google } from 'googleapis';
+import { fetchDailyInsights } from './facebook.js';
 
 const router = Router();
+
+// ── Spend Sheet push (states-as-columns × days-as-rows layout) ─────────────
+
+const US_STATES = new Set([
+  'AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA','HI','ID','IL','IN','IA',
+  'KS','KY','LA','ME','MD','MA','MI','MN','MS','MO','MT','NE','NV','NH','NJ',
+  'NM','NY','NC','ND','OH','OK','OR','PA','RI','SC','SD','TN','TX','UT','VT',
+  'VA','WA','WV','WI','WY','DC',
+]);
+
+function extractState(campaignName) {
+  if (!campaignName) return null;
+  const tokens = campaignName.trim().split(/[-–—\s_/|]+/);
+  for (let i = tokens.length - 1; i >= 0; i--) {
+    const t = tokens[i].toUpperCase();
+    if (US_STATES.has(t)) return t;
+  }
+  return null;
+}
+
+const MONTHS = ['january','february','march','april','may','june','july','august','september','october','november','december'];
+
+function defaultTabName(year, monthIndex) {
+  // monthIndex is 0-based (0 = Jan). Format matches the user's "june 2026" style.
+  return `${MONTHS[monthIndex]} ${year}`;
+}
+
+function colLetter(n) {
+  // 1-based → A, B, ..., Z, AA, AB...
+  let s = '';
+  while (n > 0) { const r = (n - 1) % 26; s = String.fromCharCode(65 + r) + s; n = Math.floor((n - 1) / 26); }
+  return s;
+}
+
+// Build day × state spend grid from daily campaign insights for the given month.
+async function buildMonthGrid(year, monthIndex) {
+  const ym = `${year}-${String(monthIndex + 1).padStart(2, '0')}`;
+  const daysInMonth = new Date(year, monthIndex + 1, 0).getDate();
+  const since = `${ym}-01`;
+  const until = `${ym}-${String(daysInMonth).padStart(2, '0')}`;
+
+  const rows = await fetchDailyInsights({
+    level: 'campaign', start: since, end: until, full: true,
+  });
+
+  const grid = {};       // grid[day][state] = spend
+  const stateSet = new Set();
+  for (const r of rows) {
+    if (!r.date_start?.startsWith(ym)) continue;
+    const st = extractState(r.campaign_name);
+    if (!st) continue;
+    const day = parseInt(r.date_start.slice(8), 10);
+    const spend = parseFloat(r.spend) || 0;
+    if (!grid[day]) grid[day] = {};
+    grid[day][st] = (grid[day][st] || 0) + spend;
+    stateSet.add(st);
+  }
+  const states = [...stateSet].sort();
+  const days = Array.from({ length: daysInMonth }, (_, i) => i + 1);
+  return { states, days, grid };
+}
+
+// Render the grid into a 2-D array matching the user's layout:
+//   row 1   : [''] + [...states] + ['TOTAL']
+//   row 2..N: [day] + spend per state + day total
+//   row N+1 : ['TOTAL'] + state totals + grand total
+function gridToValues({ states, days, grid }) {
+  const header = ['', ...states, 'TOTAL'];
+  const body = days.map(d => {
+    const dayRow = grid[d] || {};
+    const cells = states.map(st => dayRow[st] || 0);
+    const rowTotal = cells.reduce((s, v) => s + v, 0);
+    return [d, ...cells, rowTotal];
+  });
+  const colTotals = states.map(st => days.reduce((s, d) => s + (grid[d]?.[st] || 0), 0));
+  const grand = colTotals.reduce((s, v) => s + v, 0);
+  const totalRow = ['TOTAL', ...colTotals, grand];
+  return [header, ...body, totalRow];
+}
+
+function spendSheetId() {
+  return process.env.SPEND_SHEET_ID;
+}
+
+// Ensure the tab exists; if not, create it. Returns the resolved tab name.
+async function ensureTab(sheets, spreadsheetId, tabName) {
+  const meta = await sheets.spreadsheets.get({ spreadsheetId });
+  const existing = (meta.data.sheets || []).map(s => s.properties?.title || '');
+  // Case-insensitive match — user's tabs are lowercase ("june 2026").
+  const hit = existing.find(t => t.toLowerCase() === tabName.toLowerCase());
+  if (hit) return hit;
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId,
+    requestBody: { requests: [{ addSheet: { properties: { title: tabName } } }] },
+  });
+  return tabName;
+}
+
+// Core push: writes the month's grid into the named tab, starting at A1.
+async function pushSpendToSheet({ year, monthIndex, tabName }) {
+  const spreadsheetId = spendSheetId();
+  if (!spreadsheetId) throw new Error('SPEND_SHEET_ID not set');
+
+  const auth   = await getAuthClient(true);
+  const sheets = google.sheets({ version: 'v4', auth });
+
+  const resolvedTab = await ensureTab(sheets, spreadsheetId, tabName || defaultTabName(year, monthIndex));
+  const { states, days, grid } = await buildMonthGrid(year, monthIndex);
+  const values = gridToValues({ states, days, grid });
+  const numCols = values[0].length;
+  const numRows = values.length;
+  const range = `'${resolvedTab}'!A1:${colLetter(numCols)}${numRows}`;
+
+  // Clear the target rectangle first so a shrinking state count doesn't leave stale columns.
+  await sheets.spreadsheets.values.clear({ spreadsheetId, range });
+  await sheets.spreadsheets.values.update({
+    spreadsheetId, range, valueInputOption: 'RAW',
+    requestBody: { values },
+  });
+
+  return { tab: resolvedTab, rows: numRows, cols: numCols, states: states.length, days: days.length };
+}
+
+// GET /api/sheets/spend-tabs — list tabs in the spend spreadsheet
+router.get('/spend-tabs', async (req, res) => {
+  try {
+    const spreadsheetId = spendSheetId();
+    if (!spreadsheetId) return res.status(503).json({ error: 'SPEND_SHEET_ID not set' });
+    const auth   = await getAuthClient();
+    const sheets = google.sheets({ version: 'v4', auth });
+    const meta   = await sheets.spreadsheets.get({ spreadsheetId });
+    const tabs = (meta.data.sheets || []).map(s => s.properties?.title || '').filter(Boolean);
+    res.json({ tabs });
+  } catch (err) {
+    console.error('spend-tabs error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/sheets/push-spend
+// Body: { year, month (1-based), tabName? }   tabName falls back to "<month> <year>"
+router.post('/push-spend', async (req, res) => {
+  try {
+    const { year, month, tabName } = req.body || {};
+    if (!year || !month) return res.status(400).json({ error: 'year and month (1-12) required' });
+    const result = await pushSpendToSheet({ year: parseInt(year, 10), monthIndex: parseInt(month, 10) - 1, tabName });
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    console.error('push-spend error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Daily auto-push of the current month at ~06:15 ET. Same minute-tick pattern used by hyros.
+let _lastSpendPushDate = '';
+function runSpendPushSchedule() {
+  if (!spendSheetId()) return; // skip silently if not configured
+  const now = new Date();
+  const fmt = (key, opts) => new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', ...opts }).format(now);
+  const hh = parseInt(fmt('h', { hour: 'numeric', hour12: false }), 10);
+  const mm = parseInt(fmt('m', { minute: 'numeric' }), 10);
+  const todayET = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(now);
+  if (hh === 6 && mm === 15 && todayET !== _lastSpendPushDate) {
+    _lastSpendPushDate = todayET;
+    const [y, m] = todayET.split('-').map(n => parseInt(n, 10));
+    pushSpendToSheet({ year: y, monthIndex: m - 1 })
+      .then(r => console.log(`[spend-push] daily push OK — ${r.tab}: ${r.rows}×${r.cols}`))
+      .catch(e => console.error('[spend-push] daily push failed:', e.message));
+  }
+}
+setInterval(runSpendPushSchedule, 60 * 1000);
 
 function getSheetConfig() {
   return {

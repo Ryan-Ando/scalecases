@@ -1073,4 +1073,5 @@ router.get('/debug/state-deep', async (req, res) => {
   }
 });
 
+export { fetchDailyInsights };
 export default router;

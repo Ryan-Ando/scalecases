@@ -101,6 +101,12 @@ export default function SpendSheet() {
   const [pacingError, setPacingError]   = useState('');
   const [expandedRows, setExpandedRows] = useState(new Set());
 
+  // Push-to-Sheet state
+  const [pushing, setPushing]       = useState(false);
+  const [pushNote, setPushNote]     = useState('');
+  const [pushError, setPushError]   = useState('');
+  const [tabName, setTabName]       = useState('');
+
   // Column order: persisted to localStorage
   const [colOrder, setColOrder] = useState(() => {
     try { const s = localStorage.getItem('spendSheetColOrder'); return s ? JSON.parse(s) : null; }
@@ -267,6 +273,33 @@ export default function SpendSheet() {
     });
   }, [pacingStates, pacing, pacingSpend, budgetByState]);
 
+  // Default the tab name to "<lowercase month> <year>" for the currently-viewed month.
+  // The user can override before pushing — handy when next month's tab uses a different format.
+  useEffect(() => {
+    const m = MONTH_NAMES[viewMonth].toLowerCase();
+    setTabName(`${m} ${viewYear}`);
+  }, [viewMonth, viewYear]);
+
+  async function pushToSheet() {
+    setPushing(true);
+    setPushNote('');
+    setPushError('');
+    try {
+      const r = await fetch(`${BASE}/api/sheets/push-spend`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ year: viewYear, month: viewMonth + 1, tabName: tabName.trim() || undefined }),
+      });
+      const data = await r.json();
+      if (!r.ok || !data.ok) throw new Error(data.error || `HTTP ${r.status}`);
+      setPushNote(`✓ Pushed to "${data.tab}" — ${data.states} states × ${data.days} days`);
+    } catch (e) {
+      setPushError(e.message);
+    } finally {
+      setPushing(false);
+    }
+  }
+
   // ── Monthly grid ────────────────────────────────────────────────────────────
   async function syncMonth() {
     setSyncing(true);
@@ -399,8 +432,21 @@ export default function SpendSheet() {
           </button>
         )}
 
-        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
+        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
           {syncError && <span style={{ fontSize: 11, color: '#dc2626' }} title={syncError}>Sync error</span>}
+          {pushError && <span style={{ fontSize: 11, color: '#dc2626' }} title={pushError}>Push error</span>}
+          {pushNote && !pushError && <span style={{ fontSize: 11, color: 'var(--green, #16a34a)' }}>{pushNote}</span>}
+          <input
+            type="text"
+            value={tabName}
+            onChange={e => setTabName(e.target.value)}
+            placeholder="tab name"
+            title="Target tab in the spend Google Sheet (e.g. 'june 2026'). Created if missing."
+            style={{ fontSize: 12, padding: '4px 8px', border: '1px solid var(--border)', borderRadius: 4, background: 'var(--bg)', color: 'var(--text)', width: 130 }}
+          />
+          <button className="btn btn--sm btn--primary" onClick={pushToSheet} disabled={pushing} title="Pushes the displayed month grid to Google Sheets. Daily auto-push runs at 06:15 ET.">
+            {pushing ? 'Pushing…' : '↑ Push to Sheet'}
+          </button>
           <button className="btn btn--sm" onClick={syncMonth} disabled={syncing}>
             {syncing ? 'Syncing…' : 'Sync Month'}
           </button>
