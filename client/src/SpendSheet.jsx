@@ -280,7 +280,7 @@ export default function SpendSheet() {
     setTabName(`${m} ${viewYear}`);
   }, [viewMonth, viewYear]);
 
-  async function pushToSheet() {
+  async function pushToSheet(preview = false) {
     setPushing(true);
     setPushNote('');
     setPushError('');
@@ -288,14 +288,19 @@ export default function SpendSheet() {
       const r = await fetch(`${BASE}/api/sheets/push-spend`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ year: viewYear, month: viewMonth + 1, tabName: tabName.trim() || undefined }),
+        body: JSON.stringify({ year: viewYear, month: viewMonth + 1, tabName: tabName.trim() || undefined, preview }),
       });
       const data = await r.json();
       if (!r.ok || !data.ok) throw new Error(data.error || `HTTP ${r.status}`);
+      console.log('[push-spend response]', data);
       const skipped = data.skippedStates?.length
         ? ` · skipped (not in sheet): ${data.skippedStates.join(', ')}`
         : '';
-      setPushNote(`✓ Pushed to "${data.tab}" — ${data.updated} cells (${data.statesMatched} states × ${data.daysMatched} days)${skipped}`);
+      if (preview) {
+        setPushNote(`Preview "${data.tab}": ${data.statesMatched} states × ${data.daysMatched} days · ${data.nonZeroWrites} non-zero · sample ${(data.sample || []).join(' ; ')}${skipped}`);
+      } else {
+        setPushNote(`✓ Pushed to "${data.tab}" — ${data.updated} cells (${data.nonZeroWrites} non-zero, ${data.statesMatched}×${data.daysMatched}) · sample ${(data.sample || []).slice(0, 2).join(' ; ')}${skipped}`);
+      }
     } catch (e) {
       setPushError(e.message);
     } finally {
@@ -447,7 +452,10 @@ export default function SpendSheet() {
             title="Target tab in the spend Google Sheet (e.g. 'june 2026'). Created if missing."
             style={{ fontSize: 12, padding: '4px 8px', border: '1px solid var(--border)', borderRadius: 4, background: 'var(--bg)', color: 'var(--text)', width: 130 }}
           />
-          <button className="btn btn--sm btn--primary" onClick={pushToSheet} disabled={pushing} title="Pushes the displayed month grid to Google Sheets. Daily auto-push runs at 06:15 ET.">
+          <button className="btn btn--sm" onClick={() => pushToSheet(true)} disabled={pushing} title="Preview — runs discovery and returns what cells WOULD be written, without changing the sheet.">
+            {pushing ? '…' : 'Preview'}
+          </button>
+          <button className="btn btn--sm btn--primary" onClick={() => pushToSheet(false)} disabled={pushing} title="Pushes the displayed month grid to Google Sheets. Daily auto-push runs at 06:15 ET.">
             {pushing ? 'Pushing…' : '↑ Push to Sheet'}
           </button>
           <button className="btn btn--sm" onClick={syncMonth} disabled={syncing}>

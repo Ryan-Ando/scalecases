@@ -113,7 +113,7 @@ function parseDayFromCell(cell) {
 // Core push: discover the sheet's state columns + date rows, then write only
 // the (state × day) intersections. Day labels and TOTAL columns/rows are never
 // touched. States that don't already appear as a column header are skipped.
-async function pushSpendToSheet({ year, monthIndex, tabName }) {
+async function pushSpendToSheet({ year, monthIndex, tabName, preview = false }) {
   const spreadsheetId = spendSheetId();
   if (!spreadsheetId) throw new Error('SPEND_SHEET_ID not set');
 
@@ -185,11 +185,28 @@ async function pushSpendToSheet({ year, monthIndex, tabName }) {
   // Track FB-known states that the sheet doesn't have a column for (just reporting, no write).
   for (const st of states) if (colByState[st] == null) skippedStates.add(st);
 
+  // Sample of cells we'll write — useful for debugging when the sheet appears unchanged.
+  const nonZero = updates.filter(u => u.values[0][0] !== 0);
+  const sample = nonZero.slice(0, 5).map(u => `${u.range}=${u.values[0][0]}`);
+
+  if (preview) {
+    return {
+      tab: resolvedTab, preview: true,
+      colByState, rowByDay,
+      statesMatched: Object.keys(colByState).length,
+      daysMatched: Object.keys(rowByDay).length,
+      proposedWrites: updates.length,
+      nonZeroWrites: nonZero.length,
+      sample,
+      skippedStates: [...skippedStates],
+    };
+  }
+
   if (updates.length === 0) {
     return { tab: resolvedTab, updated: 0, skippedStates: [...skippedStates], note: 'no matching state×day cells' };
   }
 
-  await sheets.spreadsheets.values.batchUpdate({
+  const apiRes = await sheets.spreadsheets.values.batchUpdate({
     spreadsheetId,
     requestBody: {
       valueInputOption: 'USER_ENTERED', // lets sheet currency/number formatting apply
@@ -200,9 +217,14 @@ async function pushSpendToSheet({ year, monthIndex, tabName }) {
   return {
     tab: resolvedTab,
     updated: updates.length,
+    nonZeroWrites: nonZero.length,
+    totalUpdatedCells: apiRes.data?.totalUpdatedCells ?? null,
     statesMatched: Object.keys(colByState).length,
     daysMatched: Object.keys(rowByDay).length,
     skippedStates: [...skippedStates],
+    sample,
+    colByState,
+    rowByDay,
   };
 }
 
@@ -223,12 +245,18 @@ router.get('/spend-tabs', async (req, res) => {
 });
 
 // POST /api/sheets/push-spend
-// Body: { year, month (1-based), tabName? }   tabName falls back to "<month> <year>"
+// Body: { year, month (1-based), tabName?, preview? }
+//   preview=true returns the discovered colByState/rowByDay + sample writes WITHOUT writing.
 router.post('/push-spend', async (req, res) => {
   try {
-    const { year, month, tabName } = req.body || {};
+    const { year, month, tabName, preview } = req.body || {};
     if (!year || !month) return res.status(400).json({ error: 'year and month (1-12) required' });
-    const result = await pushSpendToSheet({ year: parseInt(year, 10), monthIndex: parseInt(month, 10) - 1, tabName });
+    const result = await pushSpendToSheet({
+      year: parseInt(year, 10),
+      monthIndex: parseInt(month, 10) - 1,
+      tabName,
+      preview: preview === true || preview === 'true',
+    });
     res.json({ ok: true, ...result });
   } catch (err) {
     console.error('push-spend error:', err.message);
