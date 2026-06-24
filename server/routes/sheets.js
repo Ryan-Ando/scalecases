@@ -65,43 +65,54 @@ async function buildMonthGrid(year, monthIndex) {
   return { states, days, grid };
 }
 
-// Render the grid into a 2-D array matching the user's layout:
-//   row 1   : [''] + [...states] + ['TOTAL']
-//   row 2..N: [day] + spend per state + day total
-//   row N+1 : ['TOTAL'] + state totals + grand total
-function gridToValues({ states, days, grid }) {
-  const header = ['', ...states, 'TOTAL'];
-  const body = days.map(d => {
-    const dayRow = grid[d] || {};
-    const cells = states.map(st => dayRow[st] || 0);
-    const rowTotal = cells.reduce((s, v) => s + v, 0);
-    return [d, ...cells, rowTotal];
-  });
-  const colTotals = states.map(st => days.reduce((s, d) => s + (grid[d]?.[st] || 0), 0));
-  const grand = colTotals.reduce((s, v) => s + v, 0);
-  const totalRow = ['TOTAL', ...colTotals, grand];
-  return [header, ...body, totalRow];
-}
-
 function spendSheetId() {
   return process.env.SPEND_SHEET_ID;
 }
 
-// Ensure the tab exists; if not, create it. Returns the resolved tab name.
-async function ensureTab(sheets, spreadsheetId, tabName) {
+// Look up the tab name in the spreadsheet (case-insensitive). Throws if missing —
+// monthly tabs are pre-formatted with headers and date rows; we should never
+// silently auto-create one and then fail to find any cells to write into.
+async function findTab(sheets, spreadsheetId, tabName) {
   const meta = await sheets.spreadsheets.get({ spreadsheetId });
   const existing = (meta.data.sheets || []).map(s => s.properties?.title || '');
-  // Case-insensitive match — user's tabs are lowercase ("june 2026").
   const hit = existing.find(t => t.toLowerCase() === tabName.toLowerCase());
-  if (hit) return hit;
-  await sheets.spreadsheets.batchUpdate({
-    spreadsheetId,
-    requestBody: { requests: [{ addSheet: { properties: { title: tabName } } }] },
-  });
-  return tabName;
+  if (!hit) throw new Error(`Tab "${tabName}" not found. Existing tabs: ${existing.join(', ')}`);
+  return hit;
 }
 
-// Core push: writes the month's grid into the named tab, starting at A1.
+// Try to extract a day-of-month (1-31) from a sheet cell.
+// Cells in the date column might be "6/1/2026", "Jun 1", "2026-06-01", or just "1".
+function parseDayFromCell(cell) {
+  if (cell == null || cell === '') return null;
+  const s = String(cell).trim();
+  if (/^\d{1,2}$/.test(s)) {
+    const n = parseInt(s, 10);
+    return (n >= 1 && n <= 31) ? n : null;
+  }
+  // "M/D" or "M/D/YYYY" — pull the second number
+  const slash = s.match(/^\d{1,2}\/(\d{1,2})(?:\/\d{2,4})?$/);
+  if (slash) {
+    const d = parseInt(slash[1], 10);
+    if (d >= 1 && d <= 31) return d;
+  }
+  // "YYYY-MM-DD"
+  const iso = s.match(/^\d{4}-\d{2}-(\d{2})$/);
+  if (iso) {
+    const d = parseInt(iso[1], 10);
+    if (d >= 1 && d <= 31) return d;
+  }
+  // Fallback — let JS try
+  const parsed = new Date(s);
+  if (!isNaN(parsed.getTime())) {
+    const d = parsed.getDate();
+    if (d >= 1 && d <= 31) return d;
+  }
+  return null;
+}
+
+// Core push: discover the sheet's state columns + date rows, then write only
+// the (state × day) intersections. Day labels and TOTAL columns/rows are never
+// touched. States that don't already appear as a column header are skipped.
 async function pushSpendToSheet({ year, monthIndex, tabName }) {
   const spreadsheetId = spendSheetId();
   if (!spreadsheetId) throw new Error('SPEND_SHEET_ID not set');
@@ -109,21 +120,90 @@ async function pushSpendToSheet({ year, monthIndex, tabName }) {
   const auth   = await getAuthClient(true);
   const sheets = google.sheets({ version: 'v4', auth });
 
-  const resolvedTab = await ensureTab(sheets, spreadsheetId, tabName || defaultTabName(year, monthIndex));
-  const { states, days, grid } = await buildMonthGrid(year, monthIndex);
-  const values = gridToValues({ states, days, grid });
-  const numCols = values[0].length;
-  const numRows = values.length;
-  const range = `'${resolvedTab}'!A1:${colLetter(numCols)}${numRows}`;
+  const resolvedTab = await findTab(sheets, spreadsheetId, tabName || defaultTabName(year, monthIndex));
 
-  // Clear the target rectangle first so a shrinking state count doesn't leave stale columns.
-  await sheets.spreadsheets.values.clear({ spreadsheetId, range });
-  await sheets.spreadsheets.values.update({
-    spreadsheetId, range, valueInputOption: 'RAW',
-    requestBody: { values },
+  // Read a generous rectangle covering header + date rows. AZ50 = up to 52 columns
+  // and 50 rows; plenty for a 31-day month with state columns and a totals row.
+  const existing = await sheets.spreadsheets.values.get({
+    spreadsheetId,
+    range: `'${resolvedTab}'!A1:AZ50`,
+    valueRenderOption: 'FORMATTED_VALUE',
+  });
+  const rows = existing.data.values || [];
+
+  // 1. Find the header row — first row containing ≥2 US state codes.
+  let headerRowIdx = -1;
+  for (let i = 0; i < rows.length; i++) {
+    const hits = (rows[i] || []).filter(c => US_STATES.has(String(c).trim().toUpperCase())).length;
+    if (hits >= 2) { headerRowIdx = i; break; }
+  }
+  if (headerRowIdx === -1) {
+    throw new Error(`No header row with state codes found in "${resolvedTab}".`);
+  }
+
+  // 2. Build colByState from the header row (0-based column index).
+  const colByState = {};
+  for (let c = 0; c < (rows[headerRowIdx] || []).length; c++) {
+    const v = String(rows[headerRowIdx][c] || '').trim().toUpperCase();
+    if (US_STATES.has(v)) colByState[v] = c;
+  }
+
+  // 3. Build rowByDay by scanning rows BELOW the header for a day-parseable cell.
+  //    Stops at the first row that has no day in any column (covers a TOTALS row).
+  const rowByDay = {};
+  for (let r = headerRowIdx + 1; r < rows.length; r++) {
+    const row = rows[r] || [];
+    let day = null;
+    for (let c = 0; c < row.length; c++) {
+      day = parseDayFromCell(row[c]);
+      if (day) break;
+    }
+    if (!day) continue;
+    if (!rowByDay[day]) rowByDay[day] = r;
+  }
+  if (Object.keys(rowByDay).length === 0) {
+    throw new Error(`No date/day rows found below the header in "${resolvedTab}".`);
+  }
+
+  // 4. Build the FB grid and queue per-cell updates.
+  const { states, days, grid } = await buildMonthGrid(year, monthIndex);
+
+  const updates = [];
+  const skippedStates = new Set();
+  // For every (state, day) the SHEET knows about, write the FB value (or 0).
+  for (const st of Object.keys(colByState)) {
+    const col = colByState[st];
+    for (const day of Object.keys(rowByDay).map(Number)) {
+      const row = rowByDay[day];
+      const spend = grid[day]?.[st] || 0;
+      updates.push({
+        range: `'${resolvedTab}'!${colLetter(col + 1)}${row + 1}`,
+        values: [[spend]],
+      });
+    }
+  }
+  // Track FB-known states that the sheet doesn't have a column for (just reporting, no write).
+  for (const st of states) if (colByState[st] == null) skippedStates.add(st);
+
+  if (updates.length === 0) {
+    return { tab: resolvedTab, updated: 0, skippedStates: [...skippedStates], note: 'no matching state×day cells' };
+  }
+
+  await sheets.spreadsheets.values.batchUpdate({
+    spreadsheetId,
+    requestBody: {
+      valueInputOption: 'USER_ENTERED', // lets sheet currency/number formatting apply
+      data: updates,
+    },
   });
 
-  return { tab: resolvedTab, rows: numRows, cols: numCols, states: states.length, days: days.length };
+  return {
+    tab: resolvedTab,
+    updated: updates.length,
+    statesMatched: Object.keys(colByState).length,
+    daysMatched: Object.keys(rowByDay).length,
+    skippedStates: [...skippedStates],
+  };
 }
 
 // GET /api/sheets/spend-tabs — list tabs in the spend spreadsheet
@@ -169,7 +249,7 @@ function runSpendPushSchedule() {
     _lastSpendPushDate = todayET;
     const [y, m] = todayET.split('-').map(n => parseInt(n, 10));
     pushSpendToSheet({ year: y, monthIndex: m - 1 })
-      .then(r => console.log(`[spend-push] daily push OK — ${r.tab}: ${r.rows}×${r.cols}`))
+      .then(r => console.log(`[spend-push] daily push OK — ${r.tab}: ${r.updated} cells (${r.statesMatched} states × ${r.daysMatched} days)${r.skippedStates?.length ? ` · skipped: ${r.skippedStates.join(',')}` : ''}`))
       .catch(e => console.error('[spend-push] daily push failed:', e.message));
   }
 }

@@ -292,7 +292,10 @@ export default function SpendSheet() {
       });
       const data = await r.json();
       if (!r.ok || !data.ok) throw new Error(data.error || `HTTP ${r.status}`);
-      setPushNote(`✓ Pushed to "${data.tab}" — ${data.states} states × ${data.days} days`);
+      const skipped = data.skippedStates?.length
+        ? ` · skipped (not in sheet): ${data.skippedStates.join(', ')}`
+        : '';
+      setPushNote(`✓ Pushed to "${data.tab}" — ${data.updated} cells (${data.statesMatched} states × ${data.daysMatched} days)${skipped}`);
     } catch (e) {
       setPushError(e.message);
     } finally {
