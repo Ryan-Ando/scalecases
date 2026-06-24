@@ -142,10 +142,23 @@ async function pushSpendToSheet({ year, monthIndex, tabName, preview = false }) 
   }
 
   // 2. Build colByState from the header row (0-based column index).
+  //    Take ONLY the first contiguous block of state-code columns. If the same
+  //    state codes also appear in a duplicate block further right (totals strip,
+  //    summary section, etc.), the rightmost occurrence used to win because we
+  //    were unconditionally re-assigning. Now: stop scanning at the first
+  //    non-state cell after the run starts.
   const colByState = {};
-  for (let c = 0; c < (rows[headerRowIdx] || []).length; c++) {
-    const v = String(rows[headerRowIdx][c] || '').trim().toUpperCase();
-    if (US_STATES.has(v)) colByState[v] = c;
+  const headerCells = rows[headerRowIdx] || [];
+  let runStarted = false;
+  for (let c = 0; c < headerCells.length; c++) {
+    const v = String(headerCells[c] || '').trim().toUpperCase();
+    const isState = US_STATES.has(v);
+    if (isState) {
+      runStarted = true;
+      if (colByState[v] == null) colByState[v] = c;
+    } else if (runStarted) {
+      break; // end of first state-code block — ignore any later blocks
+    }
   }
 
   // 3. Build rowByDay by scanning rows BELOW the header for a day-parseable cell.
