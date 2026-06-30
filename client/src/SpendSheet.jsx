@@ -20,16 +20,12 @@ function extractState(campaignName) {
   return null;
 }
 
-// Detect brand from a campaign name. Priority: Halo > LSS > CBO (CBO defaults to LSS
-// because CBO is a campaign-type tag and the LSS account uses it). Matches whole
-// tokens case-insensitively so 'lossless-...' or 'halogen' won't trigger.
+// Brand resolution: if 'Halo' appears as a whole token (case-insensitive) → Halo,
+// otherwise → LSS. Everything not explicitly Halo is treated as LSS.
 function extractBrand(campaignName) {
-  if (!campaignName) return null;
+  if (!campaignName) return 'LSS';
   const tokens = campaignName.split(/[-–—\s_/|]+/).map(t => t.toUpperCase());
-  if (tokens.includes('HALO')) return 'Halo';
-  if (tokens.includes('LSS'))  return 'LSS';
-  if (tokens.includes('CBO'))  return 'LSS'; // CBO without an explicit brand token → LSS
-  return null;
+  return tokens.includes('HALO') ? 'Halo' : 'LSS';
 }
 
 // Composite grouping key for the Spend Sheet — '<brand> <state>' when both present,

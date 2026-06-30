@@ -23,14 +23,11 @@ function extractState(campaignName) {
   return null;
 }
 
-// Priority: Halo > LSS > CBO (CBO defaults to LSS — campaign-type tag in the LSS account).
+// Halo token present → Halo. Everything else → LSS.
 function extractBrand(campaignName) {
-  if (!campaignName) return null;
+  if (!campaignName) return 'LSS';
   const tokens = campaignName.split(/[-–—\s_/|]+/).map(t => t.toUpperCase());
-  if (tokens.includes('HALO')) return 'Halo';
-  if (tokens.includes('LSS'))  return 'LSS';
-  if (tokens.includes('CBO'))  return 'LSS';
-  return null;
+  return tokens.includes('HALO') ? 'Halo' : 'LSS';
 }
 
 // Composite key matching the client — '<brand> <state>' when both present,
