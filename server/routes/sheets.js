@@ -23,6 +23,44 @@ function extractState(campaignName) {
   return null;
 }
 
+function extractBrand(campaignName) {
+  if (!campaignName) return null;
+  const tokens = campaignName.split(/[-–—\s_/|]+/);
+  for (const t of tokens) {
+    const u = t.toUpperCase();
+    if (u === 'LSS')  return 'LSS';
+    if (u === 'HALO') return 'Halo';
+  }
+  return null;
+}
+
+// Composite key matching the client — '<brand> <state>' when both present,
+// just the state code when no brand is detectable.
+function extractGroup(campaignName) {
+  const state = extractState(campaignName);
+  if (!state) return null;
+  const brand = extractBrand(campaignName);
+  return brand ? `${brand} ${state}` : state;
+}
+
+// Normalize a sheet header cell to either '<Brand> <STATE>' or '<STATE>' or null.
+// Accepts case-insensitive brand + state combos: 'LSS GA', 'halo ga', 'GA', etc.
+function parseHeaderCell(cell) {
+  const s = String(cell || '').trim();
+  if (!s) return null;
+  const m = s.match(/^(LSS|Halo)\s+([A-Za-z]{2})$/i);
+  if (m) {
+    const state = m[2].toUpperCase();
+    if (US_STATES.has(state)) {
+      const brand = m[1].toUpperCase() === 'LSS' ? 'LSS' : 'Halo';
+      return `${brand} ${state}`;
+    }
+  }
+  const upper = s.toUpperCase();
+  if (US_STATES.has(upper)) return upper;
+  return null;
+}
+
 const MONTHS = ['january','february','march','april','may','june','july','august','september','october','november','december'];
 
 function defaultTabName(year, monthIndex) {
@@ -48,11 +86,11 @@ async function buildMonthGrid(year, monthIndex) {
     level: 'campaign', start: since, end: until, full: true,
   });
 
-  const grid = {};       // grid[day][state] = spend
+  const grid = {};       // grid[day][group] = spend  (group = 'LSS GA' / 'Halo GA' / 'GA')
   const stateSet = new Set();
   for (const r of rows) {
     if (!r.date_start?.startsWith(ym)) continue;
-    const st = extractState(r.campaign_name);
+    const st = extractGroup(r.campaign_name);
     if (!st) continue;
     const day = parseInt(r.date_start.slice(8), 10);
     const spend = parseFloat(r.spend) || 0;
@@ -131,31 +169,28 @@ async function pushSpendToSheet({ year, monthIndex, tabName, preview = false }) 
   });
   const rows = existing.data.values || [];
 
-  // 1. Find the header row — first row containing ≥2 US state codes.
+  // 1. Find the header row — first row containing ≥2 cells that parse as a state
+  //    or brand-prefixed state (LSS GA, Halo GA, plain GA, etc.).
   let headerRowIdx = -1;
   for (let i = 0; i < rows.length; i++) {
-    const hits = (rows[i] || []).filter(c => US_STATES.has(String(c).trim().toUpperCase())).length;
+    const hits = (rows[i] || []).filter(c => parseHeaderCell(c)).length;
     if (hits >= 2) { headerRowIdx = i; break; }
   }
   if (headerRowIdx === -1) {
     throw new Error(`No header row with state codes found in "${resolvedTab}".`);
   }
 
-  // 2. Build colByState from the header row (0-based column index).
-  //    Take ONLY the first contiguous block of state-code columns. If the same
-  //    state codes also appear in a duplicate block further right (totals strip,
-  //    summary section, etc.), the rightmost occurrence used to win because we
-  //    were unconditionally re-assigning. Now: stop scanning at the first
-  //    non-state cell after the run starts.
+  // 2. Build colByState from the header row (0-based column index). Take ONLY the
+  //    first contiguous block of state-code columns — any duplicate state block
+  //    further right (totals strip, summary section) is ignored.
   const colByState = {};
   const headerCells = rows[headerRowIdx] || [];
   let runStarted = false;
   for (let c = 0; c < headerCells.length; c++) {
-    const v = String(headerCells[c] || '').trim().toUpperCase();
-    const isState = US_STATES.has(v);
-    if (isState) {
+    const key = parseHeaderCell(headerCells[c]);
+    if (key) {
       runStarted = true;
-      if (colByState[v] == null) colByState[v] = c;
+      if (colByState[key] == null) colByState[key] = c;
     } else if (runStarted) {
       break; // end of first state-code block — ignore any later blocks
     }

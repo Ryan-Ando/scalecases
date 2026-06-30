@@ -20,6 +20,28 @@ function extractState(campaignName) {
   return null;
 }
 
+// Detect LSS or Halo as a brand token anywhere in the campaign name (case-insensitive,
+// matched as a whole token so 'lossless-...' or 'halogen' won't trigger).
+function extractBrand(campaignName) {
+  if (!campaignName) return null;
+  const tokens = campaignName.split(/[-–—\s_/|]+/);
+  for (const t of tokens) {
+    const u = t.toUpperCase();
+    if (u === 'LSS')  return 'LSS';
+    if (u === 'HALO') return 'Halo';
+  }
+  return null;
+}
+
+// Composite grouping key for the Spend Sheet — '<brand> <state>' when both present,
+// just the state code when no brand is detectable.
+function extractGroup(campaignName) {
+  const state = extractState(campaignName);
+  if (!state) return null;
+  const brand = extractBrand(campaignName);
+  return brand ? `${brand} ${state}` : state;
+}
+
 const MONTH_NAMES = ['January','February','March','April','May','June','July','August','September','October','November','December'];
 
 function fmt(v) {
@@ -204,7 +226,7 @@ export default function SpendSheet() {
         const data = await r.json();
         if (!r.ok) throw new Error(data.error || 'Fetch failed');
         for (const c of data) {
-          const st = extractState(c.campaign_name);
+          const st = extractGroup(c.campaign_name);
           if (!st) continue;
           spendMap[st] = (spendMap[st] || 0) + c.spend;
           if (!detailMap[st]) detailMap[st] = [];
@@ -230,7 +252,7 @@ export default function SpendSheet() {
     const countedCampaigns = new Set(); // avoid double-counting CBO campaign budgets
     for (const a of adsets) {
       if (a.effectiveStatus !== 'ACTIVE') continue;
-      const state = extractState(a.campaignName);
+      const state = extractGroup(a.campaignName);
       if (!state) continue;
       const adsetBudget = parseFloat(a.dailyBudget) / 100 || 0;
       if (adsetBudget > 0) {
@@ -344,7 +366,7 @@ export default function SpendSheet() {
 
     for (const row of insights) {
       if (!row.date_start?.startsWith(monthStr)) continue;
-      const state = extractState(row.campaign_name);
+      const state = extractGroup(row.campaign_name);
       if (!state) continue;
       const day   = parseInt(row.date_start.slice(8), 10);
       const spend = parseFloat(row.spend) || 0;
