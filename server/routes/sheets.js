@@ -23,14 +23,13 @@ function extractState(campaignName) {
   return null;
 }
 
+// Priority: Halo > LSS > CBO (CBO defaults to LSS — campaign-type tag in the LSS account).
 function extractBrand(campaignName) {
   if (!campaignName) return null;
-  const tokens = campaignName.split(/[-–—\s_/|]+/);
-  for (const t of tokens) {
-    const u = t.toUpperCase();
-    if (u === 'LSS')  return 'LSS';
-    if (u === 'HALO') return 'Halo';
-  }
+  const tokens = campaignName.split(/[-–—\s_/|]+/).map(t => t.toUpperCase());
+  if (tokens.includes('HALO')) return 'Halo';
+  if (tokens.includes('LSS'))  return 'LSS';
+  if (tokens.includes('CBO'))  return 'LSS';
   return null;
 }
 

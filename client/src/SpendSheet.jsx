@@ -20,16 +20,15 @@ function extractState(campaignName) {
   return null;
 }
 
-// Detect LSS or Halo as a brand token anywhere in the campaign name (case-insensitive,
-// matched as a whole token so 'lossless-...' or 'halogen' won't trigger).
+// Detect brand from a campaign name. Priority: Halo > LSS > CBO (CBO defaults to LSS
+// because CBO is a campaign-type tag and the LSS account uses it). Matches whole
+// tokens case-insensitively so 'lossless-...' or 'halogen' won't trigger.
 function extractBrand(campaignName) {
   if (!campaignName) return null;
-  const tokens = campaignName.split(/[-–—\s_/|]+/);
-  for (const t of tokens) {
-    const u = t.toUpperCase();
-    if (u === 'LSS')  return 'LSS';
-    if (u === 'HALO') return 'Halo';
-  }
+  const tokens = campaignName.split(/[-–—\s_/|]+/).map(t => t.toUpperCase());
+  if (tokens.includes('HALO')) return 'Halo';
+  if (tokens.includes('LSS'))  return 'LSS';
+  if (tokens.includes('CBO'))  return 'LSS'; // CBO without an explicit brand token → LSS
   return null;
 }
 
