@@ -50,8 +50,33 @@ function fmtOrDash(v) {
 
 // ── Pacing helpers ────────────────────────────────────────────────────────────
 const PACING_KEY = 'spend_pacing_v2';
+// One-time migration: any pacing config stored under a plain state code (the
+// pre-brand-split format, e.g. 'GA') gets relabelled to 'LSS <state>' since all
+// historical data was LSS. Existing branded keys are preserved as-is; if both
+// versions of a key already exist, the already-branded one wins (newer config).
+// Idempotent — running it on already-migrated config is a no-op.
 function loadPacing() {
-  try { return JSON.parse(localStorage.getItem(PACING_KEY) || '{}'); } catch { return {}; }
+  try {
+    const raw = JSON.parse(localStorage.getItem(PACING_KEY) || '{}');
+    const next = {};
+    let changed = false;
+    // Pass 1: keep all already-branded keys (LSS *, Halo *) as the source of truth.
+    for (const [k, v] of Object.entries(raw)) {
+      if (!US_STATES.has(k)) next[k] = v;
+    }
+    // Pass 2: rewrite each plain state key to 'LSS <state>' unless an LSS entry already exists.
+    for (const [k, v] of Object.entries(raw)) {
+      if (!US_STATES.has(k)) continue;
+      const newKey = `LSS ${k}`;
+      changed = true;
+      if (next[newKey] != null) continue; // existing branded config wins
+      next[newKey] = v;
+    }
+    if (changed) {
+      try { localStorage.setItem(PACING_KEY, JSON.stringify(next)); } catch {}
+    }
+    return next;
+  } catch { return {}; }
 }
 
 const TZ_OPTIONS = [
