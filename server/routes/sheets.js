@@ -43,18 +43,17 @@ function extractGroup(campaignName) {
   return brand ? `${brand} ${state}` : state;
 }
 
-// Normalize a sheet header cell to either '<Brand> <STATE>' or '<STATE>' or null.
-// Accepts case-insensitive brand + state combos: 'LSS GA', 'halo ga', 'GA', etc.
+// Normalize a sheet header cell into the key our LSS-only grid uses (plain state code).
+// Accepts 'GA' and 'LSS GA' (both → 'GA'). Rejects 'Halo GA' so push never overwrites
+// a Halo column even if one exists in the sheet.
 function parseHeaderCell(cell) {
   const s = String(cell || '').trim();
   if (!s) return null;
   const m = s.match(/^(LSS|Halo)\s+([A-Za-z]{2})$/i);
   if (m) {
+    if (m[1].toUpperCase() === 'HALO') return null; // never write to Halo columns
     const state = m[2].toUpperCase();
-    if (US_STATES.has(state)) {
-      const brand = m[1].toUpperCase() === 'LSS' ? 'LSS' : 'Halo';
-      return `${brand} ${state}`;
-    }
+    if (US_STATES.has(state)) return state;
   }
   const upper = s.toUpperCase();
   if (US_STATES.has(upper)) return upper;
@@ -86,11 +85,14 @@ async function buildMonthGrid(year, monthIndex) {
     level: 'campaign', start: since, end: until, full: true,
   });
 
-  const grid = {};       // grid[day][group] = spend  (group = 'LSS GA' / 'Halo GA' / 'GA')
+  const grid = {};       // grid[day][state] = spend (LSS + unbranded only — Halo excluded)
   const stateSet = new Set();
   for (const r of rows) {
     if (!r.date_start?.startsWith(ym)) continue;
-    const st = extractGroup(r.campaign_name);
+    // Sheet push is LSS-only: drop any Halo-branded campaign so its spend never
+    // lands in the sheet, even when an unbranded campaign for the same state exists.
+    if (extractBrand(r.campaign_name) === 'Halo') continue;
+    const st = extractState(r.campaign_name);
     if (!st) continue;
     const day = parseInt(r.date_start.slice(8), 10);
     const spend = parseFloat(r.spend) || 0;
