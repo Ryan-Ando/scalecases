@@ -442,17 +442,44 @@ router.get('/campaign-insights', async (req, res) => {
   }
 });
 
-// GET /api/facebook/adsets?campaign_id=
+// GET /api/facebook/adsets?campaign_id=&metadata_only=true
 router.get('/adsets', async (req, res) => {
   try {
-    const { date_preset, campaign_id, start, end } = req.query;
-    const cacheKey = `adsets:${campaign_id||''}:${date_preset||''}:${start||''}:${end||''}`;
+    const { date_preset, campaign_id, start, end, metadata_only } = req.query;
+    const wantMetadataOnly = metadata_only === 'true';
+    const cacheKey = wantMetadataOnly
+      ? `adsets:meta:${campaign_id||''}`
+      : `adsets:${campaign_id||''}:${date_preset||''}:${start||''}:${end||''}`;
     const cached = req.query.force ? null : cacheGet(cacheKey);
     if (cached) return res.json(cached);
     const timeRange = start && end ? { since: start, until: end } : null;
 
     const listParams = { fields: 'id,name,status,effective_status,campaign_id,campaign{name,daily_budget,lifetime_budget},created_time,daily_budget,lifetime_budget,optimization_goal' };
     if (campaign_id) listParams.filtering = JSON.stringify([{ field: 'campaign.id', operator: 'EQUAL', value: campaign_id }]);
+
+    // Fast path: budget / status data only — no insights fetch, no per-row extractResults.
+    // Used by the Spend Sheet Live Daily Budget cards which don't need spend/CPM/etc.
+    if (wantMetadataOnly) {
+      const adsets = await fetchFromAllAccounts('adsets', listParams);
+      const seen = new Set();
+      const mapped = adsets.filter(a => { if (seen.has(a.id)) return false; seen.add(a.id); return true; })
+        .map(a => ({
+          id: a.id,
+          name: a.name,
+          status: a.status,
+          effectiveStatus: a.effective_status,
+          campaignId: a.campaign_id,
+          campaignName: a.campaign?.name || '',
+          createdTime: a.created_time,
+          dailyBudget: a.daily_budget,
+          lifetimeBudget: a.lifetime_budget,
+          campaignDailyBudget: a.campaign?.daily_budget,
+          campaignLifetimeBudget: a.campaign?.lifetime_budget,
+          optimizationGoal: a.optimization_goal,
+        }));
+      cacheSet(cacheKey, mapped);
+      return res.json(mapped);
+    }
 
     const [adsets, insights] = await Promise.all([
       fetchFromAllAccounts('adsets', listParams),

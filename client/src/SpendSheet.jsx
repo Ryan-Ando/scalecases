@@ -168,7 +168,12 @@ export default function SpendSheet() {
     setLoadingBudget(true);
     setBudgetError('');
     try {
-      const res  = await fetch(`${BASE}/api/facebook/adsets${force ? '?force=true' : ''}`);
+      // metadata_only skips the insights fetch on the server — we only need budget,
+      // status, and campaign name for the Live Daily Budget cards. Full-insights
+      // fetch (with actions[] and cost_per_result) was timing out on large accounts.
+      const qs = new URLSearchParams({ metadata_only: 'true' });
+      if (force) qs.set('force', 'true');
+      const res  = await fetch(`${BASE}/api/facebook/adsets?${qs}`);
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || res.statusText);
       setAdsets(data);
