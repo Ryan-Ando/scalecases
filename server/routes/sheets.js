@@ -23,11 +23,13 @@ function extractState(campaignName) {
   return null;
 }
 
-// Halo token present → Halo. Everything else → LSS.
+// Explicit brand tokens (Halo, Bulktide) win over the LSS default.
 function extractBrand(campaignName) {
   if (!campaignName) return 'LSS';
   const tokens = campaignName.split(/[-–—\s_/|]+/).map(t => t.toUpperCase());
-  return tokens.includes('HALO') ? 'Halo' : 'LSS';
+  if (tokens.includes('HALO'))     return 'Halo';
+  if (tokens.includes('BULKTIDE')) return 'Bulktide';
+  return 'LSS';
 }
 
 // Composite key matching the client — '<brand> <state>' when both present,
@@ -40,16 +42,18 @@ function extractGroup(campaignName) {
 }
 
 // Normalize a sheet header cell into the key our LSS-only grid uses (plain state code).
-// Accepts 'GA' and 'LSS GA' (both → 'GA'). Rejects 'Halo GA' so push never overwrites
-// a Halo column even if one exists in the sheet.
+// Accepts 'GA' and 'LSS GA' (both → 'GA'). Rejects any other brand-prefixed header
+// (Halo GA, Bulktide GA, ...) so the push never overwrites a non-LSS client's column.
 function parseHeaderCell(cell) {
   const s = String(cell || '').trim();
   if (!s) return null;
-  const m = s.match(/^(LSS|Halo)\s+([A-Za-z]{2})$/i);
+  const m = s.match(/^([A-Za-z]+)\s+([A-Za-z]{2})$/);
   if (m) {
-    if (m[1].toUpperCase() === 'HALO') return null; // never write to Halo columns
+    const brand = m[1].toUpperCase();
     const state = m[2].toUpperCase();
-    if (US_STATES.has(state)) return state;
+    if (US_STATES.has(state)) {
+      return brand === 'LSS' ? state : null; // only LSS-prefixed brand columns are writable
+    }
   }
   const upper = s.toUpperCase();
   if (US_STATES.has(upper)) return upper;
@@ -85,9 +89,9 @@ async function buildMonthGrid(year, monthIndex) {
   const stateSet = new Set();
   for (const r of rows) {
     if (!r.date_start?.startsWith(ym)) continue;
-    // Sheet push is LSS-only: drop any Halo-branded campaign so its spend never
-    // lands in the sheet, even when an unbranded campaign for the same state exists.
-    if (extractBrand(r.campaign_name) === 'Halo') continue;
+    // Sheet push is LSS-only: drop any non-LSS branded campaign (Halo, Bulktide,
+    // future clients) so their spend never lands in the sheet.
+    if (extractBrand(r.campaign_name) !== 'LSS') continue;
     const st = extractState(r.campaign_name);
     if (!st) continue;
     const day = parseInt(r.date_start.slice(8), 10);

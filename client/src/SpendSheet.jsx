@@ -20,12 +20,15 @@ function extractState(campaignName) {
   return null;
 }
 
-// Brand resolution: if 'Halo' appears as a whole token (case-insensitive) → Halo,
-// otherwise → LSS. Everything not explicitly Halo is treated as LSS.
+// Brand resolution: explicit brand tokens (Halo, Bulktide) win over the LSS default.
+// If neither token appears, the campaign is treated as LSS. All matching is
+// case-insensitive on whole tokens.
 function extractBrand(campaignName) {
   if (!campaignName) return 'LSS';
   const tokens = campaignName.split(/[-–—\s_/|]+/).map(t => t.toUpperCase());
-  return tokens.includes('HALO') ? 'Halo' : 'LSS';
+  if (tokens.includes('HALO'))     return 'Halo';
+  if (tokens.includes('BULKTIDE')) return 'Bulktide';
+  return 'LSS';
 }
 
 // Composite grouping key for the Spend Sheet — '<brand> <state>' when both present,
