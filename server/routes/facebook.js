@@ -4,21 +4,6 @@ import fetch from 'node-fetch';
 const router = Router();
 const FB_API = 'https://graph.facebook.com/v19.0';
 
-// ── Dashboard activity tracking ──────────────────────────────────────────────
-// The hourly prefetch only runs when someone has used the dashboard recently,
-// so idle nights/weekends cost zero FB API calls. The first request after an
-// idle period warms the cache in the background.
-const ACTIVITY_WINDOW_MS = 3 * 60 * 60 * 1000;
-let _lastClientActivity = 0;
-router.use((req, res, next) => {
-  if (!req.path.startsWith('/stats')) {
-    const wasIdle = Date.now() - _lastClientActivity > ACTIVITY_WINDOW_MS;
-    _lastClientActivity = Date.now();
-    if (wasIdle) setTimeout(() => runPrefetch(), 5_000);
-  }
-  next();
-});
-
 // ── Date blacklist — these dates are excluded from all insights except the spend tracker ──
 const BLACKLIST_DATES = new Set(['2026-03-28']);
 
@@ -730,9 +715,10 @@ router.get('/campaign-spend', async (req, res) => {
   }
 });
 
-// ── Hourly pre-fetch ─────────────────────────────────────────────────────────
-// Warms the cache entries the client actually consumes, once per hour, and only
-// while the dashboard is in active use (see ACTIVITY_WINDOW_MS).
+// ── Manual pre-fetch ─────────────────────────────────────────────────────────
+// Warms the cache entries the client actually consumes. No automatic schedule —
+// runs only via POST /api/facebook/prefetch; all other data loads on demand
+// through the 2h response cache.
 const _prefetch = { running: false, lastRun: null, lastSuccess: null, lastError: null, durationMs: null };
 
 const PREFETCH_MIN_INTERVAL_MS = 20 * 60 * 1000; // don't re-run within 20 min of last success
@@ -742,10 +728,6 @@ async function runPrefetch() {
   if (_prefetch.running) { console.log('[prefetch] already running, skipping'); return; }
   if (_prefetch.lastSuccess && (Date.now() - _prefetch.lastSuccess) < PREFETCH_MIN_INTERVAL_MS) {
     console.log('[prefetch] skipping — last success was recent');
-    return;
-  }
-  if (Date.now() - _lastClientActivity > ACTIVITY_WINDOW_MS) {
-    console.log('[prefetch] skipping — no dashboard activity in the last 3h');
     return;
   }
   _prefetch.running = true;
@@ -867,10 +849,6 @@ async function runPrefetch() {
   }
 }
 
-// Run 60s after startup (let server warm up), then every hour
-setTimeout(runPrefetch, 60_000);
-setInterval(runPrefetch, 60 * 60 * 1000);
-
 // POST /api/facebook/prefetch — trigger a manual prefetch immediately
 router.post('/prefetch', async (req, res) => {
   if (_prefetch.running) return res.json({ ok: false, message: 'already running' });
@@ -962,7 +940,6 @@ router.get('/stats', (req, res) => {
     callGapMs: FB_CALL_GAP_MS,
     cacheSize,
     cacheKeys,
-    lastClientActivity: _lastClientActivity || null,
     recentCalls: _stats.recentCalls,
     prefetch: {
       running:     _prefetch.running,
@@ -970,9 +947,6 @@ router.get('/stats', (req, res) => {
       lastSuccess: _prefetch.lastSuccess,
       lastError:   _prefetch.lastError,
       durationMs:  _prefetch.durationMs,
-      nextRunIn:   _prefetch.lastRun
-        ? Math.max(0, Math.round(((_prefetch.lastRun + 60 * 60 * 1000) - Date.now()) / 1000))
-        : null,
     },
   });
 });
