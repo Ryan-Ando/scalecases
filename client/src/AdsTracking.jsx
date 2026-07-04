@@ -863,6 +863,7 @@ export default function AdsTracking() {
   const [chartPeriod, setChartPeriod]   = useState('all');
   const [sortKey, setSortKey]           = useState('date');
   const [sortDir, setSortDir]           = useState('desc');
+  const [reuseMonths, setReuseMonths]   = useState(() => parseInt(localStorage.getItem('reuseThresholdMonths'), 10) || 2);
   const [cutoffEnabled, setCutoffEnabled] = useState(true);
   const [cutoffDate, setCutoffDate]       = useState('2026-03-08');
   const [leadCutoffEnabled, setLeadCutoffEnabled] = useState(true);
@@ -1723,6 +1724,25 @@ export default function AdsTracking() {
         }
         return (grid[b]?.[st] || 0) - (grid[a]?.[st] || 0);
       }
+      // Reuse-candidate state sort: ads last used in this state over the
+      // dormancy threshold ago on top — oldest month first, most leads in this
+      // state first within a month. Active/recent/never-used ads sink below,
+      // ordered by leads in this state.
+      if (sortKey.startsWith('reuse:')) {
+        const st = sortKey.slice(6);
+        const cutoff = Date.now() - reuseMonths * 30 * 24 * 3600 * 1000;
+        const infoFor = n => {
+          const c = lastUsedGrid[n]?.[st];
+          const leads = grid[n]?.[st] || 0;
+          if (!c?.last || c.active || new Date(c.last).getTime() >= cutoff)
+            return { dormant: false, leads };
+          return { dormant: true, month: c.last.slice(0, 7), leads };
+        };
+        const ai = infoFor(a), bi = infoFor(b);
+        if (ai.dormant !== bi.dormant) return ai.dormant ? -1 : 1;
+        if (ai.dormant && ai.month !== bi.month) return ai.month < bi.month ? -1 : 1;
+        return bi.leads - ai.leads;
+      }
       // Ads with no date always sink to the bottom regardless of sort direction
       if (sortKey === 'date') {
         const aHas = !!firstUsed[a], bHas = !!firstUsed[b];
@@ -1780,7 +1800,7 @@ export default function AdsTracking() {
       if (av > bv) return sortDir === 'asc' ?  1 : -1;
       return 0;
     });
-  }, [adNames, sortKey, sortDir, grid, caseGrid, spendGrid, firstUsed, states, usedInState, lastUsedByAd]);
+  }, [adNames, sortKey, sortDir, grid, caseGrid, spendGrid, firstUsed, states, usedInState, lastUsedByAd, lastUsedGrid, reuseMonths]);
 
   const visibleAdNames = useMemo(() => {
     if (!filterTags.length) return sortedAdNames;
@@ -1812,8 +1832,8 @@ export default function AdsTracking() {
   }
 
   function handleSort(key) {
-    // Unused-first mode has a fixed order; clicking again turns it off
-    if (key.startsWith('unused:')) {
+    // Unused-first and reuse modes have a fixed order; clicking again turns them off
+    if (key.startsWith('unused:') || key.startsWith('reuse:')) {
       if (sortKey === key) { setSortKey('spend'); setSortDir('desc'); }
       else { setSortKey(key); setSortDir('desc'); }
       return;
@@ -2199,6 +2219,22 @@ export default function AdsTracking() {
         >
           {importing ? 'Importing…' : 'Import Month'}
         </button>
+        {sortKey.startsWith('reuse:') && (
+          <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, color: 'var(--text-muted)' }}>
+            Dormant for
+            <select
+              value={reuseMonths}
+              onChange={e => {
+                const v = parseInt(e.target.value, 10);
+                setReuseMonths(v);
+                localStorage.setItem('reuseThresholdMonths', String(v));
+              }}
+            >
+              <option value={2}>2+ months</option>
+              <option value={3}>3+ months</option>
+            </select>
+          </label>
+        )}
         <button
           className={`btn btn--sm${selecting ? ' btn--primary' : ''}`}
           style={{ marginLeft: 'auto' }}
@@ -2320,6 +2356,13 @@ export default function AdsTracking() {
                       >
                         Unused
                       </button>
+                      <button
+                        className={`tracking-sort-btn${sortKey === `reuse:${state}` ? ' tracking-sort-btn--active' : ''}`}
+                        onClick={e => { e.stopPropagation(); handleSort(`reuse:${state}`); }}
+                        title={`Ads last used in ${state} over ${reuseMonths} months ago on top — oldest month first, most leads here first within a month. Click again to turn off.`}
+                      >
+                        Reuse
+                      </button>
                       <div className="col-stat-block">
                         {colLeads > 0 && <span style={{ color: '#16a34a', fontWeight: 700 }}>{colLeads} leads</span>}
                         {colCases > 0 && <span style={{ color: '#3b82f6', fontWeight: 700 }}>{colCases} cases</span>}
@@ -2423,7 +2466,8 @@ export default function AdsTracking() {
                       });
                       const status  = cellStatus[adName]?.[state];
                       const cellBg  = status === 'solo' ? 'rgba(34,197,94,0.12)' : status === 'shared' ? 'rgba(59,130,246,0.12)' : undefined;
-                      const lu      = lastUsedGrid[adName]?.[state];
+                      const lu          = lastUsedGrid[adName]?.[state];
+                      const reuseActive = sortKey === `reuse:${state}`;
                       return (
                         <td key={state} className="tracking-td-cell" style={cellBg ? { background: cellBg } : undefined}>
                           {everUsed
@@ -2432,11 +2476,18 @@ export default function AdsTracking() {
                                   className="tracking-cell-btn"
                                   onClick={e => { e.stopPropagation(); setAdDetail({ adName, state }); }}
                                   title={lu?.active ? 'Active now' : lu?.last ? `Last used ${fmtDate(lu.last)}` : undefined}
-                                  style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5 }}
+                                  style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 1 }}
                                 >
-                                  <span className={`cell-leads${leads === 0 ? ' cell-zero' : ''}`}>{leads}</span>
-                                  <span className="cell-sep">|</span>
-                                  <span className={`cell-cases${cases === 0 ? ' cell-zero' : ''}`}>{cases}</span>
+                                  <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                                    <span className={`cell-leads${leads === 0 ? ' cell-zero' : ''}`}>{leads}</span>
+                                    <span className="cell-sep">|</span>
+                                    <span className={`cell-cases${cases === 0 ? ' cell-zero' : ''}`}>{cases}</span>
+                                  </span>
+                                  {reuseActive && (
+                                    <span style={{ fontSize: 9, color: lu?.active ? '#16a34a' : '#94a3b8', fontWeight: lu?.active ? 700 : 400 }}>
+                                      {lu?.active ? 'active' : lu?.last ? fmtDateNum(lu.last) : ''}
+                                    </span>
+                                  )}
                                 </button>
                               )
                             : <span className="tracking-cell-empty">—</span>
