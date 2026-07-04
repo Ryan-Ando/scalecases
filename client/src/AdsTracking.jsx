@@ -51,6 +51,15 @@ function extractState(campaignName) {
   return null;
 }
 
+// Remove standalone state-code segments from an ad name so state-specific
+// variants collapse into one base name: "0308-IG SC-1-WA-img" → "0308-IG SC-1-img".
+// Only whole hyphen-delimited segments count — "SC" inside "IG SC" is untouched.
+function stripStateSegments(adName) {
+  const parts = adName.split('-');
+  const kept  = parts.filter(p => !US_STATES.has(p.trim().toUpperCase()));
+  return kept.length && kept.length < parts.length ? kept.join('-') : adName;
+}
+
 function fmtDate(iso) {
   if (!iso) return '—';
   return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
@@ -554,7 +563,11 @@ function AdDetailModal({ adName, state, allAds, sheetByName, accountLabel, merge
             </div>
           </div>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            {mergeGroup && (
+            {mergeGroup && (mergeGroup.auto ? (
+              <span style={{ fontSize: 11, color: 'var(--text-muted)' }} title="These ad names differ only by a state code, so they're grouped automatically">
+                Auto-grouped state variants
+              </span>
+            ) : (
               <button
                 className="btn btn--sm"
                 style={{ color: '#dc2626' }}
@@ -563,7 +576,7 @@ function AdDetailModal({ adName, state, allAds, sheetByName, accountLabel, merge
               >
                 Unmerge
               </button>
-            )}
+            ))}
             <button className="col-mgr-x" onClick={onClose}>×</button>
           </div>
         </div>
@@ -917,19 +930,45 @@ export default function AdsTracking() {
   }, []);
 
   // ── Derived merge maps ──────────────────────────────────────────────────────
+  // Manual merge groups + auto state-fold groups: ad names identical except a
+  // standalone state-code segment combine under the state-less base name.
+  // Names already in a manual group are left alone (manual wins).
+  const allMergeGroups = useMemo(() => {
+    const manualMembers = new Set(mergeGroups.flatMap(g => g.members));
+    const byBase = new Map();
+    for (const a of allAds) {
+      const name = (a.name || '').trim();
+      if (!name || manualMembers.has(name)) continue;
+      const base = stripStateSegments(name);
+      if (!byBase.has(base)) byBase.set(base, new Set());
+      byBase.get(base).add(name);
+    }
+    const combined = [...mergeGroups];
+    for (const [base, set] of byBase) {
+      if (set.size < 2) continue;
+      const idx = combined.findIndex(g => g.canonical === base);
+      if (idx >= 0) {
+        combined[idx] = { ...combined[idx], members: [...new Set([...combined[idx].members, ...set])] };
+      } else {
+        combined.push({ canonical: base, members: [...set], auto: true });
+      }
+    }
+    return combined;
+  }, [mergeGroups, allAds]);
+
   const memberToCanonical = useMemo(() => {
     const map = {};
-    for (const g of mergeGroups) for (const m of g.members) map[m] = g.canonical;
+    for (const g of allMergeGroups) for (const m of g.members) map[m] = g.canonical;
     return map;
-  }, [mergeGroups]);
+  }, [allMergeGroups]);
 
   const absorbedMembers = useMemo(() => {
     const set = new Set();
-    for (const g of mergeGroups)
+    for (const g of allMergeGroups)
       for (const m of g.members)
         if (m !== g.canonical) set.add(m);
     return set;
-  }, [mergeGroups]);
+  }, [allMergeGroups]);
 
   // Fetch aggregated insights for custom date range; clear when range is cleared
   useEffect(() => {
@@ -1191,9 +1230,15 @@ export default function AdsTracking() {
   async function confirmMerge() {
     const { names, canonical } = mergeDialog;
     if (!canonical || !names.includes(canonical)) return;
+    // Selected rows can be auto state-fold groups — absorb their raw member
+    // names so the manual group fully replaces the auto one
+    const expanded = [...new Set(names.flatMap(n => {
+      const g = allMergeGroups.find(g => g.canonical === n);
+      return g ? [n, ...g.members] : [n];
+    }))];
     // Remove any existing groups that overlap these names
-    const filtered = mergeGroups.filter(g => !g.members.some(m => names.includes(m)));
-    const next = [...filtered, { canonical, members: names }];
+    const filtered = mergeGroups.filter(g => !g.members.some(m => expanded.includes(m)));
+    const next = [...filtered, { canonical, members: expanded }];
     setMergeGroups(next);
     await dbSetMeta('mergeGroups', next);
     setMergeDialog(null);
@@ -1217,7 +1262,7 @@ export default function AdsTracking() {
       const effectiveNames = new Set();
       for (const name of adNamesList) {
         effectiveNames.add(name);
-        const group = mergeGroups.find(g => g.canonical === name);
+        const group = allMergeGroups.find(g => g.canonical === name);
         if (group) group.members.forEach(m => effectiveNames.add(m));
       }
       // Find FB ad IDs for these names
@@ -1353,8 +1398,23 @@ export default function AdsTracking() {
       seen.add(name);
       names.push(name);
     }
+    // Auto state-fold groups can have a canonical that isn't a real ad name
+    // (e.g. no plain "0308-IG SC-1-img" ad exists); give them a row when any
+    // member is visible
+    const rawNames = new Set(allAds.map(a => (a.name || '').trim()));
+    for (const g of allMergeGroups) {
+      if (seen.has(g.canonical) || rawNames.has(g.canonical)) continue;
+      if (deletedAds.has(g.canonical) || absorbedMembers.has(g.canonical)) continue;
+      if (!g.members.some(m => rawNames.has(m) && !deletedAds.has(m))) continue;
+      if (cutoffEnabled && cutoffDate) {
+        const created = firstCreated[g.canonical];
+        if (created && created < cutoffDate) continue;
+      }
+      seen.add(g.canonical);
+      names.push(g.canonical);
+    }
     return names;
-  }, [allAds, deletedAds, absorbedMembers, memberToCanonical, firstCreated, cutoffEnabled, cutoffDate]);
+  }, [allAds, deletedAds, absorbedMembers, memberToCanonical, firstCreated, cutoffEnabled, cutoffDate, allMergeGroups]);
 
   const sheetByName = {};
 
@@ -1588,7 +1648,7 @@ export default function AdsTracking() {
   // First used: earliest date among all members' ad names
   const firstUsed = useMemo(() => {
     const map = {};
-    const toCheck = new Set([...adNames, ...mergeGroups.flatMap(g => g.members)]);
+    const toCheck = new Set([...adNames, ...allMergeGroups.flatMap(g => g.members)]);
     for (const rawName of toCheck) {
       const iso = parseAdNameDate(rawName);
       if (!iso) continue;
@@ -1596,7 +1656,7 @@ export default function AdsTracking() {
       if (!map[canonical] || iso < map[canonical]) map[canonical] = iso;
     }
     return map;
-  }, [adNames, mergeGroups, memberToCanonical]);
+  }, [adNames, allMergeGroups, memberToCanonical]);
 
   // Whether an ad has ever existed in a campaign for a given state (any status)
   const usedInState = useMemo(() => {
@@ -2230,7 +2290,7 @@ export default function AdsTracking() {
                 const row        = grid[adName]      || {};
                 const caseRow    = caseGrid[adName]  || {};
                 const spendRow   = spendGrid[adName] || {};
-                const mergeGroup = mergeGroups.find(g => g.canonical === adName);
+                const mergeGroup = allMergeGroups.find(g => g.canonical === adName);
                 const totalLeads = orderedStates.reduce((s, st) => s + (row[st]     || 0), 0);
                 const totalCases = orderedStates.reduce((s, st) => s + (caseRow[st] || 0), 0);
                 const totalSpend = orderedStates.reduce((s, st) => s + (spendRow[st] || 0), 0);
@@ -2538,7 +2598,7 @@ export default function AdsTracking() {
           allAds={allAds}
           sheetByName={sheetByName}
           accountLabel={accountLabel}
-          mergeGroups={mergeGroups}
+          mergeGroups={allMergeGroups}
           allAdDailyInsights={allAdDailyInsights}
           onSyncMax={syncAdMax}
           onUnmerge={unmergeGroup}
