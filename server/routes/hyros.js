@@ -3314,21 +3314,6 @@ router.get('/investigate', async (req, res) => {
     summary: { totalRows: rows.length, templateRowCount: templateRows.length } });
 });
 
-// Daily backfill → sync at 8:15am PT
-let _lastDailyRunDate = '';
-function runDailySchedule() {
-  const now = new Date();
-  const pt  = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'America/Los_Angeles', hour: 'numeric', minute: 'numeric', hour12: false,
-  }).format(now).split(':');
-  const todayPT = isoToday();
-  if (parseInt(pt[0], 10) === 8 && parseInt(pt[1], 10) === 15 && todayPT !== _lastDailyRunDate) {
-    _lastDailyRunDate = todayPT;
-    runAll().catch(e => console.error('[daily] error:', e.message));
-  }
-}
-setInterval(runDailySchedule, 60 * 1000);
-
 // GET /api/hyros/probe-adsets?ids=id1,id2 — return all Lead Events rows for given adset IDs, grouped by date
 router.get('/probe-adsets', async (req, res) => {
   const ids    = (req.query.ids || '').split(',').map(s => s.trim()).filter(Boolean);
