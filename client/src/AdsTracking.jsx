@@ -1598,8 +1598,36 @@ export default function AdsTracking() {
     return map;
   }, [adNames, mergeGroups, memberToCanonical]);
 
+  // Whether an ad has ever existed in a campaign for a given state (any status)
+  const usedInState = useMemo(() => {
+    const map = {};
+    for (const a of allAds) {
+      const rawName = (a.name || '').trim();
+      const st      = extractState(a.campaignName);
+      if (!rawName || !st) continue;
+      const adName  = memberToCanonical[rawName] || rawName;
+      if (!map[adName]) map[adName] = {};
+      map[adName][st] = true;
+    }
+    return map;
+  }, [allAds, memberToCanonical]);
+
   const sortedAdNames = useMemo(() => {
     return [...adNames].sort((a, b) => {
+      // Unused-first state sort: ads never run in this state on top (by total
+      // leads), then ads already run there (by leads in this state)
+      if (sortKey.startsWith('unused:')) {
+        const st    = sortKey.slice(7);
+        const aUsed = usedInState[a]?.[st] ? 1 : 0;
+        const bUsed = usedInState[b]?.[st] ? 1 : 0;
+        if (aUsed !== bUsed) return aUsed - bUsed;
+        if (!aUsed) {
+          const at = states.reduce((s, s2) => s + (grid[a]?.[s2] || 0), 0);
+          const bt = states.reduce((s, s2) => s + (grid[b]?.[s2] || 0), 0);
+          return bt - at;
+        }
+        return (grid[b]?.[st] || 0) - (grid[a]?.[st] || 0);
+      }
       // Ads with no date always sink to the bottom regardless of sort direction
       if (sortKey === 'date') {
         const aHas = !!firstUsed[a], bHas = !!firstUsed[b];
@@ -1653,7 +1681,7 @@ export default function AdsTracking() {
       if (av > bv) return sortDir === 'asc' ?  1 : -1;
       return 0;
     });
-  }, [adNames, sortKey, sortDir, grid, caseGrid, spendGrid, firstUsed, states]);
+  }, [adNames, sortKey, sortDir, grid, caseGrid, spendGrid, firstUsed, states, usedInState]);
 
   const visibleAdNames = useMemo(() => {
     if (!filterTags.length) return sortedAdNames;
@@ -1685,6 +1713,12 @@ export default function AdsTracking() {
   }
 
   function handleSort(key) {
+    // Unused-first mode has a fixed order; clicking again turns it off
+    if (key.startsWith('unused:')) {
+      if (sortKey === key) { setSortKey('spend'); setSortDir('desc'); }
+      else { setSortKey(key); setSortDir('desc'); }
+      return;
+    }
     if (sortKey === key) setSortDir(d => d === 'asc' ? 'desc' : 'asc');
     else { setSortKey(key); setSortDir(key === 'name' ? 'asc' : 'desc'); }
   }
@@ -2169,6 +2203,13 @@ export default function AdsTracking() {
                         title="Sort by this column"
                       >
                         Sort {sortKey === state && <SortArrow dir={sortDir} />}
+                      </button>
+                      <button
+                        className={`tracking-sort-btn${sortKey === `unused:${state}` ? ' tracking-sort-btn--active' : ''}`}
+                        onClick={e => { e.stopPropagation(); handleSort(`unused:${state}`); }}
+                        title="Ads never run in this state first (by total leads), then used ads (by leads here). Click again to turn off."
+                      >
+                        Unused
                       </button>
                       <div className="col-stat-block">
                         {colLeads > 0 && <span style={{ color: '#16a34a', fontWeight: 700 }}>{colLeads} leads</span>}
