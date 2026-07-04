@@ -295,7 +295,9 @@ function KillAnalysisInner() {
     setError(null);
     try {
       const fetchWeek = async (w) => {
-        const url = `${BASE}/api/facebook/adsets?start=${w.start}&end=${w.end}&force=1`;
+        // No force — these are completed Sun–Sat weeks whose data never changes,
+        // so the server cache is always correct
+        const url = `${BASE}/api/facebook/adsets?start=${w.start}&end=${w.end}`;
         const r = await fetch(url);
         if (!r.ok) throw new Error(`FB adsets ${w.start}→${w.end}: ${r.status}`);
         const data = await r.json();

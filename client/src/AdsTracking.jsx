@@ -1097,7 +1097,9 @@ export default function AdsTracking() {
   }
 
   // ── FB sync ─────────────────────────────────────────────────────────────────
-  const sync = useCallback(async () => {
+  // force=true bypasses the server cache (fresh FB pull) — reserved for explicit
+  // user actions; the automatic staleness sync uses the server's prefetched cache
+  const sync = useCallback(async (force = false) => {
     if (syncingRef.current) return;
     syncingRef.current = true;
     setSyncing(true);
@@ -1112,7 +1114,7 @@ export default function AdsTracking() {
       const dailyPreset = isFirstSync ? 'maximum' : 'last_14d';
 
       const [ads, dailyRaw] = await Promise.all([
-        apiFetch(`/api/facebook/ads?date_preset=maximum&force=1&_t=${Date.now()}`),
+        apiFetch(`/api/facebook/ads?date_preset=maximum${force ? '&force=1' : ''}&_t=${Date.now()}`),
         apiFetch(`/api/facebook/daily?date_preset=${dailyPreset}&_t=${Date.now()}`),
       ]);
 
@@ -1181,7 +1183,7 @@ export default function AdsTracking() {
     setSyncNote('');
     setSyncError('');
     casesLoadedRef.current = false;
-    sync();
+    sync(true);
     loadCases();
   }
 
@@ -1923,7 +1925,7 @@ export default function AdsTracking() {
             <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
               Last synced: {lastSync ? timeAgo(lastSync) : 'never'}
             </span>
-            <button className="btn btn--sm btn--primary" onClick={sync} disabled={syncing}>
+            <button className="btn btn--sm btn--primary" onClick={() => sync(true)} disabled={syncing}>
               {syncing ? 'Syncing…' : 'Sync Now'}
             </button>
             <button className="btn btn--sm" onClick={resetData} disabled={syncing} title="Clear all stored data and re-sync">
