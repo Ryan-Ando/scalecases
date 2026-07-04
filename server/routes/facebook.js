@@ -539,14 +539,14 @@ router.get('/ads', async (req, res) => {
       const cacheKey = 'ads:metadata';
       const cached = cacheGet(cacheKey);
       if (cached) return res.json(cached);
-      const listParams = { fields: 'id,name,status,effective_status,adset_id,adset{name,status,effective_status},campaign_id,campaign{name},creative{id,name,thumbnail_url},created_time,daily_budget,lifetime_budget' };
+      const listParams = { fields: 'id,name,status,effective_status,adset_id,adset{name,status,effective_status},campaign_id,campaign{name},creative{id,name,thumbnail_url},created_time,updated_time,daily_budget,lifetime_budget' };
       const ads = await fetchFromAllAccounts('ads', listParams);
       const mapped = ads.map(a => ({
         id: a.id, name: a.name, status: a.status, effectiveStatus: a.effective_status,
         adsetId: a.adset_id, adsetName: a.adset?.name || '',
         adsetStatus: a.adset?.effective_status || a.adset?.status || '',
         campaignId: a.campaign_id, campaignName: a.campaign?.name || '',
-        creative: a.creative, createdTime: a.created_time,
+        creative: a.creative, createdTime: a.created_time, updatedTime: a.updated_time,
         daily_budget: a.daily_budget, lifetime_budget: a.lifetime_budget,
       }));
       cacheSet(cacheKey, mapped);
@@ -554,7 +554,7 @@ router.get('/ads', async (req, res) => {
     }
 
     const timeRange = start && end ? { since: start, until: end } : null;
-    const listParams = { fields: 'id,name,status,effective_status,adset_id,adset{name,status,effective_status},campaign_id,campaign{name},creative{id,name,thumbnail_url},created_time' };
+    const listParams = { fields: 'id,name,status,effective_status,adset_id,adset{name,status,effective_status},campaign_id,campaign{name},creative{id,name,thumbnail_url},created_time,updated_time' };
     if (adset_id) listParams.filtering = JSON.stringify([{ field: 'adset.id', operator: 'EQUAL', value: adset_id }]);
 
     const [ads, insights] = await Promise.all([
@@ -583,6 +583,7 @@ router.get('/ads', async (req, res) => {
         campaignName: a.campaign?.name || '',
         creative: a.creative,
         createdTime: a.created_time,
+        updatedTime: a.updated_time,
         ...ins,
         ...ext,
         cost_per_result: computedCpl(ins, ext),
@@ -753,7 +754,7 @@ async function runPrefetch() {
         fields: 'id,name,status,effective_status,campaign_id,campaign{name,daily_budget,lifetime_budget},created_time,daily_budget,lifetime_budget,optimization_goal',
       }),
       fetchFromAllAccounts('ads', {
-        fields: 'id,name,status,effective_status,adset_id,adset{name,status,effective_status},campaign_id,campaign{name},creative{id,name,thumbnail_url},created_time,daily_budget,lifetime_budget',
+        fields: 'id,name,status,effective_status,adset_id,adset{name,status,effective_status},campaign_id,campaign{name},creative{id,name,thumbnail_url},created_time,updated_time,daily_budget,lifetime_budget',
       }),
     ]);
 
@@ -769,7 +770,7 @@ async function runPrefetch() {
         adsetId: a.adset_id, adsetName: a.adset?.name || '',
         adsetStatus: a.adset?.effective_status || a.adset?.status || '',
         campaignId: a.campaign_id, campaignName: a.campaign?.name || '',
-        creative: a.creative, createdTime: a.created_time,
+        creative: a.creative, createdTime: a.created_time, updatedTime: a.updated_time,
         daily_budget: a.daily_budget, lifetime_budget: a.lifetime_budget,
       }));
       cacheSet('ads:metadata', mapped);
@@ -806,7 +807,7 @@ async function runPrefetch() {
           adsetId: a.adset_id, adsetName: a.adset?.name || '',
           adsetStatus: a.adset?.effective_status || a.adset?.status || '',
           campaignId: a.campaign_id, campaignName: a.campaign?.name || '',
-          creative: a.creative, createdTime: a.created_time,
+          creative: a.creative, createdTime: a.created_time, updatedTime: a.updated_time,
           ...ins, ...ext,
           cost_per_result: computedCpl(ins, ext),
           unique_clicks: ins.unique_inline_link_clicks,
@@ -866,7 +867,7 @@ router.get('/structure', async (req, res) => {
   const accountStatus = {};
   const allAds = [];
 
-  const FIELDS = 'id,name,status,effective_status,adset_id,adset{name,status,effective_status},campaign_id,campaign{name},created_time';
+  const FIELDS = 'id,name,status,effective_status,adset_id,adset{name,status,effective_status},campaign_id,campaign{name},created_time,updated_time';
 
   for (const account of accounts) {
     let succeeded = false;
@@ -912,7 +913,7 @@ router.get('/structure', async (req, res) => {
       adsetId: a.adset_id, adsetName: a.adset?.name || '',
       adsetStatus: a.adset?.effective_status || a.adset?.status || '',
       campaignId: a.campaign_id, campaignName: a.campaign?.name || '',
-      createdTime: a.created_time,
+      createdTime: a.created_time, updatedTime: a.updated_time,
     }));
 
   res.json({ ads: mapped, accountStatus });

@@ -1674,6 +1674,39 @@ export default function AdsTracking() {
     return map;
   }, [allAds, memberToCanonical]);
 
+  // Last time an ad ran in each state. FB has no direct "last delivered" field;
+  // updatedTime (last modification — usually the moment it was paused) is the
+  // proxy, with "active" overriding it for ads currently running.
+  const lastUsedGrid = useMemo(() => {
+    const map = {};
+    for (const a of allAds) {
+      const rawName = (a.name || '').trim();
+      const st      = extractState(a.campaignName);
+      if (!rawName || !st) continue;
+      const adName = memberToCanonical[rawName] || rawName;
+      if (!map[adName]) map[adName] = {};
+      const cell = map[adName][st] || (map[adName][st] = { active: false, last: null });
+      if ((a.effectiveStatus || a.status) === 'ACTIVE') cell.active = true;
+      const t = a.updatedTime || a.createdTime;
+      if (t && (!cell.last || t > cell.last)) cell.last = t;
+    }
+    return map;
+  }, [allAds, memberToCanonical]);
+
+  // Most recent activity per ad across all states
+  const lastUsedByAd = useMemo(() => {
+    const map = {};
+    for (const [adName, byState] of Object.entries(lastUsedGrid)) {
+      let active = false, last = null;
+      for (const c of Object.values(byState)) {
+        if (c.active) active = true;
+        if (c.last && (!last || c.last > last)) last = c.last;
+      }
+      map[adName] = { active, last };
+    }
+    return map;
+  }, [lastUsedGrid]);
+
   const sortedAdNames = useMemo(() => {
     return [...adNames].sort((a, b) => {
       // Unused-first state sort: ads never run in this state on top (by total
@@ -1724,6 +1757,10 @@ export default function AdsTracking() {
         const bSpend = states.reduce((s, st) => s + (spendGrid[b]?.[st] || 0), 0);
         av = aCases > 0 ? aSpend / aCases : Infinity;
         bv = bCases > 0 ? bSpend / bCases : Infinity;
+      } else if (sortKey === 'lastUsed') {
+        const aa = lastUsedByAd[a], bb = lastUsedByAd[b];
+        av = aa?.active ? Number.MAX_SAFE_INTEGER : (aa?.last ? new Date(aa.last).getTime() : 0);
+        bv = bb?.active ? Number.MAX_SAFE_INTEGER : (bb?.last ? new Date(bb.last).getTime() : 0);
       } else if (sortKey === 'total') {
         av = states.reduce((s, st) => s + (grid[a]?.[st] || 0), 0);
         bv = states.reduce((s, st) => s + (grid[b]?.[st] || 0), 0);
@@ -1743,7 +1780,7 @@ export default function AdsTracking() {
       if (av > bv) return sortDir === 'asc' ?  1 : -1;
       return 0;
     });
-  }, [adNames, sortKey, sortDir, grid, caseGrid, spendGrid, firstUsed, states, usedInState]);
+  }, [adNames, sortKey, sortDir, grid, caseGrid, spendGrid, firstUsed, states, usedInState, lastUsedByAd]);
 
   const visibleAdNames = useMemo(() => {
     if (!filterTags.length) return sortedAdNames;
@@ -1782,7 +1819,8 @@ export default function AdsTracking() {
       return;
     }
     if (sortKey === key) setSortDir(d => d === 'asc' ? 'desc' : 'asc');
-    else { setSortKey(key); setSortDir(key === 'name' ? 'asc' : 'desc'); }
+    // lastUsed defaults ascending: longest-dormant ads (reuse candidates) on top
+    else { setSortKey(key); setSortDir(key === 'name' || key === 'lastUsed' ? 'asc' : 'desc'); }
   }
 
   function onColDragStart(i) { dragColRef.current = i; }
@@ -2185,6 +2223,7 @@ export default function AdsTracking() {
               {selecting && <col style={{ width: 32 }} />}
               <col style={{ width: colWidths.adName ?? 240 }} />
               <col style={{ width: colWidths.date  ?? 90 }} />
+              <col style={{ width: colWidths.lastUsed ?? 90 }} />
               <col style={{ width: colWidths.spend ?? 80 }} />
               <col style={{ width: colWidths.cpl   ?? 70 }} />
               <col style={{ width: colWidths.cpc   ?? 70 }} />
@@ -2202,6 +2241,14 @@ export default function AdsTracking() {
                 <th className="tracking-th-state tracking-th-sortable" onClick={() => handleSort('date')}>
                   Date Created {sortKey === 'date' && <SortArrow dir={sortDir} />}
                   <div className="col-resize-handle" onMouseDown={e => startColResize('date', 90, e)} />
+                </th>
+                <th
+                  className="tracking-th-state tracking-th-sortable"
+                  onClick={() => handleSort('lastUsed')}
+                  title="Most recent activity across all states — sort ascending to surface long-dormant ads worth reusing"
+                >
+                  Last Used {sortKey === 'lastUsed' && <SortArrow dir={sortDir} />}
+                  <div className="col-resize-handle" onMouseDown={e => startColResize('lastUsed', 90, e)} />
                 </th>
                 <th className="tracking-th-state tracking-th-sortable" onClick={() => handleSort('spend')} style={{ color: '#94a3b8' }}>
                   Spend {sortKey === 'spend' && <SortArrow dir={sortDir} />}
@@ -2347,6 +2394,11 @@ export default function AdsTracking() {
                       <div className="row-resize-handle" onMouseDown={e => startRowResize(adName, e)} />
                     </td>
                     <td className="tracking-td-date">{fmtDateNum(firstUsed[adName])}</td>
+                    <td className="tracking-td-date">
+                      {lastUsedByAd[adName]?.active
+                        ? <span style={{ color: '#16a34a', fontWeight: 700 }}>Active</span>
+                        : fmtDateNum(lastUsedByAd[adName]?.last)}
+                    </td>
                     <td className="tracking-td-total" style={{ color: '#94a3b8', fontSize: 12 }}>
                       {totalSpend > 0 ? `$${totalSpend.toLocaleString('en-US', { maximumFractionDigits: 0 })}` : '—'}
                     </td>
@@ -2371,6 +2423,7 @@ export default function AdsTracking() {
                       });
                       const status  = cellStatus[adName]?.[state];
                       const cellBg  = status === 'solo' ? 'rgba(34,197,94,0.12)' : status === 'shared' ? 'rgba(59,130,246,0.12)' : undefined;
+                      const lu      = lastUsedGrid[adName]?.[state];
                       return (
                         <td key={state} className="tracking-td-cell" style={cellBg ? { background: cellBg } : undefined}>
                           {everUsed
@@ -2378,6 +2431,7 @@ export default function AdsTracking() {
                                 <button
                                   className="tracking-cell-btn"
                                   onClick={e => { e.stopPropagation(); setAdDetail({ adName, state }); }}
+                                  title={lu?.active ? 'Active now' : lu?.last ? `Last used ${fmtDate(lu.last)}` : undefined}
                                   style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5 }}
                                 >
                                   <span className={`cell-leads${leads === 0 ? ' cell-zero' : ''}`}>{leads}</span>
@@ -2398,6 +2452,7 @@ export default function AdsTracking() {
               <tr>
                 {selecting && <td />}
                 <td className="tracking-td-ad tracking-tfoot-label">Total</td>
+                <td className="tracking-td-date tracking-tfoot-label" />
                 <td className="tracking-td-date tracking-tfoot-label" />
                 {(() => {
                   const totSpend = visibleAdNames.reduce((s, a) => s + orderedStates.reduce((s2, st) => s2 + (spendGrid[a]?.[st] || 0), 0), 0);
