@@ -8,10 +8,8 @@ import { fetchDailyInsights } from './facebook.js';
 import { runIncrementalNextSteps, getAuthClient, SHEET_ID, EVENTS_TAB } from './hyros.js';
 
 const router = Router();
-const HYROS_BASE = 'https://api.hyros.com/v1/api/v1.0';
 const FB_API = 'https://graph.facebook.com/v19.0';
 const DATA_DIR = process.env.DATA_DIR || './data';
-const SNAPSHOT_FILE = path.join(DATA_DIR, 'stage-snapshots.json');
 const ROSTER_FILE = path.join(DATA_DIR, 'digest-roster.json');
 const DIGEST_TZ = process.env.DIGEST_TZ || 'America/Los_Angeles';
 const PUBLIC_URL = process.env.SERVER_PUBLIC_URL || 'https://scalecases-server.onrender.com';
@@ -49,14 +47,6 @@ async function getAdsetMeta() {
   return r.json();
 }
 
-// Campaign spend month-to-date via our own cached endpoint
-async function getMtdSpend() {
-  const monthStart = tzToday().slice(0, 8) + '01';
-  const r = await fetch(`http://127.0.0.1:${process.env.PORT || 3001}/api/facebook/campaign-spend?since=${monthStart}&until=${tzToday()}`);
-  if (!r.ok) throw new Error(`campaign-spend: ${r.status}`);
-  return r.json();
-}
-
 // Ledger stage-leads (the /next-steps definition): counts per adset and per date
 async function getLedger(fromDate) {
   const auth   = await getAuthClient();
@@ -75,34 +65,6 @@ async function getLedger(fromDate) {
     }
   }
   return { byAdsetByDate, byDate, windowByAdset };
-}
-
-// Hyros stage totals — snapshot to disk, return delta vs previous snapshot
-async function getStageDelta() {
-  const key = process.env.HYROS_API_KEY;
-  if (!key) return null;
-  const r = await fetch(`${HYROS_BASE}/stages`, { headers: { 'API-Key': key } });
-  const j = await r.json();
-  if (!Array.isArray(j.result)) return null;
-  const current = Object.fromEntries(j.result.filter(s => s.amount != null).map(s => [s.name, s.amount]));
-
-  let history = [];
-  try { history = JSON.parse(fs.readFileSync(SNAPSHOT_FILE, 'utf8')); } catch { /* first run */ }
-  const prev = history[history.length - 1];
-
-  history.push({ ts: new Date().toISOString(), stages: current });
-  if (history.length > 200) history = history.slice(-200);
-  try {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
-    fs.writeFileSync(SNAPSHOT_FILE, JSON.stringify(history));
-  } catch (e) { console.warn('[digest] snapshot write failed:', e.message); }
-
-  if (!prev) return { sinceTs: null, deltas: [] };
-  const deltas = Object.entries(current)
-    .map(([name, amt]) => ({ name, delta: amt - (prev.stages[name] || 0) }))
-    .filter(d => d.delta > 0)
-    .sort((a, b) => b.delta - a.delta);
-  return { sinceTs: prev.ts, deltas };
 }
 
 // ── Roster: every ACTIVE adset with spend in the window, numbered by spend ───
@@ -170,14 +132,12 @@ let _lastFullList = null;
 
 // ── Compose ───────────────────────────────────────────────────────────────────
 async function buildDigest() {
-  const today = tzToday(), yesterday = tzDaysAgo(1), windowStart = tzDaysAgo(WINDOW_DAYS_BACK);
+  const today = tzToday(), windowStart = tzDaysAgo(WINDOW_DAYS_BACK);
 
-  const [meta, windowRows, mtdSpend, ledger, stageDelta] = await Promise.all([
+  const [meta, windowRows, ledger] = await Promise.all([
     getAdsetMeta(),
     fetchDailyInsights({ level: 'adset', start: windowStart, end: today }),
-    getMtdSpend().catch(e => { console.warn('[digest] mtd:', e.message); return []; }),
     getLedger(windowStart).catch(e => { console.warn('[digest] ledger:', e.message); return null; }),
-    getStageDelta().catch(e => { console.warn('[digest] stages:', e.message); return null; }),
   ]);
   const metaById = Object.fromEntries(meta.map(a => [a.id, a]));
 
@@ -202,62 +162,21 @@ async function buildDigest() {
   for (const { e, flag } of watches.slice(0, 8)) L.push(fmtEntry(e, flag.reason));
   if (watches.length > 8) L.push(`…and ${watches.length - 8} more (reply "list")`);
 
-  // Spend pacing per brand-state
-  const groups = {};
+  // Campaign-level cursory glance: FB leads + CPL per campaign, same window
+  const camps = {};
   for (const r of windowRows) {
-    if (r.date_start !== yesterday) continue;
-    const g = `${extractBrand(r.campaign_name)} ${extractState(r.campaign_name) || '?'}`;
-    groups[g] = groups[g] || { yday: 0, mtd: 0, live: 0 };
-    groups[g].yday += parseFloat(r.spend) || 0;
+    const name = r.campaign_name || '?';
+    camps[name] = camps[name] || { spend: 0, leads: 0 };
+    camps[name].spend += parseFloat(r.spend) || 0;
+    camps[name].leads += r.results || 0;
   }
-  for (const c of mtdSpend) {
-    const g = `${extractBrand(c.campaign_name)} ${extractState(c.campaign_name) || '?'}`;
-    groups[g] = groups[g] || { yday: 0, mtd: 0, live: 0 };
-    groups[g].mtd += c.spend || 0;
-  }
-  const seenCbo = new Set();
-  for (const a of meta) {
-    if ((a.effectiveStatus || a.status) !== 'ACTIVE') continue;
-    const g = `${extractBrand(a.campaignName)} ${extractState(a.campaignName) || '?'}`;
-    groups[g] = groups[g] || { yday: 0, mtd: 0, live: 0 };
-    if (a.dailyBudget) groups[g].live += parseFloat(a.dailyBudget) / 100;
-    else if (a.campaignDailyBudget && !seenCbo.has(a.campaignId)) {
-      seenCbo.add(a.campaignId);
-      groups[g].live += parseFloat(a.campaignDailyBudget) / 100;
-    }
-  }
-  L.push('', '💰 SPEND (yday | MTD | live/day):');
-  const gRows = Object.entries(groups).filter(([, v]) => v.yday > 0 || v.live > 0)
-    .sort((a, b) => b[1].yday - a[1].yday);
-  for (const [g, v] of gRows)
-    L.push(`  ${g}: ${fmtMoney(v.yday)} | ${fmtMoney(v.mtd)} | ${fmtMoney(v.live)}`);
-  const totYday = gRows.reduce((s, [, v]) => s + v.yday, 0);
-  const totLive = gRows.reduce((s, [, v]) => s + v.live, 0);
-  L.push(`  TOTAL: ${fmtMoney(totYday)} yday | ${fmtMoney(totLive)}/day live`);
-
-  // FB vs stage-leads cross-check for yesterday
-  if (ledger) {
-    const fbYdayByAdset = {};
-    for (const r of windowRows) {
-      if (r.date_start !== yesterday) continue;
-      fbYdayByAdset[r.adset_id] = (fbYdayByAdset[r.adset_id] || 0) + (r.results || 0);
-    }
-    const fbTotal    = Object.values(fbYdayByAdset).reduce((s, n) => s + n, 0);
-    const stageTotal = ledger.byDate[yesterday] || 0;
-    L.push('', `🔎 LEADS yday: FB ${fbTotal} vs Hyros ${stageTotal}`);
-    const stageYday = ledger.byAdsetByDate[yesterday] || {};
-    const gaps = Object.entries(fbYdayByAdset)
-      .filter(([id, n]) => n >= 3 && !(stageYday[id] > 0))
-      .sort((a, b) => b[1] - a[1]).slice(0, 5);
-    for (const [id, n] of gaps)
-      L.push(`  ⚠ ${metaById[id]?.name || id}: FB ${n}, Hyros 0 — check tracking`);
-  }
-
-  // Stage-lead movement since the previous digest
-  if (stageDelta?.deltas?.length) {
-    const line = stageDelta.deltas.slice(0, 12).map(d => `${d.name} +${d.delta}`).join(', ');
-    L.push('', `📈 STAGE LEADS since last digest: ${line}`);
-  }
+  L.push('', `📋 CAMPAIGNS (FB, ${windowLabel}):`);
+  const cRows = Object.entries(camps).filter(([, v]) => v.spend > 0).sort((a, b) => b[1].spend - a[1].spend);
+  for (const [name, v] of cRows)
+    L.push(`  ${name}: ${v.leads} leads · ${v.leads > 0 ? 'CPL ' + fmtCpl(v.spend, v.leads) : fmtMoney(v.spend) + ' spent, no leads'}`);
+  const totLeads = cRows.reduce((s, [, v]) => s + v.leads, 0);
+  const totSpend = cRows.reduce((s, [, v]) => s + v.spend, 0);
+  L.push(`  TOTAL: ${totLeads} leads · CPL ${fmtCpl(totSpend, totLeads)}`);
 
   L.push('', `Reply "kill 3 7 12" to pause adsets by number · "list" for all ${roster.length} adsets · "run" for a fresh digest`);
 
