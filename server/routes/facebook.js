@@ -638,7 +638,7 @@ async function fetchDailyInsights({ level, datePreset, start, end, date, adIdLis
           captureRateLimit(account, r.headers);
           const json = await r.json();
           if (json.error) { _stats.errors++; throw new Error(`[${account}] ${json.error.message}`); }
-          rows.push(...(json.data || []));
+          rows.push(...(json.data || []).map(x => ({ ...x, account })));
           url = json.paging?.next || null;
         }
         recordCall(account, `daily/${level}`, pages);

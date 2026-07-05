@@ -42,6 +42,32 @@ const pE = (v, w) => String(v).padEnd(w);
 
 // ── Data collectors ───────────────────────────────────────────────────────────
 
+// FB ad account id → display name, fetched once and kept for the process
+// lifetime. DIGEST_ACCOUNT_ORDER (comma-separated name fragments, matched
+// case-insensitively) controls group order in the digest.
+const ACCOUNT_ORDER = (process.env.DIGEST_ACCOUNT_ORDER || 'b2c,zem,acc').split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+let _accountNames = null;
+
+async function getAccountNames(accountIds) {
+  if (_accountNames) return _accountNames;
+  const names = {};
+  for (const id of accountIds) {
+    try {
+      const r = await fetch(`${FB_API}/${id}?fields=name&access_token=${process.env.FB_ACCESS_TOKEN}`);
+      const j = await r.json();
+      names[id] = j.name || id;
+    } catch { names[id] = id; }
+  }
+  _accountNames = names;
+  return names;
+}
+
+function accountRank(name) {
+  const n = (name || '').toLowerCase();
+  const i = ACCOUNT_ORDER.findIndex(frag => n.includes(frag));
+  return i === -1 ? ACCOUNT_ORDER.length : i;
+}
+
 // Adset metadata (names, status, budgets) via our own cached endpoint
 async function getAdsetMeta() {
   const r = await fetch(`http://127.0.0.1:${process.env.PORT || 3001}/api/facebook/adsets?metadata_only=true`);
@@ -91,7 +117,7 @@ async function collectStats(force = false) {
   const agg = {};
   for (const r of windowRows) {
     const id = r.adset_id;
-    if (!agg[id]) agg[id] = { id, name: r.adset_name, campaign: r.campaign_name, spend: 0, fbLeads: 0, uclicks: 0, impressions: 0 };
+    if (!agg[id]) agg[id] = { id, name: r.adset_name, campaign: r.campaign_name, account: r.account, spend: 0, fbLeads: 0, uclicks: 0, impressions: 0 };
     agg[id].spend       += parseFloat(r.spend) || 0;
     agg[id].fbLeads     += r.results || 0;
     agg[id].uclicks     += parseFloat(r.unique_inline_link_clicks) || 0;
@@ -199,9 +225,17 @@ async function buildDigest() {
   const stats = await collectStats(true);
   const { entries, windowRows, metaById, ledger, windowLabel } = stats;
 
+  // Group order: ad account (per DIGEST_ACCOUNT_ORDER) → campaign → spend
+  const acctNames = await getAccountNames([...new Set(entries.map(e => e.account).filter(Boolean))]);
+  const byGroup = (a, b) =>
+    (accountRank(acctNames[a.e.account]) - accountRank(acctNames[b.e.account]))
+    || (acctNames[a.e.account] || '').localeCompare(acctNames[b.e.account] || '')
+    || a.e.campaign.localeCompare(b.e.campaign)
+    || b.e.spend - a.e.spend;
+
   const flagged = entries.map(e => ({ e, flag: flagFor(e) })).filter(x => x.flag);
-  const kills   = flagged.filter(x => x.flag.level === 'kill').slice(0, 10);
-  const watches = flagged.filter(x => x.flag.level === 'watch').slice(0, 8);
+  const kills   = flagged.filter(x => x.flag.level === 'kill').sort(byGroup).slice(0, 10);
+  const watches = flagged.filter(x => x.flag.level === 'watch').sort(byGroup).slice(0, 8);
   const nKillsHidden = flagged.filter(x => x.flag.level === 'kill').length - kills.length;
   const nWatchHidden = flagged.filter(x => x.flag.level === 'watch').length - watches.length;
 
@@ -218,12 +252,20 @@ async function buildDigest() {
     L.push(escapeHtml(`⚠ INCOMPLETE — FB account(s) failed after retries: ${stats.failedAccounts.join(', ')}. Numbers are missing that account; reply "run" to retry.`));
 
   let n = 0;
+  const pushSection = (items) => {
+    let lastAcct = null;
+    for (const { e, flag } of items) {
+      const acct = acctNames[e.account] || e.account || '?';
+      if (acct !== lastAcct) { L.push('', `<b>═══ ${escapeHtml(acct)} ═══</b>`); lastAcct = acct; }
+      L.push('', fmtEntryVertical(++n, e, flag));
+    }
+  };
   L.push('', `🔴 KILL CANDIDATES: ${kills.length ? '' : 'none'}`);
-  for (const { e, flag } of kills) L.push('', fmtEntryVertical(++n, e, flag));
+  pushSection(kills);
   if (nKillsHidden > 0) L.push(`…and ${nKillsHidden} more (reply "list")`);
 
   L.push('', `🟡 WATCH: ${watches.length ? '' : 'none'}`);
-  for (const { e, flag } of watches) L.push('', fmtEntryVertical(++n, e, flag));
+  pushSection(watches);
   if (nWatchHidden > 0) L.push(`…and ${nWatchHidden} more (reply "list")`);
 
   // Campaign-level cursory glance: FB + Hyros leads/CPL per campaign, same window
