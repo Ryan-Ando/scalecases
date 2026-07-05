@@ -276,17 +276,20 @@ async function pauseByNumbers(nums) {
     const entry = roster.entries.find(e => e.n === n);
     if (!entry) { results.push(`#${n}: not in the current list (1–${roster.entries.length})`); continue; }
     try {
+      // FB_WRITE_TOKEN: system-user token from the unpublished dev-mode app
+      // with ads_management; the published read app's token stays untouched
+      const token = process.env.FB_WRITE_TOKEN || process.env.FB_ACCESS_TOKEN;
       const r = await fetch(`${FB_API}/${entry.id}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams({ status: 'PAUSED', access_token: process.env.FB_ACCESS_TOKEN }),
+        body: new URLSearchParams({ status: 'PAUSED', access_token: token }),
       });
       const j = await r.json();
       if (j.success) results.push(`✅ #${n} PAUSED — ${entry.name}`);
       else {
         const msg = j.error?.message || JSON.stringify(j).slice(0, 120);
         const perm = /permission|#200|#10\b|requires/i.test(msg);
-        results.push(`❌ #${n} ${entry.name}: ${perm ? 'token lacks ads_management — generate a system-user token with ads_management in Business Manager and update FB_ACCESS_TOKEN' : msg}`);
+        results.push(`❌ #${n} ${entry.name}: ${perm ? (process.env.FB_WRITE_TOKEN ? 'FB_WRITE_TOKEN lacks ads_management or Manage-campaigns access on this ad account' : 'set FB_WRITE_TOKEN — a system-user token with ads_management from the unpublished app') : msg}`);
       }
     } catch (e) { results.push(`❌ #${n} ${entry.name}: ${e.message}`); }
   }

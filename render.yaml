@@ -39,6 +39,8 @@ services:
         sync: false  # e.g. "07:30,16:00" (in DIGEST_TZ); "off" disables the schedule
       - key: DIGEST_TZ
         sync: false  # e.g. America/Los_Angeles
+      - key: FB_WRITE_TOKEN
+        sync: false  # ads_management token from the separate unpublished app (kill commands only)
 
   # React frontend (static site)
   - type: web
