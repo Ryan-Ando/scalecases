@@ -37,6 +37,8 @@ function tzToday() { return isoDateTZ(new Date()); }
 function tzDaysAgo(n) { const d = new Date(); d.setDate(d.getDate() - n); return isoDateTZ(d); }
 function fmtMoney(n) { return '$' + Math.round(n).toLocaleString('en-US'); }
 function fmtCpl(spend, leads) { return leads > 0 ? '$' + Math.round(spend / leads) : '—'; }
+const pS = (v, w) => String(v).padStart(w);
+const pE = (v, w) => String(v).padEnd(w);
 
 // ── Data collectors ───────────────────────────────────────────────────────────
 
@@ -129,11 +131,22 @@ function flagFor(e) {
   return null;
 }
 
+// Two-line row with fixed-width stat columns — rendered in a Telegram <pre>
+// block so the stat columns align vertically across rows.
 function fmtEntry(n, e, reason) {
   const tag = `[${extractBrand(e.campaign)} ${extractState(e.campaign) || '?'}]`;
-  const stats = `${fmtMoney(e.spend)} | FB ${e.fbLeads}/${fmtCpl(e.spend, e.fbLeads)} | Hy ${e.hyLeads}/${fmtCpl(e.spend, e.hyLeads)} | ULC ${e.cpulc != null ? '$' + e.cpulc.toFixed(2) : '—'}`;
-  return `${n}. ${e.name} ${tag}\n   ${stats}${reason ? ` — ${reason}` : ''}`;
+  const fb  = `${e.fbLeads}/${fmtCpl(e.spend, e.fbLeads)}`;
+  const hy  = `${e.hyLeads}/${fmtCpl(e.spend, e.hyLeads)}`;
+  const u   = e.cpulc != null ? '$' + e.cpulc.toFixed(2) : '—';
+  const lines = [
+    `${pS(n, 2)} ${e.name} ${tag}`,
+    `   ${pS(fmtMoney(e.spend), 6)} FB ${pE(fb, 8)} Hy ${pE(hy, 8)} U${u}`,
+  ];
+  if (reason) lines.push(`      ⚠ ${reason}`);
+  return lines.join('\n');
 }
+
+const STAT_HEADER = '    SPEND  FB ld/CPL   Hy ld/CPL  ULC';
 
 // The roster is always THE LAST LIST SENT to the user, numbered 1..N in the
 // order it was displayed. "kill N" resolves against it, whatever view it was.
@@ -182,10 +195,12 @@ async function buildDigest() {
 
   let n = 0;
   L.push('', `🔴 KILL CANDIDATES: ${kills.length ? '' : 'none'}`);
+  if (kills.length) L.push(STAT_HEADER);
   for (const { e, flag } of kills) L.push(fmtEntry(++n, e, flag.reason));
   if (nKillsHidden > 0) L.push(`…and ${nKillsHidden} more (reply "list")`);
 
   L.push('', `🟡 WATCH: ${watches.length ? '' : 'none'}`);
+  if (watches.length) L.push(STAT_HEADER);
   for (const { e, flag } of watches) L.push(fmtEntry(++n, e, flag.reason));
   if (nWatchHidden > 0) L.push(`…and ${nWatchHidden} more (reply "list")`);
 
@@ -201,16 +216,18 @@ async function buildDigest() {
     const name = metaById[adsetId]?.campaignName;
     if (name && camps[name]) camps[name].hy += cnt;
   }
-  L.push('', `📋 CAMPAIGNS (${windowLabel}, FB | Hyros) — reply a name to see its ads:`);
+  L.push('', `📋 CAMPAIGNS (${windowLabel}) — reply a name for its ads:`);
   const cRows = Object.entries(camps).filter(([, v]) => v.spend > 0).sort((a, b) => b[1].spend - a[1].spend);
+  const nameW = Math.max(...cRows.map(([name]) => name.length), 5);
+  L.push(`${pE('', nameW)}  FB ld/CPL   Hy ld/CPL`);
   for (const [name, v] of cRows) {
-    if (v.fb === 0 && v.hy === 0) L.push(`  ${name}: ${fmtMoney(v.spend)} spent, no leads`);
-    else L.push(`  ${name}: FB ${v.fb}/${fmtCpl(v.spend, v.fb)} | Hy ${v.hy}/${fmtCpl(v.spend, v.hy)}`);
+    if (v.fb === 0 && v.hy === 0) L.push(`${pE(name, nameW)}  ${fmtMoney(v.spend)} spent, 0 leads`);
+    else L.push(`${pE(name, nameW)}  ${pE(`${v.fb}/${fmtCpl(v.spend, v.fb)}`, 10)}  ${v.hy}/${fmtCpl(v.spend, v.hy)}`);
   }
   const totFb    = cRows.reduce((s, [, v]) => s + v.fb, 0);
   const totHy    = cRows.reduce((s, [, v]) => s + v.hy, 0);
   const totSpend = cRows.reduce((s, [, v]) => s + v.spend, 0);
-  L.push(`  TOTAL: FB ${totFb}/${fmtCpl(totSpend, totFb)} | Hy ${totHy}/${fmtCpl(totSpend, totHy)}`);
+  L.push(`${pE('TOTAL', nameW)}  ${pE(`${totFb}/${fmtCpl(totSpend, totFb)}`, 10)}  ${totHy}/${fmtCpl(totSpend, totHy)}`);
 
   L.push('', FOOTER);
   return L.join('\n');
@@ -231,7 +248,7 @@ async function buildCampaignView(query) {
   const campaign = matches[0];
   const list = stats.entries.filter(e => e.campaign === campaign);
   saveRoster(list, `campaign ${campaign}`);
-  const L = [`📂 ${campaign} — ${list.length} active adset${list.length !== 1 ? 's' : ''}, window ${stats.windowLabel}:`, ''];
+  const L = [`📂 ${campaign} — ${list.length} active adset${list.length !== 1 ? 's' : ''}, window ${stats.windowLabel}:`, '', STAT_HEADER];
   list.forEach((e, i) => L.push(fmtEntry(i + 1, e, flagFor(e)?.reason)));
   const spend = list.reduce((s, e) => s + e.spend, 0);
   const fb    = list.reduce((s, e) => s + e.fbLeads, 0);
@@ -245,7 +262,7 @@ async function buildCampaignView(query) {
 async function buildListView() {
   const stats = await collectStats();
   saveRoster(stats.entries, 'full list');
-  const L = [`All ${stats.entries.length} active adsets, window ${stats.windowLabel} (numbered for "kill N"):`, ''];
+  const L = [`All ${stats.entries.length} active adsets, window ${stats.windowLabel} (numbered for "kill N"):`, '', STAT_HEADER];
   stats.entries.forEach((e, i) => L.push(fmtEntry(i + 1, e, flagFor(e)?.reason)));
   L.push('', FOOTER);
   return L.join('\n');
@@ -285,14 +302,35 @@ function tgSecret() {
   return crypto.createHash('sha256').update(process.env.TELEGRAM_BOT_TOKEN || 'none').digest('hex').slice(0, 32);
 }
 
-async function sendTelegram(text) {
+function escapeHtml(s) { return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+
+// mono=true renders the message in a <pre> block (fixed-width font) so padded
+// columns align like a grid. Chunks split on line boundaries, each chunk
+// wrapped in its own <pre>.
+async function sendTelegram(text, { mono = false } = {}) {
   const token = process.env.TELEGRAM_BOT_TOKEN, chat = process.env.TELEGRAM_CHAT_ID;
   if (!token || !chat) return { sent: false, reason: 'TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID not set' };
-  for (let i = 0; i < text.length; i += 4000) {
+
+  const chunks = [];
+  if (mono) {
+    let cur = [], len = 0;
+    for (const ln of text.split('\n')) {
+      if (len + ln.length + 1 > 3500 && cur.length) { chunks.push(cur.join('\n')); cur = []; len = 0; }
+      cur.push(ln); len += ln.length + 1;
+    }
+    if (cur.length) chunks.push(cur.join('\n'));
+  } else {
+    for (let i = 0; i < text.length; i += 4000) chunks.push(text.slice(i, i + 4000));
+  }
+
+  for (const c of chunks) {
+    const body = mono
+      ? { chat_id: chat, text: `<pre>${escapeHtml(c)}</pre>`, parse_mode: 'HTML' }
+      : { chat_id: chat, text: c };
     const r = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: chat, text: text.slice(i, i + 4000) }),
+      body: JSON.stringify(body),
     });
     const j = await r.json();
     if (!j.ok) return { sent: false, reason: j.description || 'telegram error' };
@@ -327,9 +365,10 @@ router.post('/telegram', async (req, res) => {
 
     const text = msg.text.trim().toLowerCase();
     if (/^(digest|status)\b/.test(text)) {
-      await sendTelegram(_digest.lastText || 'No digest yet — reply "run".');
+      if (_digest.lastText) await sendTelegram(_digest.lastText, { mono: true });
+      else await sendTelegram('No digest yet — reply "run".');
     } else if (/^list\b/.test(text)) {
-      await sendTelegram(await buildListView());
+      await sendTelegram(await buildListView(), { mono: true });
     } else if (/^run\b/.test(text)) {
       if (_digest.running) await sendTelegram('Already running — digest arriving shortly.');
       else {
@@ -343,7 +382,7 @@ router.post('/telegram', async (req, res) => {
     } else {
       // Anything else: try it as a campaign name
       const view = await buildCampaignView(text).catch(e => { console.error('[digest] campaign view:', e.message); return { text: null }; });
-      if (view.text) await sendTelegram(view.text);
+      if (view.text) await sendTelegram(view.text, { mono: true });
       else await sendTelegram(`No campaign matches "${msg.text.trim()}".\nCommands: a campaign name (e.g. "LSS TN") · "kill 2 5" (numbers from the last list) · "list" · "digest" · "run"`);
     }
   } catch (e) { console.error('[digest] telegram handler:', e.message); }
@@ -364,7 +403,7 @@ async function runDigest({ send = true, sync = true } = {}) {
     _digest.lastText = text;
     _digest.lastRun  = new Date().toISOString();
     _digest.lastError = null;
-    _digest.lastDelivery = send ? await sendTelegram(text) : { sent: false, reason: 'send=false' };
+    _digest.lastDelivery = send ? await sendTelegram(text, { mono: true }) : { sent: false, reason: 'send=false' };
     console.log(`[digest] done — delivery: ${JSON.stringify(_digest.lastDelivery)}`);
   } catch (e) {
     _digest.lastError = e.message;
