@@ -121,13 +121,15 @@ async function collectStats(force = false) {
 function flagFor(e) {
   const leads = Math.max(e.fbLeads, e.hyLeads);
   const cpl   = leads > 0 ? e.spend / leads : null;
-  if (e.spend >= 300 && leads === 0)     return { level: 'kill',  reason: `${fmtMoney(e.spend)} spent, 0 leads` };
-  if (e.spend >= 50 && e.uclicks === 0)  return { level: 'kill',  reason: `${fmtMoney(e.spend)} spent, 0 link clicks` };
-  if (e.spend >= 50 && e.cpm >= 150)     return { level: 'kill',  reason: `CPM ${fmtMoney(e.cpm)}` };
-  if (cpl != null && cpl >= 600)         return { level: 'kill',  reason: `CPL ${fmtMoney(cpl)}` };
-  if (e.spend >= 200 && leads === 0)     return { level: 'watch', reason: `${fmtMoney(e.spend)} spent, 0 leads` };
-  if (cpl != null && cpl >= 450)         return { level: 'watch', reason: `CPL ${fmtMoney(cpl)}` };
-  if (e.spend >= 100 && e.cpulc != null && e.cpulc >= 7) return { level: 'watch', reason: `CPULC $${e.cpulc.toFixed(2)}` };
+  // bold: which displayed fields to emphasize as the reason (vertical layout)
+  const cplBold = e.fbLeads >= e.hyLeads ? ['fbCpl'] : ['hyCpl'];
+  if (e.spend >= 300 && leads === 0)     return { level: 'kill',  bold: ['spend', 'fbLeads', 'hyLeads'], reason: `${fmtMoney(e.spend)} spent, 0 leads` };
+  if (e.spend >= 50 && e.uclicks === 0)  return { level: 'kill',  bold: ['spend', 'ulc'], reason: `${fmtMoney(e.spend)} spent, 0 link clicks` };
+  if (e.spend >= 50 && e.cpm >= 150)     return { level: 'kill',  bold: ['cpm'], reason: `CPM ${fmtMoney(e.cpm)}` };
+  if (cpl != null && cpl >= 600)         return { level: 'kill',  bold: cplBold, reason: `CPL ${fmtMoney(cpl)}` };
+  if (e.spend >= 200 && leads === 0)     return { level: 'watch', bold: ['spend', 'fbLeads', 'hyLeads'], reason: `${fmtMoney(e.spend)} spent, 0 leads` };
+  if (cpl != null && cpl >= 450)         return { level: 'watch', bold: cplBold, reason: `CPL ${fmtMoney(cpl)}` };
+  if (e.spend >= 100 && e.cpulc != null && e.cpulc >= 7) return { level: 'watch', bold: ['ulc'], reason: `CPULC $${e.cpulc.toFixed(2)}` };
   return null;
 }
 
@@ -147,6 +149,27 @@ function fmtEntry(n, e, reason) {
 
 // Built with the same paddings as fmtEntry's stat line so columns line up
 const STAT_HEADER = `   ${pS('SPEND', 6)} ${pS('FB', 3)} ${pS('CPL', 5)}  ${pS('HY', 3)} ${pS('CPL', 5)}  ${pS('ULC', 6)}`;
+
+// Vertical card for the digest's kill/watch sections (HTML — allows <b> on
+// the field(s) that triggered the flag). One field per line, blank line
+// between ads.
+function fmtEntryVertical(n, e, flag) {
+  const bold = new Set(flag?.bold || []);
+  const line = (key, label, val) => {
+    const s = `${label}: ${val}`;
+    return bold.has(key) ? `<b>${s}</b>` : s;
+  };
+  const L = [`${n}. ${escapeHtml(e.name)}`];
+  L.push(line('campaign', 'Campaign', escapeHtml(e.campaign)));
+  L.push(line('spend',    'Spend',    fmtMoney(e.spend)));
+  L.push(line('fbLeads',  'FB leads', e.fbLeads));
+  L.push(line('fbCpl',    'FB CPL',   fmtCpl(e.spend, e.fbLeads)));
+  L.push(line('hyLeads',  'Hy leads', e.hyLeads));
+  L.push(line('hyCpl',    'Hy CPL',   fmtCpl(e.spend, e.hyLeads)));
+  L.push(line('ulc',      'ULC',      e.cpulc != null ? '$' + e.cpulc.toFixed(2) : '—'));
+  if (bold.has('cpm')) L.push(`<b>CPM: ${fmtMoney(e.cpm)}</b>`);
+  return L.join('\n');
+}
 
 // The roster is always THE LAST LIST SENT to the user, numbered 1..N in the
 // order it was displayed. "kill N" resolves against it, whatever view it was.
@@ -186,22 +209,21 @@ async function buildDigest() {
   const displayed = [...kills, ...watches];
   saveRoster(displayed.map(x => x.e), 'digest');
 
+  // The digest is composed as Telegram HTML: kill/watch as vertical cards
+  // (regular text so <b> works), campaign table in a <pre> grid.
   const L = [];
   const now = new Date().toLocaleString('en-US', { timeZone: DIGEST_TZ, month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
-  L.push(`📊 SCALECASES DIGEST — ${now}`);
-  L.push(`Window ${windowLabel} · stats: spend | FB leads/CPL | Hyros leads/CPL | cost per unique link click`);
+  L.push(escapeHtml(`📊 SCALECASES DIGEST — ${now} · window ${windowLabel}`));
   if (stats.failedAccounts.length)
-    L.push(`⚠ INCOMPLETE — FB account(s) failed after retries: ${stats.failedAccounts.join(', ')}. Numbers are missing that account; reply "run" to retry.`);
+    L.push(escapeHtml(`⚠ INCOMPLETE — FB account(s) failed after retries: ${stats.failedAccounts.join(', ')}. Numbers are missing that account; reply "run" to retry.`));
 
   let n = 0;
   L.push('', `🔴 KILL CANDIDATES: ${kills.length ? '' : 'none'}`);
-  if (kills.length) L.push(STAT_HEADER);
-  for (const { e, flag } of kills) L.push(fmtEntry(++n, e, flag.reason));
+  for (const { e, flag } of kills) L.push('', fmtEntryVertical(++n, e, flag));
   if (nKillsHidden > 0) L.push(`…and ${nKillsHidden} more (reply "list")`);
 
   L.push('', `🟡 WATCH: ${watches.length ? '' : 'none'}`);
-  if (watches.length) L.push(STAT_HEADER);
-  for (const { e, flag } of watches) L.push(fmtEntry(++n, e, flag.reason));
+  for (const { e, flag } of watches) L.push('', fmtEntryVertical(++n, e, flag));
   if (nWatchHidden > 0) L.push(`…and ${nWatchHidden} more (reply "list")`);
 
   // Campaign-level cursory glance: FB + Hyros leads/CPL per campaign, same window
@@ -216,19 +238,20 @@ async function buildDigest() {
     const name = metaById[adsetId]?.campaignName;
     if (name && camps[name]) camps[name].hy += cnt;
   }
-  L.push('', `📋 CAMPAIGNS (${windowLabel}) — reply a name for its ads:`);
+  L.push('', escapeHtml(`📋 CAMPAIGNS (${windowLabel}) — reply a name for its ads:`));
   const cRows = Object.entries(camps).filter(([, v]) => v.spend > 0).sort((a, b) => b[1].spend - a[1].spend);
   const nameW = Math.max(...cRows.map(([name]) => name.length), 5);
   const campRow = (name, v) =>
     `${pE(name, nameW)} ${pS(v.fb, 3)} ${pS(fmtCpl(v.spend, v.fb), 5)}  ${pS(v.hy, 3)} ${pS(fmtCpl(v.spend, v.hy), 5)}`;
-  L.push(`${pE('', nameW)} ${pS('FB', 3)} ${pS('CPL', 5)}  ${pS('HY', 3)} ${pS('CPL', 5)}`);
-  for (const [name, v] of cRows) L.push(campRow(name, v));
+  const table = [`${pE('', nameW)} ${pS('FB', 3)} ${pS('CPL', 5)}  ${pS('HY', 3)} ${pS('CPL', 5)}`];
+  for (const [name, v] of cRows) table.push(campRow(name, v));
   const totFb    = cRows.reduce((s, [, v]) => s + v.fb, 0);
   const totHy    = cRows.reduce((s, [, v]) => s + v.hy, 0);
   const totSpend = cRows.reduce((s, [, v]) => s + v.spend, 0);
-  L.push(campRow('TOTAL', { spend: totSpend, fb: totFb, hy: totHy }));
+  table.push(campRow('TOTAL', { spend: totSpend, fb: totFb, hy: totHy }));
+  L.push(`<pre>${escapeHtml(table.join('\n'))}</pre>`);
 
-  L.push('', FOOTER);
+  L.push('', escapeHtml(FOOTER));
   return L.join('\n');
 }
 
@@ -302,30 +325,42 @@ function tgSecret() {
   return crypto.createHash('sha256').update(process.env.TELEGRAM_BOT_TOKEN || 'none').digest('hex').slice(0, 32);
 }
 
-function escapeHtml(s) { return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+function escapeHtml(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
 
-// mono=true renders the message in a <pre> block (fixed-width font) so padded
-// columns align like a grid. Chunks split on line boundaries, each chunk
-// wrapped in its own <pre>.
-async function sendTelegram(text, { mono = false } = {}) {
+// mode 'plain': raw text. 'mono': escape everything and wrap in <pre> (grid
+// views). 'html': text is already Telegram HTML (digest — vertical cards with
+// <b> plus an embedded <pre> table). Chunks split on line boundaries; a split
+// inside a <pre> block closes and reopens the tag.
+async function sendTelegram(text, { mode = 'plain' } = {}) {
   const token = process.env.TELEGRAM_BOT_TOKEN, chat = process.env.TELEGRAM_CHAT_ID;
   if (!token || !chat) return { sent: false, reason: 'TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID not set' };
 
   const chunks = [];
-  if (mono) {
-    let cur = [], len = 0;
+  if (mode === 'plain') {
+    for (let i = 0; i < text.length; i += 4000) chunks.push(text.slice(i, i + 4000));
+  } else {
+    let cur = [], len = 0, inPre = false;
     for (const ln of text.split('\n')) {
-      if (len + ln.length + 1 > 3500 && cur.length) { chunks.push(cur.join('\n')); cur = []; len = 0; }
+      if (len + ln.length + 1 > 3500 && cur.length) {
+        if (inPre) cur.push('</pre>');
+        chunks.push(cur.join('\n'));
+        cur = inPre ? ['<pre>'] : [];
+        len = inPre ? 6 : 0;
+      }
       cur.push(ln); len += ln.length + 1;
+      if (mode === 'html') {
+        if (ln.includes('<pre>')) inPre = true;
+        if (ln.includes('</pre>')) inPre = false;
+      }
     }
     if (cur.length) chunks.push(cur.join('\n'));
-  } else {
-    for (let i = 0; i < text.length; i += 4000) chunks.push(text.slice(i, i + 4000));
   }
 
   for (const c of chunks) {
-    const body = mono
+    const body = mode === 'mono'
       ? { chat_id: chat, text: `<pre>${escapeHtml(c)}</pre>`, parse_mode: 'HTML' }
+      : mode === 'html'
+      ? { chat_id: chat, text: c, parse_mode: 'HTML' }
       : { chat_id: chat, text: c };
     const r = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
       method: 'POST',
@@ -365,10 +400,10 @@ router.post('/telegram', async (req, res) => {
 
     const text = msg.text.trim().toLowerCase();
     if (/^(digest|status)\b/.test(text)) {
-      if (_digest.lastText) await sendTelegram(_digest.lastText, { mono: true });
+      if (_digest.lastText) await sendTelegram(_digest.lastText, { mode: 'html' });
       else await sendTelegram('No digest yet — reply "run".');
     } else if (/^list\b/.test(text)) {
-      await sendTelegram(await buildListView(), { mono: true });
+      await sendTelegram(await buildListView(), { mode: 'mono' });
     } else if (/^run\b/.test(text)) {
       if (_digest.running) await sendTelegram('Already running — digest arriving shortly.');
       else {
@@ -382,7 +417,7 @@ router.post('/telegram', async (req, res) => {
     } else {
       // Anything else: try it as a campaign name
       const view = await buildCampaignView(text).catch(e => { console.error('[digest] campaign view:', e.message); return { text: null }; });
-      if (view.text) await sendTelegram(view.text, { mono: true });
+      if (view.text) await sendTelegram(view.text, { mode: 'mono' });
       else await sendTelegram(`No campaign matches "${msg.text.trim()}".\nCommands: a campaign name (e.g. "LSS TN") · "kill 2 5" (numbers from the last list) · "list" · "digest" · "run"`);
     }
   } catch (e) { console.error('[digest] telegram handler:', e.message); }
@@ -403,7 +438,7 @@ async function runDigest({ send = true, sync = true } = {}) {
     _digest.lastText = text;
     _digest.lastRun  = new Date().toISOString();
     _digest.lastError = null;
-    _digest.lastDelivery = send ? await sendTelegram(text, { mono: true }) : { sent: false, reason: 'send=false' };
+    _digest.lastDelivery = send ? await sendTelegram(text, { mode: 'html' }) : { sent: false, reason: 'send=false' };
     console.log(`[digest] done — delivery: ${JSON.stringify(_digest.lastDelivery)}`);
   } catch (e) {
     _digest.lastError = e.message;
@@ -438,7 +473,11 @@ router.post('/run', (req, res) => {
 
 // GET /api/digest/latest — last digest as plain text (browser-friendly fallback)
 router.get('/latest', (req, res) => {
-  res.type('text/plain').send(_digest.lastText || 'No digest generated yet. POST /api/digest/run to create one.');
+  const plain = (_digest.lastText || 'No digest generated yet. POST /api/digest/run to create one.')
+    .replace(/<b>/g, '**').replace(/<\/b>/g, '**')
+    .replace(/<\/?pre>/g, '')
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+  res.type('text/plain').send(plain);
 });
 
 // GET /api/digest/list — full numbered roster as plain text
