@@ -31,6 +31,14 @@ services:
         sync: false  # Tab name to import, e.g. "March Signed Cases"
       - key: SPEND_SHEET_ID
         sync: false  # Spreadsheet ID for the spend-by-state monthly grid (one tab per month)
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false  # From @BotFather — enables digest delivery to Telegram
+      - key: TELEGRAM_CHAT_ID
+        sync: false  # Your Telegram chat id (message @userinfobot to get it)
+      - key: DIGEST_TIMES
+        sync: false  # e.g. "07:30,16:00" (in DIGEST_TZ); "off" disables the schedule
+      - key: DIGEST_TZ
+        sync: false  # e.g. America/Los_Angeles
 
   # React frontend (static site)
   - type: web

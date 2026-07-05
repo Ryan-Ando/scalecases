@@ -1928,13 +1928,13 @@ async function runBackfillFbclid(ghlContacts, append = false) {
 // Strategy: fetch ALL Hyros leads → check each lead's click history for a
 // /next-steps trackedUrl → only those are real → insert into Lead Events.
 // No GHL CSV required; adset comes from Hyros @attribution tag.
-async function runBackfillNextSteps(append = false) {
+async function runBackfillNextSteps(append = false, fromDate = START_DATE) {
   _backfill = { running: true, done: false, result: null, error: null };
   try {
     const today = isoToday();
 
     // Fetch all Hyros leads without any tag filter
-    const hyrosLeads = await fetchAllHyrosLeadsUnfiltered(START_DATE, today);
+    const hyrosLeads = await fetchAllHyrosLeadsUnfiltered(fromDate, today);
     if (!hyrosLeads.length) {
       _backfill = { running: false, done: true, error: null, result: { ok: true, inserted: 0, hyrosLeads: 0, message: 'No Hyros leads found in date range' } };
       return;
@@ -2024,6 +2024,17 @@ async function runBackfillNextSteps(append = false) {
     console.error('runBackfillNextSteps error:', e.message);
     _backfill = { running: false, done: true, result: null, error: String(e) };
   }
+}
+
+// Incremental variant: append-only over just the last `days` days of Hyros
+// leads (~100–300 people) instead of the full history since START_DATE. Cheap
+// enough to run before every digest; no 50-page truncation risk.
+async function runIncrementalNextSteps(days = 2) {
+  if (_backfill.running) return { ok: false, message: 'backfill already running' };
+  const from = new Date();
+  from.setUTCDate(from.getUTCDate() - days);
+  await runBackfillNextSteps(true, isoDatePT(from));
+  return _backfill.result || { ok: false, error: _backfill.error };
 }
 
 // ── Routes ────────────────────────────────────────────────────────────────────
@@ -3368,4 +3379,13 @@ router.get('/probe-adsets', async (req, res) => {
   res.json(result);
 });
 
+// POST /api/hyros/sync-recent?days=2 — incremental append-only next-steps sync
+router.post('/sync-recent', (req, res) => {
+  if (_backfill.running) return res.json({ ok: false, message: 'already running' });
+  const days = Math.min(14, parseInt(req.query.days, 10) || 2);
+  runIncrementalNextSteps(days).catch(e => console.error('[sync-recent]', e.message));
+  res.json({ ok: true, status: 'started', days });
+});
+
+export { runIncrementalNextSteps, getAuthClient, SHEET_ID, EVENTS_TAB };
 export default router;
