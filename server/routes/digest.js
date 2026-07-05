@@ -67,10 +67,25 @@ async function getLedger(fromDate) {
   return { byAdsetByDate, byDate, windowByAdset };
 }
 
-// ── Roster: every ACTIVE adset with spend in the window, numbered by spend ───
+// ── Stats: every ACTIVE adset with spend in the window, sorted by spend ──────
 // Each entry carries the four stat groups: spend, leads (FB & Hyros),
-// CPL (FB & Hyros), cost per unique link click.
-function buildRoster(windowRows, ledgerWindow, metaById) {
+// CPL (FB & Hyros), cost per unique link click. Numbering happens per VIEW
+// (digest / list / campaign), not here — see saveRoster.
+let _statsCache = null;
+const STATS_TTL = 10 * 60 * 1000;
+
+async function collectStats(force = false) {
+  if (!force && _statsCache && Date.now() - _statsCache.ts < STATS_TTL) return _statsCache;
+  const today = tzToday(), windowStart = tzDaysAgo(WINDOW_DAYS_BACK);
+
+  const [meta, windowRows, ledger] = await Promise.all([
+    getAdsetMeta(),
+    fetchDailyInsights({ level: 'adset', start: windowStart, end: today }),
+    getLedger(windowStart).catch(e => { console.warn('[digest] ledger:', e.message); return null; }),
+  ]);
+  const metaById = Object.fromEntries(meta.map(a => [a.id, a]));
+  const ledgerWindow = ledger?.windowByAdset || {};
+
   const agg = {};
   for (const r of windowRows) {
     const id = r.adset_id;
@@ -89,8 +104,14 @@ function buildRoster(windowRows, ledgerWindow, metaById) {
       cpulc:   a.uclicks > 0 ? a.spend / a.uclicks : null,
     }))
     .sort((a, b) => b.spend - a.spend);
-  entries.forEach((e, i) => { e.n = i + 1; });
-  return entries;
+
+  const windowLabel = `${windowStart.slice(5).replace('-', '/')}–${today.slice(5).replace('-', '/')}`;
+  _statsCache = {
+    ts: Date.now(),
+    entries, windowRows, metaById, ledger, windowLabel,
+    failedAccounts: windowRows.failedAccounts || [],
+  };
+  return _statsCache;
 }
 
 // Kill/watch rules over the window. Lead-based rules use the BETTER of FB and
@@ -108,14 +129,20 @@ function flagFor(e) {
   return null;
 }
 
-function fmtEntry(e, reason) {
+function fmtEntry(n, e, reason) {
   const tag = `[${extractBrand(e.campaign)} ${extractState(e.campaign) || '?'}]`;
   const stats = `${fmtMoney(e.spend)} | FB ${e.fbLeads}/${fmtCpl(e.spend, e.fbLeads)} | Hy ${e.hyLeads}/${fmtCpl(e.spend, e.hyLeads)} | ULC ${e.cpulc != null ? '$' + e.cpulc.toFixed(2) : '—'}`;
-  return `#${e.n} ${e.name} ${tag}\n   ${stats}${reason ? ` — ${reason}` : ''}`;
+  return `${n}. ${e.name} ${tag}\n   ${stats}${reason ? ` — ${reason}` : ''}`;
 }
 
-function saveRoster(entries) {
-  const data = { ts: new Date().toISOString(), entries: entries.map(e => ({ n: e.n, id: e.id, name: e.name, campaign: e.campaign })) };
+// The roster is always THE LAST LIST SENT to the user, numbered 1..N in the
+// order it was displayed. "kill N" resolves against it, whatever view it was.
+function saveRoster(entries, label) {
+  const data = {
+    ts: new Date().toISOString(),
+    label,
+    entries: entries.map((e, i) => ({ n: i + 1, id: e.id, name: e.name, campaign: e.campaign })),
+  };
   _roster = data;
   try {
     fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -128,41 +155,39 @@ function loadRoster() {
   return _roster;
 }
 let _roster = null;
-let _lastFullList = null;
+
+const FOOTER = 'Reply "kill 2 5" (numbers above) · a campaign name for its ads · "list" all adsets · "run" fresh digest';
 
 // ── Compose ───────────────────────────────────────────────────────────────────
 async function buildDigest() {
-  const today = tzToday(), windowStart = tzDaysAgo(WINDOW_DAYS_BACK);
+  const stats = await collectStats(true);
+  const { entries, windowRows, metaById, ledger, windowLabel } = stats;
 
-  const [meta, windowRows, ledger] = await Promise.all([
-    getAdsetMeta(),
-    fetchDailyInsights({ level: 'adset', start: windowStart, end: today }),
-    getLedger(windowStart).catch(e => { console.warn('[digest] ledger:', e.message); return null; }),
-  ]);
-  const metaById = Object.fromEntries(meta.map(a => [a.id, a]));
+  const flagged = entries.map(e => ({ e, flag: flagFor(e) })).filter(x => x.flag);
+  const kills   = flagged.filter(x => x.flag.level === 'kill').slice(0, 10);
+  const watches = flagged.filter(x => x.flag.level === 'watch').slice(0, 8);
+  const nKillsHidden = flagged.filter(x => x.flag.level === 'kill').length - kills.length;
+  const nWatchHidden = flagged.filter(x => x.flag.level === 'watch').length - watches.length;
 
-  const roster = buildRoster(windowRows, ledger?.windowByAdset || {}, metaById);
-  saveRoster(roster);
-
-  const flagged = roster.map(e => ({ e, flag: flagFor(e) })).filter(x => x.flag);
-  const kills   = flagged.filter(x => x.flag.level === 'kill');
-  const watches = flagged.filter(x => x.flag.level === 'watch');
+  // Roster = exactly what this digest displays, numbered top to bottom
+  const displayed = [...kills, ...watches];
+  saveRoster(displayed.map(x => x.e), 'digest');
 
   const L = [];
   const now = new Date().toLocaleString('en-US', { timeZone: DIGEST_TZ, month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
-  const windowLabel = `${windowStart.slice(5).replace('-', '/')}–${today.slice(5).replace('-', '/')}`;
   L.push(`📊 SCALECASES DIGEST — ${now}`);
   L.push(`Window ${windowLabel} · stats: spend | FB leads/CPL | Hyros leads/CPL | cost per unique link click`);
-  if (windowRows.failedAccounts?.length)
-    L.push(`⚠ INCOMPLETE — FB account(s) failed after retries: ${windowRows.failedAccounts.join(', ')}. Numbers are missing that account; reply "run" to retry.`);
+  if (stats.failedAccounts.length)
+    L.push(`⚠ INCOMPLETE — FB account(s) failed after retries: ${stats.failedAccounts.join(', ')}. Numbers are missing that account; reply "run" to retry.`);
 
+  let n = 0;
   L.push('', `🔴 KILL CANDIDATES: ${kills.length ? '' : 'none'}`);
-  for (const { e, flag } of kills.slice(0, 10)) L.push(fmtEntry(e, flag.reason));
-  if (kills.length > 10) L.push(`…and ${kills.length - 10} more (reply "list")`);
+  for (const { e, flag } of kills) L.push(fmtEntry(++n, e, flag.reason));
+  if (nKillsHidden > 0) L.push(`…and ${nKillsHidden} more (reply "list")`);
 
   L.push('', `🟡 WATCH: ${watches.length ? '' : 'none'}`);
-  for (const { e, flag } of watches.slice(0, 8)) L.push(fmtEntry(e, flag.reason));
-  if (watches.length > 8) L.push(`…and ${watches.length - 8} more (reply "list")`);
+  for (const { e, flag } of watches) L.push(fmtEntry(++n, e, flag.reason));
+  if (nWatchHidden > 0) L.push(`…and ${nWatchHidden} more (reply "list")`);
 
   // Campaign-level cursory glance: FB + Hyros leads/CPL per campaign, same window
   const camps = {};
@@ -172,11 +197,11 @@ async function buildDigest() {
     camps[name].spend += parseFloat(r.spend) || 0;
     camps[name].fb    += r.results || 0;
   }
-  for (const [adsetId, n] of Object.entries(ledger?.windowByAdset || {})) {
+  for (const [adsetId, cnt] of Object.entries(ledger?.windowByAdset || {})) {
     const name = metaById[adsetId]?.campaignName;
-    if (name && camps[name]) camps[name].hy += n;
+    if (name && camps[name]) camps[name].hy += cnt;
   }
-  L.push('', `📋 CAMPAIGNS (${windowLabel}, FB | Hyros):`);
+  L.push('', `📋 CAMPAIGNS (${windowLabel}, FB | Hyros) — reply a name to see its ads:`);
   const cRows = Object.entries(camps).filter(([, v]) => v.spend > 0).sort((a, b) => b[1].spend - a[1].spend);
   for (const [name, v] of cRows) {
     if (v.fb === 0 && v.hy === 0) L.push(`  ${name}: ${fmtMoney(v.spend)} spent, no leads`);
@@ -187,22 +212,53 @@ async function buildDigest() {
   const totSpend = cRows.reduce((s, [, v]) => s + v.spend, 0);
   L.push(`  TOTAL: FB ${totFb}/${fmtCpl(totSpend, totFb)} | Hy ${totHy}/${fmtCpl(totSpend, totHy)}`);
 
-  L.push('', `Reply "kill 3 7 12" to pause adsets by number · "list" for all ${roster.length} adsets · "run" for a fresh digest`);
+  L.push('', FOOTER);
+  return L.join('\n');
+}
 
-  // Full numbered roster, sent only on request ("list")
-  _lastFullList = [`All active adsets, window ${windowLabel} (spend | FB ld/CPL | Hy ld/CPL | ULC):`, ...roster.map(e => fmtEntry(e))].join('\n');
+// Campaign view: all active adsets in one campaign, numbered 1..N
+async function buildCampaignView(query) {
+  const stats = await collectStats();
+  const campaigns = [...new Set(stats.entries.map(e => e.campaign))];
+  const q = query.toLowerCase().trim();
+  let matches = campaigns.filter(c => c.toLowerCase() === q);
+  if (!matches.length) matches = campaigns.filter(c => c.toLowerCase().startsWith(q));
+  if (!matches.length) matches = campaigns.filter(c => c.toLowerCase().includes(q));
+  if (!matches.length) return { text: null };
+  if (matches.length > 1)
+    return { text: `Which campaign?\n${matches.map(c => `  ${c}`).join('\n')}` };
 
+  const campaign = matches[0];
+  const list = stats.entries.filter(e => e.campaign === campaign);
+  saveRoster(list, `campaign ${campaign}`);
+  const L = [`📂 ${campaign} — ${list.length} active adset${list.length !== 1 ? 's' : ''}, window ${stats.windowLabel}:`, ''];
+  list.forEach((e, i) => L.push(fmtEntry(i + 1, e, flagFor(e)?.reason)));
+  const spend = list.reduce((s, e) => s + e.spend, 0);
+  const fb    = list.reduce((s, e) => s + e.fbLeads, 0);
+  const hy    = list.reduce((s, e) => s + e.hyLeads, 0);
+  L.push('', `TOTAL: ${fmtMoney(spend)} | FB ${fb}/${fmtCpl(spend, fb)} | Hy ${hy}/${fmtCpl(spend, hy)}`);
+  L.push('', FOOTER);
+  return { text: L.join('\n') };
+}
+
+// Full list view: every active adset, numbered 1..N by spend
+async function buildListView() {
+  const stats = await collectStats();
+  saveRoster(stats.entries, 'full list');
+  const L = [`All ${stats.entries.length} active adsets, window ${stats.windowLabel} (numbered for "kill N"):`, ''];
+  stats.entries.forEach((e, i) => L.push(fmtEntry(i + 1, e, flagFor(e)?.reason)));
+  L.push('', FOOTER);
   return L.join('\n');
 }
 
 // ── FB write: pause adsets by roster number ──────────────────────────────────
 async function pauseByNumbers(nums) {
   const roster = loadRoster();
-  if (!roster?.entries?.length) return 'No roster available — run a digest first.';
-  const results = [];
+  if (!roster?.entries?.length) return 'No list to kill from — send "run", "list", or a campaign name first.';
+  const results = [`Killing from: ${roster.label}`];
   for (const n of nums) {
     const entry = roster.entries.find(e => e.n === n);
-    if (!entry) { results.push(`#${n}: not in the current list (1–${roster.entries.length})`); continue; }
+    if (!entry) { results.push(`${n}: not in that list (1–${roster.entries.length})`); continue; }
     try {
       // FB_WRITE_TOKEN: system-user token from the unpublished dev-mode app
       // with ads_management; the published read app's token stays untouched
@@ -213,13 +269,13 @@ async function pauseByNumbers(nums) {
         body: new URLSearchParams({ status: 'PAUSED', access_token: token }),
       });
       const j = await r.json();
-      if (j.success) results.push(`✅ #${n} PAUSED — ${entry.name}`);
+      if (j.success) results.push(`✅ ${n}. PAUSED — ${entry.name} [${entry.campaign}]`);
       else {
         const msg = j.error?.message || JSON.stringify(j).slice(0, 120);
         const perm = /permission|#200|#10\b|requires/i.test(msg);
-        results.push(`❌ #${n} ${entry.name}: ${perm ? (process.env.FB_WRITE_TOKEN ? 'FB_WRITE_TOKEN lacks ads_management or Manage-campaigns access on this ad account' : 'set FB_WRITE_TOKEN — a system-user token with ads_management from the unpublished app') : msg}`);
+        results.push(`❌ ${n}. ${entry.name}: ${perm ? (process.env.FB_WRITE_TOKEN ? 'FB_WRITE_TOKEN lacks ads_management or Manage-campaigns access on this ad account' : 'set FB_WRITE_TOKEN — a system-user token with ads_management from the unpublished app') : msg}`);
       }
-    } catch (e) { results.push(`❌ #${n} ${entry.name}: ${e.message}`); }
+    } catch (e) { results.push(`❌ ${n}. ${entry.name}: ${e.message}`); }
   }
   return results.join('\n');
 }
@@ -273,19 +329,22 @@ router.post('/telegram', async (req, res) => {
     if (/^(digest|status)\b/.test(text)) {
       await sendTelegram(_digest.lastText || 'No digest yet — reply "run".');
     } else if (/^list\b/.test(text)) {
-      await sendTelegram(_lastFullList || 'No roster yet — reply "run" first.');
+      await sendTelegram(await buildListView());
     } else if (/^run\b/.test(text)) {
       if (_digest.running) await sendTelegram('Already running — digest arriving shortly.');
       else {
         await sendTelegram('On it — fresh digest in ~2 minutes.');
         runDigest().catch(e => console.error('[digest]', e.message));
       }
-    } else if (/\b(kill|pause|stop|turn ?off|off)\b/.test(text)) {
+    } else if (/^(kill|pause|stop|turn ?off|off)\b/.test(text)) {
       const nums = [...text.matchAll(/\d+/g)].map(m => parseInt(m[0], 10));
-      if (!nums.length) await sendTelegram('Which numbers? e.g. "kill 3 7 12"');
+      if (!nums.length) await sendTelegram('Which numbers? e.g. "kill 2 5" — numbers refer to the last list I sent.');
       else await sendTelegram(await pauseByNumbers(nums));
     } else {
-      await sendTelegram('Commands: "kill 3 7 12" (pause by number) · "list" (all adsets) · "digest" (resend) · "run" (fresh digest)');
+      // Anything else: try it as a campaign name
+      const view = await buildCampaignView(text).catch(e => { console.error('[digest] campaign view:', e.message); return { text: null }; });
+      if (view.text) await sendTelegram(view.text);
+      else await sendTelegram(`No campaign matches "${msg.text.trim()}".\nCommands: a campaign name (e.g. "LSS TN") · "kill 2 5" (numbers from the last list) · "list" · "digest" · "run"`);
     }
   } catch (e) { console.error('[digest] telegram handler:', e.message); }
 });
@@ -344,8 +403,17 @@ router.get('/latest', (req, res) => {
 });
 
 // GET /api/digest/list — full numbered roster as plain text
-router.get('/list', (req, res) => {
-  res.type('text/plain').send(_lastFullList || 'No roster yet — run a digest first.');
+router.get('/list', async (req, res) => {
+  try { res.type('text/plain').send(await buildListView()); }
+  catch (e) { res.status(500).type('text/plain').send(`list failed: ${e.message}`); }
+});
+
+// GET /api/digest/campaign?name=LSS%20TN — campaign view as plain text
+router.get('/campaign', async (req, res) => {
+  try {
+    const view = await buildCampaignView(String(req.query.name || ''));
+    res.type('text/plain').send(view.text || `No campaign matches "${req.query.name}"`);
+  } catch (e) { res.status(500).type('text/plain').send(`campaign view failed: ${e.message}`); }
 });
 
 router.get('/status', (req, res) => {
