@@ -1971,10 +1971,13 @@ async function runBackfillNextSteps(append = false, fromDate = START_DATE) {
         if (!clickData.hasNextSteps) continue;
         nextStepsCount++;
 
-        // Attribution: adset from the LAST /next-steps URL (fbc_id on the thank-you page).
-        // Fallback chain: Hyros @tag → last fbc_id from any click → webhook cache fbclid lookup.
+        // Attribution: Hyros @tag first — this is Hyros's own attribution, so
+        // per-adset counts match the Hyros extension when a lead touched several
+        // adsets (the thank-you URL's fbc_id carries the last-clicked adset,
+        // which Hyros may not credit). Fallbacks: thank-you fbc_id → last
+        // fbc_id from any click → webhook cache fbclid lookup.
         const webhookAdset = clickData.fbclids.reduce((found, fc) => found || _fbclidCache.get(fc) || '', '');
-        const adsetId = clickData.conversionAdsetId || lead.adsetId || clickData.adsetId || webhookAdset;
+        const adsetId = lead.adsetId || clickData.conversionAdsetId || clickData.adsetId || webhookAdset;
         if (!adsetId) { noAdsetCount++; continue; }
 
         const dedupKey = clickData.fbclids[0] || `email:${lead.email}`;
@@ -3385,6 +3388,43 @@ router.post('/sync-recent', (req, res) => {
   const days = Math.min(14, parseInt(req.query.days, 10) || 2);
   runIncrementalNextSteps(days).catch(e => console.error('[sync-recent]', e.message));
   res.json({ ok: true, status: 'started', days });
+});
+
+// POST /api/hyros/resync-recent?days=5 — delete ledger rows from the last N
+// days and re-insert them with current attribution logic. Older history is
+// untouched (a full rewrite would truncate at the 5000-lead fetch cap).
+router.post('/resync-recent', async (req, res) => {
+  if (_backfill.running) return res.json({ ok: false, message: 'backfill already running' });
+  const days   = Math.min(14, parseInt(req.query.days, 10) || 5);
+  const from   = new Date();
+  from.setUTCDate(from.getUTCDate() - days);
+  const cutoff = isoDatePT(from);
+  try {
+    const auth   = await getAuthClient();
+    const sheets = google.sheets({ version: 'v4', auth });
+    const meta   = await sheets.spreadsheets.get({ spreadsheetId: SHEET_ID });
+    const tab    = meta.data.sheets.find(s => s.properties.title === EVENTS_TAB);
+    if (!tab) return res.status(404).json({ ok: false, error: 'Lead Events tab not found' });
+
+    const data = await sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: `${EVENTS_TAB}!A:J` });
+    const rows = (data.data.values || []).slice(1);
+    const doomed = rows
+      .map((r, i) => ({ idx: i + 1, date: r[1] || '' }))
+      .filter(({ date }) => date >= cutoff)
+      .map(({ idx }) => idx);
+
+    if (doomed.length) {
+      const requests = [...doomed].reverse().map(rowIdx => ({
+        deleteDimension: { range: { sheetId: tab.properties.sheetId, dimension: 'ROWS', startIndex: rowIdx, endIndex: rowIdx + 1 } },
+      }));
+      await sheets.spreadsheets.batchUpdate({ spreadsheetId: SHEET_ID, requestBody: { requests } });
+    }
+
+    runBackfillNextSteps(true, cutoff).catch(e => console.error('[resync-recent]', e.message));
+    res.json({ ok: true, deleted: doomed.length, cutoff, status: 'reinsert started — poll /api/hyros/backfill-status' });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
 });
 
 export { runIncrementalNextSteps, getAuthClient, SHEET_ID, EVENTS_TAB };
