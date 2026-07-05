@@ -153,6 +153,8 @@ async function buildDigest() {
   const windowLabel = `${windowStart.slice(5).replace('-', '/')}–${today.slice(5).replace('-', '/')}`;
   L.push(`📊 SCALECASES DIGEST — ${now}`);
   L.push(`Window ${windowLabel} · stats: spend | FB leads/CPL | Hyros leads/CPL | cost per unique link click`);
+  if (windowRows.failedAccounts?.length)
+    L.push(`⚠ INCOMPLETE — FB account(s) failed after retries: ${windowRows.failedAccounts.join(', ')}. Numbers are missing that account; reply "run" to retry.`);
 
   L.push('', `🔴 KILL CANDIDATES: ${kills.length ? '' : 'none'}`);
   for (const { e, flag } of kills.slice(0, 10)) L.push(fmtEntry(e, flag.reason));

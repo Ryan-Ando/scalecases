@@ -616,6 +616,7 @@ async function fetchDailyInsights({ level, datePreset, start, end, date, adIdLis
 
   const accounts = adAccounts();
   const all = [];
+  const failedAccounts = [];
   const settled = await Promise.allSettled(accounts.map(async account => {
     const params = new URLSearchParams({ level, fields, time_increment: 1, access_token: token(), limit: 500 });
     if (start && end)   params.set('time_range', JSON.stringify({ since: start, until: end }));
@@ -624,26 +625,46 @@ async function fetchDailyInsights({ level, datePreset, start, end, date, adIdLis
     if (adIdList?.length)    params.set('filtering', JSON.stringify([{ field: 'ad.id',    operator: 'IN', value: adIdList }]));
     else if (adsetIdList?.length) params.set('filtering', JSON.stringify([{ field: 'adset.id', operator: 'IN', value: adsetIdList }]));
 
-    let url = `${FB_API}/${account}/insights?${params}`;
-    let pages = 0;
-    while (url) {
-      const r = await fbFetch(url);
-      pages++;
-      captureRateLimit(account, r.headers);
-      const json = await r.json();
-      if (json.error) { _stats.errors++; throw new Error(`[${account}] ${json.error.message}`); }
-      all.push(...(json.data || []));
-      url = json.paging?.next || null;
+    // Retry the whole account on failure — a transient error must not silently
+    // drop an entire account from the result (kill decisions depend on it)
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      const rows = [];
+      try {
+        let url = `${FB_API}/${account}/insights?${params}`;
+        let pages = 0;
+        while (url) {
+          const r = await fbFetch(url);
+          pages++;
+          captureRateLimit(account, r.headers);
+          const json = await r.json();
+          if (json.error) { _stats.errors++; throw new Error(`[${account}] ${json.error.message}`); }
+          rows.push(...(json.data || []));
+          url = json.paging?.next || null;
+        }
+        recordCall(account, `daily/${level}`, pages);
+        all.push(...rows);
+        return;
+      } catch (e) {
+        if (attempt === 3) throw e;
+        console.warn(`FB daily ${account} attempt ${attempt} failed, retrying:`, e.message);
+        await new Promise(res => setTimeout(res, attempt * 15_000));
+      }
     }
-    recordCall(account, `daily/${level}`, pages);
   }));
-  settled.forEach(r => { if (r.status === 'rejected') console.warn('FB daily skipped account:', r.reason?.message); });
+  settled.forEach((r, i) => {
+    if (r.status === 'rejected') {
+      console.warn('FB daily skipped account:', r.reason?.message);
+      failedAccounts.push(accounts[i]);
+    }
+  });
 
   const idKey = level === 'ad' ? 'ad_id' : level === 'adset' ? 'adset_id' : 'campaign_id';
   const deduped = [...new Map(all.map(r => [`${r[idKey]}:${r.date_start}`, r])).values()];
   const enriched = deduped.map(r => ({ ...r, ...extractResults(r) }));
   const isSpendTracker = level === 'campaign' && start && end && !adIdList && !adsetIdList;
-  return (full || isSpendTracker) ? enriched : enriched.filter(r => !BLACKLIST_DATES.has(r.date_start));
+  const result = (full || isSpendTracker) ? enriched : enriched.filter(r => !BLACKLIST_DATES.has(r.date_start));
+  result.failedAccounts = failedAccounts;
+  return result;
 }
 
 // GET /api/facebook/daily?date_preset=&level=campaign&ad_ids=id1,id2&date=YYYY-MM-DD
