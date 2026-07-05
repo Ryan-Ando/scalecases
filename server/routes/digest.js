@@ -162,21 +162,28 @@ async function buildDigest() {
   for (const { e, flag } of watches.slice(0, 8)) L.push(fmtEntry(e, flag.reason));
   if (watches.length > 8) L.push(`…and ${watches.length - 8} more (reply "list")`);
 
-  // Campaign-level cursory glance: FB leads + CPL per campaign, same window
+  // Campaign-level cursory glance: FB + Hyros leads/CPL per campaign, same window
   const camps = {};
   for (const r of windowRows) {
     const name = r.campaign_name || '?';
-    camps[name] = camps[name] || { spend: 0, leads: 0 };
+    camps[name] = camps[name] || { spend: 0, fb: 0, hy: 0 };
     camps[name].spend += parseFloat(r.spend) || 0;
-    camps[name].leads += r.results || 0;
+    camps[name].fb    += r.results || 0;
   }
-  L.push('', `📋 CAMPAIGNS (FB, ${windowLabel}):`);
+  for (const [adsetId, n] of Object.entries(ledger?.windowByAdset || {})) {
+    const name = metaById[adsetId]?.campaignName;
+    if (name && camps[name]) camps[name].hy += n;
+  }
+  L.push('', `📋 CAMPAIGNS (${windowLabel}, FB | Hyros):`);
   const cRows = Object.entries(camps).filter(([, v]) => v.spend > 0).sort((a, b) => b[1].spend - a[1].spend);
-  for (const [name, v] of cRows)
-    L.push(`  ${name}: ${v.leads} leads · ${v.leads > 0 ? 'CPL ' + fmtCpl(v.spend, v.leads) : fmtMoney(v.spend) + ' spent, no leads'}`);
-  const totLeads = cRows.reduce((s, [, v]) => s + v.leads, 0);
+  for (const [name, v] of cRows) {
+    if (v.fb === 0 && v.hy === 0) L.push(`  ${name}: ${fmtMoney(v.spend)} spent, no leads`);
+    else L.push(`  ${name}: FB ${v.fb}/${fmtCpl(v.spend, v.fb)} | Hy ${v.hy}/${fmtCpl(v.spend, v.hy)}`);
+  }
+  const totFb    = cRows.reduce((s, [, v]) => s + v.fb, 0);
+  const totHy    = cRows.reduce((s, [, v]) => s + v.hy, 0);
   const totSpend = cRows.reduce((s, [, v]) => s + v.spend, 0);
-  L.push(`  TOTAL: ${totLeads} leads · CPL ${fmtCpl(totSpend, totLeads)}`);
+  L.push(`  TOTAL: FB ${totFb}/${fmtCpl(totSpend, totFb)} | Hy ${totHy}/${fmtCpl(totSpend, totHy)}`);
 
   L.push('', `Reply "kill 3 7 12" to pause adsets by number · "list" for all ${roster.length} adsets · "run" for a fresh digest`);
 
