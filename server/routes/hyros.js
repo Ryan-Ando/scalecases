@@ -1578,7 +1578,7 @@ function stateFromCategory(category) {
 async function fetchAllHyrosLeadsUnfiltered(fromDate, toDate) {
   const key   = process.env.HYROS_API_KEY;
   const leads = [];
-  let pageId  = null, page = 0, totalFetched = 0;
+  let pageId  = null, page = 0, totalFetched = 0, retries = 0;
   do {
     page++;
     const params = new URLSearchParams({ fromDate, toDate, pageSize: 100 });
@@ -1586,7 +1586,14 @@ async function fetchAllHyrosLeadsUnfiltered(fromDate, toDate) {
     try {
       const r    = await fetch(`${HYROS_BASE}/leads?${params}`, { headers: { 'API-Key': key } });
       const data = await r.json();
-      if (!Array.isArray(data.result)) { console.warn('fetchAllHyrosLeadsUnfiltered error:', data.message); break; }
+      if (!Array.isArray(data.result)) {
+        // Transient error — retry the same page up to 3 times before giving up,
+        // otherwise a mid-pagination hiccup silently truncates the lead list
+        if (retries < 3) { retries++; page--; await delay(2000 * retries); continue; }
+        console.warn('fetchAllHyrosLeadsUnfiltered error after retries:', data.message);
+        break;
+      }
+      retries = 0;
       totalFetched += data.result.length;
       for (const lead of data.result) {
         const email = (lead.email || '').toLowerCase().trim();
@@ -1608,7 +1615,11 @@ async function fetchAllHyrosLeadsUnfiltered(fromDate, toDate) {
       }
       pageId = data.nextPageId || null;
       if (pageId) await delay(400);
-    } catch (e) { console.warn('fetchAllHyrosLeadsUnfiltered error:', e.message); break; }
+    } catch (e) {
+      if (retries < 3) { retries++; page--; await delay(2000 * retries); continue; }
+      console.warn('fetchAllHyrosLeadsUnfiltered error after retries:', e.message);
+      break;
+    }
   } while (pageId && page < 50);
   console.log(`fetchAllHyrosLeadsUnfiltered: ${leads.length} leads with email out of ${totalFetched} total (${page} page(s))`);
   return leads;
@@ -1632,10 +1643,19 @@ async function fetchLeadClickData(email) {
     sessionDates:        {},  // kept for backward compat
   };
   try {
-    const r    = await fetch(`${HYROS_BASE}/leads/clicks?${p}`, { headers: { 'API-Key': key } });
-    const text = await r.text();
-    let data;
-    try { data = JSON.parse(text); } catch { return result; }
+    // Retry transient failures — a swallowed error here silently drops the
+    // lead from the ledger (hasNextSteps stays false)
+    let data = null;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        const r    = await fetch(`${HYROS_BASE}/leads/clicks?${p}`, { headers: { 'API-Key': key } });
+        const text = await r.text();
+        const parsed = JSON.parse(text);
+        if (Array.isArray(parsed.result)) { data = parsed; break; }
+      } catch { /* fall through to retry */ }
+      if (attempt < 3) await delay(1500 * attempt);
+    }
+    if (!data) return result;
     let currentSessionAdset = '';
     for (const click of data.result || []) {
       const fbclid = click.parsedParameters?.fbclid;
