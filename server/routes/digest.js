@@ -132,21 +132,21 @@ function flagFor(e) {
 }
 
 // Two-line row with fixed-width stat columns — rendered in a Telegram <pre>
-// block so the stat columns align vertically across rows.
+// block so the stat columns align vertically across rows. Leads and CPL are
+// separate columns within the FB group and within the Hy group.
 function fmtEntry(n, e, reason) {
   const tag = `[${extractBrand(e.campaign)} ${extractState(e.campaign) || '?'}]`;
-  const fb  = `${e.fbLeads}/${fmtCpl(e.spend, e.fbLeads)}`;
-  const hy  = `${e.hyLeads}/${fmtCpl(e.spend, e.hyLeads)}`;
   const u   = e.cpulc != null ? '$' + e.cpulc.toFixed(2) : '—';
   const lines = [
     `${pS(n, 2)} ${e.name} ${tag}`,
-    `   ${pS(fmtMoney(e.spend), 6)} FB ${pE(fb, 8)} Hy ${pE(hy, 8)} U${u}`,
+    `   ${pS(fmtMoney(e.spend), 6)} ${pS(e.fbLeads, 3)} ${pS(fmtCpl(e.spend, e.fbLeads), 5)}  ${pS(e.hyLeads, 3)} ${pS(fmtCpl(e.spend, e.hyLeads), 5)}  ${pS(u, 6)}`,
   ];
   if (reason) lines.push(`      ⚠ ${reason}`);
   return lines.join('\n');
 }
 
-const STAT_HEADER = '    SPEND  FB ld/CPL   Hy ld/CPL  ULC';
+// Built with the same paddings as fmtEntry's stat line so columns line up
+const STAT_HEADER = `   ${pS('SPEND', 6)} ${pS('FB', 3)} ${pS('CPL', 5)}  ${pS('HY', 3)} ${pS('CPL', 5)}  ${pS('ULC', 6)}`;
 
 // The roster is always THE LAST LIST SENT to the user, numbered 1..N in the
 // order it was displayed. "kill N" resolves against it, whatever view it was.
@@ -219,15 +219,14 @@ async function buildDigest() {
   L.push('', `📋 CAMPAIGNS (${windowLabel}) — reply a name for its ads:`);
   const cRows = Object.entries(camps).filter(([, v]) => v.spend > 0).sort((a, b) => b[1].spend - a[1].spend);
   const nameW = Math.max(...cRows.map(([name]) => name.length), 5);
-  L.push(`${pE('', nameW)}  FB ld/CPL   Hy ld/CPL`);
-  for (const [name, v] of cRows) {
-    if (v.fb === 0 && v.hy === 0) L.push(`${pE(name, nameW)}  ${fmtMoney(v.spend)} spent, 0 leads`);
-    else L.push(`${pE(name, nameW)}  ${pE(`${v.fb}/${fmtCpl(v.spend, v.fb)}`, 10)}  ${v.hy}/${fmtCpl(v.spend, v.hy)}`);
-  }
+  const campRow = (name, v) =>
+    `${pE(name, nameW)} ${pS(v.fb, 3)} ${pS(fmtCpl(v.spend, v.fb), 5)}  ${pS(v.hy, 3)} ${pS(fmtCpl(v.spend, v.hy), 5)}`;
+  L.push(`${pE('', nameW)} ${pS('FB', 3)} ${pS('CPL', 5)}  ${pS('HY', 3)} ${pS('CPL', 5)}`);
+  for (const [name, v] of cRows) L.push(campRow(name, v));
   const totFb    = cRows.reduce((s, [, v]) => s + v.fb, 0);
   const totHy    = cRows.reduce((s, [, v]) => s + v.hy, 0);
   const totSpend = cRows.reduce((s, [, v]) => s + v.spend, 0);
-  L.push(`${pE('TOTAL', nameW)}  ${pE(`${totFb}/${fmtCpl(totSpend, totFb)}`, 10)}  ${totHy}/${fmtCpl(totSpend, totHy)}`);
+  L.push(campRow('TOTAL', { spend: totSpend, fb: totFb, hy: totHy }));
 
   L.push('', FOOTER);
   return L.join('\n');
@@ -253,7 +252,8 @@ async function buildCampaignView(query) {
   const spend = list.reduce((s, e) => s + e.spend, 0);
   const fb    = list.reduce((s, e) => s + e.fbLeads, 0);
   const hy    = list.reduce((s, e) => s + e.hyLeads, 0);
-  L.push('', `TOTAL: ${fmtMoney(spend)} | FB ${fb}/${fmtCpl(spend, fb)} | Hy ${hy}/${fmtCpl(spend, hy)}`);
+  L.push('', ` TOTAL`);
+  L.push(`   ${pS(fmtMoney(spend), 6)} ${pS(fb, 3)} ${pS(fmtCpl(spend, fb), 5)}  ${pS(hy, 3)} ${pS(fmtCpl(spend, hy), 5)}`);
   L.push('', FOOTER);
   return { text: L.join('\n') };
 }
