@@ -144,18 +144,89 @@ async function collectStats(force = false) {
 
 // Kill/watch rules over the window. Lead-based rules use the BETTER of FB and
 // Hyros counts so an adset FB under-reports is not killed while Hyros shows leads.
+// ── KPI rules — user-editable via Telegram ("rules", "set kill cpl 700") ─────
+// Plain threshold logic, no AI: every rule is an explicit numeric comparison.
+const KPI_FILE = path.join(DATA_DIR, 'digest-kpis.json');
+const DEFAULT_KPIS = {
+  kill_noleads_spend:  300,  // KILL: spend ≥ this with 0 leads
+  kill_noclicks_spend: 50,   // KILL: spend ≥ this with 0 unique link clicks
+  kill_cpm:            150,  // KILL: CPM ≥ this (at $50+ spend)
+  kill_cpl:            600,  // KILL: CPL ≥ this
+  watch_noleads_spend: 200,  // WATCH: spend ≥ this with 0 leads
+  watch_cpl:           450,  // WATCH: CPL ≥ this
+  watch_cpulc:         7,    // WATCH: cost per unique link click ≥ this…
+  watch_cpulc_spend:   100,  // …at spend ≥ this
+};
+let KPIS = { ...DEFAULT_KPIS };
+try { KPIS = { ...DEFAULT_KPIS, ...JSON.parse(fs.readFileSync(KPI_FILE, 'utf8')) }; } catch { /* defaults */ }
+
+function saveKpis() {
+  try {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+    fs.writeFileSync(KPI_FILE, JSON.stringify(KPIS));
+  } catch (e) { console.warn('[digest] kpi write failed:', e.message); }
+}
+
+const KPI_ALIASES = {
+  kill_cpl:            ['kill cpl'],
+  watch_cpl:           ['watch cpl'],
+  kill_cpm:            ['kill cpm'],
+  kill_noleads_spend:  ['kill noleads', 'kill no leads', 'kill noleads spend'],
+  watch_noleads_spend: ['watch noleads', 'watch no leads', 'watch noleads spend'],
+  kill_noclicks_spend: ['kill noclicks', 'kill no clicks', 'kill noclicks spend'],
+  watch_cpulc:         ['watch cpulc', 'watch ulc'],
+  watch_cpulc_spend:   ['watch cpulc spend', 'watch ulc spend'],
+};
+
+function rulesText() {
+  return [
+    'CURRENT RULES (all plain thresholds, no AI)',
+    `Window: today + previous ${WINDOW_DAYS_BACK} days`,
+    'Leads = the better of FB / Hyros counts',
+    '',
+    'KILL when any of:',
+    `  spend ≥ $${KPIS.kill_noleads_spend} with 0 leads      [kill noleads]`,
+    `  spend ≥ $${KPIS.kill_noclicks_spend} with 0 link clicks  [kill noclicks]`,
+    `  CPM ≥ $${KPIS.kill_cpm} (at $50+ spend)    [kill cpm]`,
+    `  CPL ≥ $${KPIS.kill_cpl}                  [kill cpl]`,
+    '',
+    'WATCH when any of:',
+    `  spend ≥ $${KPIS.watch_noleads_spend} with 0 leads      [watch noleads]`,
+    `  CPL ≥ $${KPIS.watch_cpl}                  [watch cpl]`,
+    `  ULC ≥ $${KPIS.watch_cpulc} at spend ≥ $${KPIS.watch_cpulc_spend}   [watch ulc / watch ulc spend]`,
+    '',
+    'Change one: "set kill cpl 700"',
+    'Restore defaults: "reset rules"',
+  ].join('\n');
+}
+
+function setKpiFromText(text) {
+  const t = text.replace(/^set\s+/i, '').trim();
+  const m = t.match(/(-?\d+(?:\.\d+)?)\s*$/);
+  if (!m) return 'Give me a number, e.g. "set kill cpl 700"';
+  const value = parseFloat(m[1]);
+  const phrase = t.slice(0, m.index).trim().replace(/\s+/g, ' ').toLowerCase().replace(/\$/g, '');
+  const key = Object.keys(KPI_ALIASES).find(k => KPI_ALIASES[k].includes(phrase));
+  if (!key) return `Unknown rule "${phrase}". Valid: ${Object.values(KPI_ALIASES).map(a => a[0]).join(' · ')}`;
+  if (value <= 0) return 'Value must be positive.';
+  const old = KPIS[key];
+  KPIS[key] = value;
+  saveKpis();
+  return `✅ ${KPI_ALIASES[key][0]}: $${old} → $${value}\n\n${rulesText()}`;
+}
+
 function flagFor(e) {
   const leads = Math.max(e.fbLeads, e.hyLeads);
   const cpl   = leads > 0 ? e.spend / leads : null;
   // bold: which displayed fields to emphasize as the reason (vertical layout)
   const cplBold = e.fbLeads >= e.hyLeads ? ['fbCpl'] : ['hyCpl'];
-  if (e.spend >= 300 && leads === 0)     return { level: 'kill',  bold: ['spend', 'fbLeads', 'hyLeads'], reason: `${fmtMoney(e.spend)} spent, 0 leads` };
-  if (e.spend >= 50 && e.uclicks === 0)  return { level: 'kill',  bold: ['spend', 'ulc'], reason: `${fmtMoney(e.spend)} spent, 0 link clicks` };
-  if (e.spend >= 50 && e.cpm >= 150)     return { level: 'kill',  bold: ['cpm'], reason: `CPM ${fmtMoney(e.cpm)}` };
-  if (cpl != null && cpl >= 600)         return { level: 'kill',  bold: cplBold, reason: `CPL ${fmtMoney(cpl)}` };
-  if (e.spend >= 200 && leads === 0)     return { level: 'watch', bold: ['spend', 'fbLeads', 'hyLeads'], reason: `${fmtMoney(e.spend)} spent, 0 leads` };
-  if (cpl != null && cpl >= 450)         return { level: 'watch', bold: cplBold, reason: `CPL ${fmtMoney(cpl)}` };
-  if (e.spend >= 100 && e.cpulc != null && e.cpulc >= 7) return { level: 'watch', bold: ['ulc'], reason: `CPULC $${e.cpulc.toFixed(2)}` };
+  if (e.spend >= KPIS.kill_noleads_spend && leads === 0)     return { level: 'kill',  bold: ['spend', 'fbLeads', 'hyLeads'], reason: `${fmtMoney(e.spend)} spent, 0 leads` };
+  if (e.spend >= KPIS.kill_noclicks_spend && e.uclicks === 0) return { level: 'kill', bold: ['spend', 'ulc'], reason: `${fmtMoney(e.spend)} spent, 0 link clicks` };
+  if (e.spend >= 50 && e.cpm >= KPIS.kill_cpm)               return { level: 'kill',  bold: ['cpm'], reason: `CPM ${fmtMoney(e.cpm)}` };
+  if (cpl != null && cpl >= KPIS.kill_cpl)                   return { level: 'kill',  bold: cplBold, reason: `CPL ${fmtMoney(cpl)}` };
+  if (e.spend >= KPIS.watch_noleads_spend && leads === 0)    return { level: 'watch', bold: ['spend', 'fbLeads', 'hyLeads'], reason: `${fmtMoney(e.spend)} spent, 0 leads` };
+  if (cpl != null && cpl >= KPIS.watch_cpl)                  return { level: 'watch', bold: cplBold, reason: `CPL ${fmtMoney(cpl)}` };
+  if (e.spend >= KPIS.watch_cpulc_spend && e.cpulc != null && e.cpulc >= KPIS.watch_cpulc) return { level: 'watch', bold: ['ulc'], reason: `CPULC $${e.cpulc.toFixed(2)}` };
   return null;
 }
 
@@ -218,7 +289,7 @@ function loadRoster() {
 }
 let _roster = null;
 
-const FOOTER = 'Reply "kill 2 5" (numbers above) · a campaign name for its ads · "list" all adsets · "run" fresh digest';
+const FOOTER = 'Reply "kill 2 5" (numbers above) · a campaign name for its ads · "list" all adsets · "rules" view/edit KPIs · "run" fresh digest';
 
 // ── Compose ───────────────────────────────────────────────────────────────────
 async function buildDigest() {
@@ -281,11 +352,22 @@ async function buildDigest() {
     if (name && camps[name]) camps[name].hy += cnt;
   }
   L.push('', escapeHtml(`📋 CAMPAIGNS (${windowLabel}) — reply a name for its ads:`));
-  const cRows = Object.entries(camps).filter(([, v]) => v.spend > 0).sort((a, b) => b[1].spend - a[1].spend);
+  // AVG = mean of FB CPL and Hyros CPL (whichever are defined); campaigns
+  // sorted worst-first — no-lead campaigns at the very top, then AVG desc
+  const avgCpl = v => {
+    const parts = [];
+    if (v.fb > 0) parts.push(v.spend / v.fb);
+    if (v.hy > 0) parts.push(v.spend / v.hy);
+    return parts.length ? parts.reduce((s, x) => s + x, 0) / parts.length : null;
+  };
+  const cRows = Object.entries(camps).filter(([, v]) => v.spend > 0)
+    .sort((a, b) => (avgCpl(b[1]) ?? Infinity) - (avgCpl(a[1]) ?? Infinity));
   const nameW = Math.max(...cRows.map(([name]) => name.length), 5);
-  const campRow = (name, v) =>
-    `${pE(name, nameW)} ${pS(v.fb, 3)} ${pS(fmtCpl(v.spend, v.fb), 5)}  ${pS(v.hy, 3)} ${pS(fmtCpl(v.spend, v.hy), 5)}`;
-  const table = [`${pE('', nameW)} ${pS('FB', 3)} ${pS('CPL', 5)}  ${pS('HY', 3)} ${pS('CPL', 5)}`];
+  const campRow = (name, v) => {
+    const avg = avgCpl(v);
+    return `${pE(name, nameW)} ${pS(v.fb, 3)} ${pS(fmtCpl(v.spend, v.fb), 5)}  ${pS(v.hy, 3)} ${pS(fmtCpl(v.spend, v.hy), 5)}  ${pS(avg != null ? '$' + Math.round(avg) : '—', 5)}`;
+  };
+  const table = [`${pE('', nameW)} ${pS('FB', 3)} ${pS('CPL', 5)}  ${pS('HY', 3)} ${pS('CPL', 5)}  ${pS('AVG', 5)}`];
   for (const [name, v] of cRows) table.push(campRow(name, v));
   const totFb    = cRows.reduce((s, [, v]) => s + v.fb, 0);
   const totHy    = cRows.reduce((s, [, v]) => s + v.hy, 0);
@@ -452,6 +534,14 @@ router.post('/telegram', async (req, res) => {
         await sendTelegram('On it — fresh digest in ~2 minutes.');
         runDigest().catch(e => console.error('[digest]', e.message));
       }
+    } else if (/^(rules|kpis?)\b/.test(text)) {
+      await sendTelegram(rulesText(), { mode: 'mono' });
+    } else if (/^reset rules\b/.test(text)) {
+      KPIS = { ...DEFAULT_KPIS };
+      saveKpis();
+      await sendTelegram(`✅ Rules reset to defaults.\n\n${rulesText()}`, { mode: 'mono' });
+    } else if (/^set\b/.test(text)) {
+      await sendTelegram(setKpiFromText(text), { mode: 'mono' });
     } else if (/^(kill|pause|stop|turn ?off|off)\b/.test(text)) {
       const nums = [...text.matchAll(/\d+/g)].map(m => parseInt(m[0], 10));
       if (!nums.length) await sendTelegram('Which numbers? e.g. "kill 2 5" — numbers refer to the last list I sent.');
@@ -460,7 +550,7 @@ router.post('/telegram', async (req, res) => {
       // Anything else: try it as a campaign name
       const view = await buildCampaignView(text).catch(e => { console.error('[digest] campaign view:', e.message); return { text: null }; });
       if (view.text) await sendTelegram(view.text, { mode: 'mono' });
-      else await sendTelegram(`No campaign matches "${msg.text.trim()}".\nCommands: a campaign name (e.g. "LSS TN") · "kill 2 5" (numbers from the last list) · "list" · "digest" · "run"`);
+      else await sendTelegram(`No campaign matches "${msg.text.trim()}".\nCommands: a campaign name (e.g. "LSS TN") · "kill 2 5" (numbers from the last list) · "list" · "rules" · "set kill cpl 700" · "digest" · "run"`);
     }
   } catch (e) { console.error('[digest] telegram handler:', e.message); }
 });
