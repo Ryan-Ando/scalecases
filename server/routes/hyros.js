@@ -1591,10 +1591,13 @@ async function fetchAllHyrosLeadsUnfiltered(fromDate, toDate) {
       for (const lead of data.result) {
         const email = (lead.email || '').toLowerCase().trim();
         if (!email) continue;
-        // Use Hyros @attribution tags — the first @tag is the adset active at conversion time
-        // (when the lead hit the thank-you page). lastSource.adSource.adSourceId can be a
-        // post-conversion click adset that should NOT get credit, so we ignore it here.
-        const adsetId = adsetFromTags(lead.tags)
+        // lastSource.adSource.adSourceId is Hyros's own (last-click) attribution —
+        // it's what the Hyros extension displays, so it gets credit first. The
+        // @tags are unreliable for multi-adset leads: tag order follows click
+        // history, so the first parseable tag can be an earlier adset Hyros
+        // does not credit (verified against extension counts 2026-07-05).
+        const adsetId = lead.lastSource?.adSource?.adSourceId
+          || adsetFromTags(lead.tags)
           || lead.firstSource?.adSource?.adSourceId
           || '';
         // UTCClickDate is unreliable (Hyros API bug). clickDate is the actual last-click date.
