@@ -647,7 +647,9 @@ router.get('/check', async (req, res) => {
       const spend = parseFloat(r.spend) || 0;
       const hy = stats.ledger?.windowByAdset?.[r.adset_id] || 0;
       const status = stats.metaById[r.adset_id]?.effectiveStatus || 'unknown';
-      return `${r.adset_name} [${r.campaign_name}] (${status})\n  spend $${Math.round(spend)} | FB ${r.results} | Hy ${hy} | raw CPR ${r.cost_per_result ?? '—'}`;
+      let line = `${r.adset_name} [${r.campaign_name}] (${status})\n  spend $${Math.round(spend)} | FB ${r.results} | Hy ${hy}`;
+      if (req.query.raw) line += `\n  cost_per_result: ${JSON.stringify(r.cost_per_result)}\n  actions: ${JSON.stringify(r.actions)}`;
+      return line;
     });
     res.type('text/plain').send(out.join('\n') || `no adsets matching "${q}" with spend in window ${stats.windowLabel}`);
   } catch (e) { res.status(500).type('text/plain').send(`check failed: ${e.message}`); }
