@@ -1091,6 +1091,10 @@ async function fetchWindowAdsetInsights({ start, end }) {
       fields: 'adset_id,adset_name,campaign_name,spend,impressions,unique_inline_link_clicks,cost_per_result,actions',
       time_range: JSON.stringify({ since: start, until: end }),
       use_unified_attribution_setting: 'true',
+      // Ads Manager books conversions on the impression date; the API default
+      // ('mixed') books them on conversion date, pulling leads across window
+      // edges and mismatching what the user sees for the same range
+      action_report_time: 'impression',
       access_token: token(),
       limit: 500,
     });
