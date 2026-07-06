@@ -68,9 +68,10 @@ function accountRank(name) {
   return i === -1 ? ACCOUNT_ORDER.length : i;
 }
 
-// Adset metadata (names, status, budgets) via our own cached endpoint
-async function getAdsetMeta() {
-  const r = await fetch(`http://127.0.0.1:${process.env.PORT || 3001}/api/facebook/adsets?metadata_only=true`);
+// Adset metadata (names, status, budgets). force bypasses the 2h server cache
+// so a digest never judges "active" from stale statuses.
+async function getAdsetMeta(force = false) {
+  const r = await fetch(`http://127.0.0.1:${process.env.PORT || 3001}/api/facebook/adsets?metadata_only=true${force ? '&force=true' : ''}`);
   if (!r.ok) throw new Error(`adsets meta: ${r.status}`);
   return r.json();
 }
@@ -107,12 +108,15 @@ async function collectStats(force = false) {
   const today = tzToday(), windowStart = tzDaysAgo(WINDOW_DAYS_BACK);
 
   const [meta, windowRows, ledger] = await Promise.all([
-    getAdsetMeta(),
+    getAdsetMeta(force),
     fetchDailyInsights({ level: 'adset', start: windowStart, end: today }),
     getLedger(windowStart).catch(e => { console.warn('[digest] ledger:', e.message); return null; }),
   ]);
   const metaById = Object.fromEntries(meta.map(a => [a.id, a]));
   const ledgerWindow = ledger?.windowByAdset || {};
+  // Ledger failure means Hyros leads would all read 0 — with hyros as the
+  // rules' lead source that would flag everything, so surface it loudly
+  const ledgerFailed = !ledger;
 
   const agg = {};
   for (const r of windowRows) {
@@ -124,7 +128,9 @@ async function collectStats(force = false) {
     agg[id].impressions += parseFloat(r.impressions) || 0;
   }
   const entries = Object.values(agg)
-    .filter(a => a.spend > 0 && (metaById[a.id]?.effectiveStatus || metaById[a.id]?.status) === 'ACTIVE')
+    // Missing metadata (brand-new adset, partial meta fetch) must NOT hide an
+    // adset — include it rather than silently dropping a potential kill
+    .filter(a => a.spend > 0 && (!metaById[a.id] || (metaById[a.id].effectiveStatus || metaById[a.id].status) === 'ACTIVE'))
     .map(a => ({
       ...a,
       hyLeads: ledgerWindow[a.id] || 0,
@@ -136,7 +142,7 @@ async function collectStats(force = false) {
   const windowLabel = `${windowStart.slice(5).replace('-', '/')}–${today.slice(5).replace('-', '/')}`;
   _statsCache = {
     ts: Date.now(),
-    entries, windowRows, metaById, ledger, windowLabel,
+    entries, windowRows, metaById, ledger, windowLabel, ledgerFailed,
     failedAccounts: windowRows.failedAccounts || [],
   };
   return _statsCache;
@@ -156,6 +162,7 @@ const DEFAULT_KPIS = {
   watch_cpl:           450,  // WATCH: CPL ≥ this
   watch_cpulc:         7,    // WATCH: cost per unique link click ≥ this…
   watch_cpulc_spend:   100,  // …at spend ≥ this
+  leads_source: 'hyros',     // which lead count the rules use: hyros | fb | best
 };
 let KPIS = { ...DEFAULT_KPIS };
 try { KPIS = { ...DEFAULT_KPIS, ...JSON.parse(fs.readFileSync(KPI_FILE, 'utf8')) }; } catch { /* defaults */ }
@@ -179,10 +186,11 @@ const KPI_ALIASES = {
 };
 
 function rulesText() {
+  const srcDesc = { hyros: 'HYROS stage leads', fb: 'FB leads', best: 'better of FB / Hyros' }[KPIS.leads_source] || KPIS.leads_source;
   return [
     'CURRENT RULES (all plain thresholds, no AI)',
     `Window: today + previous ${WINDOW_DAYS_BACK} days`,
-    'Leads = the better of FB / Hyros counts',
+    `Leads for rules: ${srcDesc}   [set leads source hyros/fb/best]`,
     '',
     'KILL when any of:',
     `  spend ≥ $${KPIS.kill_noleads_spend} with 0 leads      [kill noleads]`,
@@ -202,8 +210,15 @@ function rulesText() {
 
 function setKpiFromText(text) {
   const t = text.replace(/^set\s+/i, '').trim();
+  const srcMatch = t.match(/^leads?\s+source\s+(hyros|fb|facebook|best)$/i);
+  if (srcMatch) {
+    const old = KPIS.leads_source;
+    KPIS.leads_source = srcMatch[1].toLowerCase() === 'facebook' ? 'fb' : srcMatch[1].toLowerCase();
+    saveKpis();
+    return `✅ leads source: ${old} → ${KPIS.leads_source}\n\n${rulesText()}`;
+  }
   const m = t.match(/(-?\d+(?:\.\d+)?)\s*$/);
-  if (!m) return 'Give me a number, e.g. "set kill cpl 700"';
+  if (!m) return 'Give me a number, e.g. "set kill cpl 700" (or "set leads source hyros/fb/best")';
   const value = parseFloat(m[1]);
   const phrase = t.slice(0, m.index).trim().replace(/\s+/g, ' ').toLowerCase().replace(/\$/g, '');
   const key = Object.keys(KPI_ALIASES).find(k => KPI_ALIASES[k].includes(phrase));
@@ -216,16 +231,19 @@ function setKpiFromText(text) {
 }
 
 function flagFor(e) {
-  const leads = Math.max(e.fbLeads, e.hyLeads);
+  const src   = KPIS.leads_source;
+  const leads = src === 'fb' ? e.fbLeads : src === 'hyros' ? e.hyLeads : Math.max(e.fbLeads, e.hyLeads);
+  const srcLabel = src === 'fb' ? 'FB' : src === 'hyros' ? 'Hyros' : (e.fbLeads >= e.hyLeads ? 'FB' : 'Hyros');
   const cpl   = leads > 0 ? e.spend / leads : null;
   // bold: which displayed fields to emphasize as the reason (vertical layout)
-  const cplBold = e.fbLeads >= e.hyLeads ? ['fbCpl'] : ['hyCpl'];
-  if (e.spend >= KPIS.kill_noleads_spend && leads === 0)     return { level: 'kill',  bold: ['spend', 'fbLeads', 'hyLeads'], reason: `${fmtMoney(e.spend)} spent, 0 leads` };
+  const leadBold = src === 'fb' ? ['fbLeads'] : src === 'hyros' ? ['hyLeads'] : ['fbLeads', 'hyLeads'];
+  const cplBold  = src === 'fb' ? ['fbCpl'] : src === 'hyros' ? ['hyCpl'] : (e.fbLeads >= e.hyLeads ? ['fbCpl'] : ['hyCpl']);
+  if (e.spend >= KPIS.kill_noleads_spend && leads === 0)     return { level: 'kill',  bold: ['spend', ...leadBold], reason: `${fmtMoney(e.spend)} spent, 0 ${srcLabel} leads` };
   if (e.spend >= KPIS.kill_noclicks_spend && e.uclicks === 0) return { level: 'kill', bold: ['spend', 'ulc'], reason: `${fmtMoney(e.spend)} spent, 0 link clicks` };
   if (e.spend >= 50 && e.cpm >= KPIS.kill_cpm)               return { level: 'kill',  bold: ['cpm'], reason: `CPM ${fmtMoney(e.cpm)}` };
-  if (cpl != null && cpl >= KPIS.kill_cpl)                   return { level: 'kill',  bold: cplBold, reason: `CPL ${fmtMoney(cpl)}` };
-  if (e.spend >= KPIS.watch_noleads_spend && leads === 0)    return { level: 'watch', bold: ['spend', 'fbLeads', 'hyLeads'], reason: `${fmtMoney(e.spend)} spent, 0 leads` };
-  if (cpl != null && cpl >= KPIS.watch_cpl)                  return { level: 'watch', bold: cplBold, reason: `CPL ${fmtMoney(cpl)}` };
+  if (cpl != null && cpl >= KPIS.kill_cpl)                   return { level: 'kill',  bold: cplBold, reason: `${srcLabel} CPL ${fmtMoney(cpl)}` };
+  if (e.spend >= KPIS.watch_noleads_spend && leads === 0)    return { level: 'watch', bold: ['spend', ...leadBold], reason: `${fmtMoney(e.spend)} spent, 0 ${srcLabel} leads` };
+  if (cpl != null && cpl >= KPIS.watch_cpl)                  return { level: 'watch', bold: cplBold, reason: `${srcLabel} CPL ${fmtMoney(cpl)}` };
   if (e.spend >= KPIS.watch_cpulc_spend && e.cpulc != null && e.cpulc >= KPIS.watch_cpulc) return { level: 'watch', bold: ['ulc'], reason: `CPULC $${e.cpulc.toFixed(2)}` };
   return null;
 }
@@ -304,11 +322,10 @@ async function buildDigest() {
     || a.e.campaign.localeCompare(b.e.campaign)
     || b.e.spend - a.e.spend;
 
+  // Never truncate — every flagged adset always appears (chunking handles length)
   const flagged = entries.map(e => ({ e, flag: flagFor(e) })).filter(x => x.flag);
-  const kills   = flagged.filter(x => x.flag.level === 'kill').sort(byGroup).slice(0, 10);
-  const watches = flagged.filter(x => x.flag.level === 'watch').sort(byGroup).slice(0, 8);
-  const nKillsHidden = flagged.filter(x => x.flag.level === 'kill').length - kills.length;
-  const nWatchHidden = flagged.filter(x => x.flag.level === 'watch').length - watches.length;
+  const kills   = flagged.filter(x => x.flag.level === 'kill').sort(byGroup);
+  const watches = flagged.filter(x => x.flag.level === 'watch').sort(byGroup);
 
   // Roster = exactly what this digest displays, numbered top to bottom
   const displayed = [...kills, ...watches];
@@ -319,8 +336,11 @@ async function buildDigest() {
   const L = [];
   const now = new Date().toLocaleString('en-US', { timeZone: DIGEST_TZ, month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
   L.push(escapeHtml(`📊 SCALECASES DIGEST — ${now} · window ${windowLabel}`));
+  L.push(escapeHtml(`Scanned ${entries.length} active adsets · rules count ${KPIS.leads_source === 'best' ? 'best-of' : KPIS.leads_source.toUpperCase()} leads`));
   if (stats.failedAccounts.length)
     L.push(escapeHtml(`⚠ INCOMPLETE — FB account(s) failed after retries: ${stats.failedAccounts.join(', ')}. Numbers are missing that account; reply "run" to retry.`));
+  if (stats.ledgerFailed)
+    L.push(escapeHtml(`⚠ HYROS LEDGER UNAVAILABLE — Hyros lead counts read as 0 this run, so lead-based flags are unreliable. Reply "run" to retry before killing anything.`));
 
   let n = 0;
   const pushSection = (items) => {
@@ -331,13 +351,11 @@ async function buildDigest() {
       L.push('', fmtEntryVertical(++n, e, flag));
     }
   };
-  L.push('', `🔴 KILL CANDIDATES: ${kills.length ? '' : 'none'}`);
+  L.push('', `🔴 KILL CANDIDATES: ${kills.length || 'none'}`);
   pushSection(kills);
-  if (nKillsHidden > 0) L.push(`…and ${nKillsHidden} more (reply "list")`);
 
-  L.push('', `🟡 WATCH: ${watches.length ? '' : 'none'}`);
+  L.push('', `🟡 WATCH: ${watches.length || 'none'}`);
   pushSection(watches);
-  if (nWatchHidden > 0) L.push(`…and ${nWatchHidden} more (reply "list")`);
 
   // Campaign-level cursory glance: FB + Hyros leads/CPL per campaign, same window
   const camps = {};
