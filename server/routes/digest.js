@@ -4,7 +4,7 @@ import { google } from 'googleapis';
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
-import { fetchDailyInsights } from './facebook.js';
+import { fetchWindowAdsetInsights } from './facebook.js';
 import { runIncrementalNextSteps, getAuthClient, SHEET_ID, EVENTS_TAB } from './hyros.js';
 
 const router = Router();
@@ -109,7 +109,7 @@ async function collectStats(force = false) {
 
   const [meta, windowRows, ledger] = await Promise.all([
     getAdsetMeta(force),
-    fetchDailyInsights({ level: 'adset', start: windowStart, end: today }),
+    fetchWindowAdsetInsights({ start: windowStart, end: today }),
     getLedger(windowStart).catch(e => { console.warn('[digest] ledger:', e.message); return null; }),
   ]);
   const metaById = Object.fromEntries(meta.map(a => [a.id, a]));
@@ -634,6 +634,23 @@ router.get('/latest', (req, res) => {
 router.get('/list', async (req, res) => {
   try { res.type('text/plain').send(await buildListView()); }
   catch (e) { res.status(500).type('text/plain').send(`list failed: ${e.message}`); }
+});
+
+// GET /api/digest/check?name=fragment — window stats for matching adsets
+// (including paused ones) to verify against Ads Manager
+router.get('/check', async (req, res) => {
+  try {
+    const q = String(req.query.name || '').toLowerCase();
+    const stats = await collectStats();
+    const rows = stats.windowRows.filter(r => (r.adset_name || '').toLowerCase().includes(q));
+    const out = rows.map(r => {
+      const spend = parseFloat(r.spend) || 0;
+      const hy = stats.ledger?.windowByAdset?.[r.adset_id] || 0;
+      const status = stats.metaById[r.adset_id]?.effectiveStatus || 'unknown';
+      return `${r.adset_name} [${r.campaign_name}] (${status})\n  spend $${Math.round(spend)} | FB ${r.results} | Hy ${hy} | raw CPR ${r.cost_per_result ?? '—'}`;
+    });
+    res.type('text/plain').send(out.join('\n') || `no adsets matching "${q}" with spend in window ${stats.windowLabel}`);
+  } catch (e) { res.status(500).type('text/plain').send(`check failed: ${e.message}`); }
 });
 
 // GET /api/digest/campaign?name=LSS%20TN — campaign view as plain text

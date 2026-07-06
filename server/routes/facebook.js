@@ -1076,5 +1076,59 @@ router.get('/debug/state-deep', async (req, res) => {
   }
 });
 
-export { fetchDailyInsights };
+// Aggregated adset insights over a date window with unified attribution —
+// matches what Ads Manager displays for the same range, unlike summing daily
+// rows (per-day CPR rounding + actions[] fallback double-counts CAPI events).
+// Per-account retries; failures listed on result.failedAccounts. Rows carry
+// their ad account id.
+async function fetchWindowAdsetInsights({ start, end }) {
+  const accounts = adAccounts();
+  const all = [];
+  const failedAccounts = [];
+  const settled = await Promise.allSettled(accounts.map(async account => {
+    const params = new URLSearchParams({
+      level: 'adset',
+      fields: 'adset_id,adset_name,campaign_name,spend,impressions,unique_inline_link_clicks,cost_per_result,actions',
+      time_range: JSON.stringify({ since: start, until: end }),
+      use_unified_attribution_setting: 'true',
+      access_token: token(),
+      limit: 500,
+    });
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      const rows = [];
+      try {
+        let url = `${FB_API}/${account}/insights?${params}`;
+        let pages = 0;
+        while (url) {
+          const r = await fbFetch(url);
+          pages++;
+          captureRateLimit(account, r.headers);
+          const json = await r.json();
+          if (json.error) { _stats.errors++; throw new Error(`[${account}] ${json.error.message}`); }
+          rows.push(...(json.data || []).map(x => ({ ...x, account })));
+          url = json.paging?.next || null;
+        }
+        recordCall(account, 'window/adset', pages);
+        all.push(...rows);
+        return;
+      } catch (e) {
+        if (attempt === 3) throw e;
+        console.warn(`FB window ${account} attempt ${attempt} failed, retrying:`, e.message);
+        await new Promise(res => setTimeout(res, attempt * 15_000));
+      }
+    }
+  }));
+  settled.forEach((r, i) => {
+    if (r.status === 'rejected') {
+      console.warn('FB window skipped account:', r.reason?.message);
+      failedAccounts.push(accounts[i]);
+    }
+  });
+  const deduped  = [...new Map(all.map(r => [r.adset_id, r])).values()];
+  const enriched = deduped.map(r => ({ ...r, ...extractResults(r) }));
+  enriched.failedAccounts = failedAccounts;
+  return enriched;
+}
+
+export { fetchDailyInsights, fetchWindowAdsetInsights };
 export default router;
