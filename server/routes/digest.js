@@ -4,7 +4,7 @@ import { google } from 'googleapis';
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
-import { fetchWindowAdsetInsights } from './facebook.js';
+import { fetchDailyInsights, fetchWindowAdsetInsights } from './facebook.js';
 import { runIncrementalNextSteps, getAuthClient, SHEET_ID, EVENTS_TAB } from './hyros.js';
 
 const router = Router();
@@ -265,24 +265,20 @@ function fmtEntry(n, e, reason) {
 // Built with the same paddings as fmtEntry's stat line so columns line up
 const STAT_HEADER = `   ${pS('SPEND', 6)} ${pS('FB', 3)} ${pS('CPL', 5)}  ${pS('HY', 3)} ${pS('CPL', 5)}  ${pS('ULC', 6)}`;
 
-// Vertical card for the digest's kill/watch sections (HTML — allows <b> on
-// the field(s) that triggered the flag). One field per line, blank line
-// between ads.
+// Card for the digest's kill/watch sections, mirroring the user's sheet
+// layout: campaign, ad name, then a labels-over-values mini-table, then the
+// flag reason bolded (Telegram forbids bold inside <pre>, so the reason
+// carries the emphasis).
 function fmtEntryVertical(n, e, flag) {
-  const bold = new Set(flag?.bold || []);
-  const line = (key, label, val) => {
-    const s = `${label}: ${val}`;
-    return bold.has(key) ? `<b>${s}</b>` : s;
-  };
-  const L = [`${n}. ${escapeHtml(e.name)}`];
-  L.push(line('campaign', 'Campaign', escapeHtml(e.campaign)));
-  L.push(line('spend',    'Spend',    fmtMoney(e.spend)));
-  L.push(line('fbLeads',  'FB leads', e.fbLeads));
-  L.push(line('fbCpl',    'FB CPL',   fmtCpl(e.spend, e.fbLeads)));
-  L.push(line('hyLeads',  'Hy leads', e.hyLeads));
-  L.push(line('hyCpl',    'Hy CPL',   fmtCpl(e.spend, e.hyLeads)));
-  L.push(line('ulc',      'ULC',      e.cpulc != null ? '$' + e.cpulc.toFixed(2) : '—'));
-  if (bold.has('cpm')) L.push(`<b>CPM: ${fmtMoney(e.cpm)}</b>`);
+  const table =
+    `${pS('SPEND', 6)} ${pS('FB', 3)} ${pS('CPL', 5)}  ${pS('HY', 3)} ${pS('CPL', 5)}  ${pS('CPULC', 6)}\n` +
+    `${pS(fmtMoney(e.spend), 6)} ${pS(e.fbLeads, 3)} ${pS(fmtCpl(e.spend, e.fbLeads), 5)}  ${pS(e.hyLeads, 3)} ${pS(fmtCpl(e.spend, e.hyLeads), 5)}  ${pS(e.cpulc != null ? '$' + e.cpulc.toFixed(2) : '—', 6)}`;
+  const L = [
+    `${n}. ${escapeHtml(e.campaign)}`,
+    escapeHtml(e.name),
+    `<pre>${escapeHtml(table)}</pre>`,
+  ];
+  if (flag?.reason) L.push(`<b>⚠ ${escapeHtml(flag.reason)}</b>`);
   return L.join('\n');
 }
 
@@ -423,6 +419,124 @@ async function buildCampaignView(query) {
   return { text: L.join('\n') };
 }
 
+// ── Spend / pacing view ("spend" command) ────────────────────────────────────
+// Mirrors the website's Spend Sheet: refreshes live daily budgets, syncs the
+// month's spend (incl. today), and computes each group's pacing shortfall
+// from the budgets configured in the Spend Sheet tab (synced to the server).
+const PACING_FILE = path.join(DATA_DIR, 'pacing.json');
+
+function loadPacingConfig() {
+  try { return JSON.parse(fs.readFileSync(PACING_FILE, 'utf8')); } catch { return null; }
+}
+
+function monthsBetween(startDate, endDate) {
+  if (!startDate || !endDate) return [];
+  const months = [];
+  let cur = new Date(startDate.slice(0, 7) + '-01T00:00:00');
+  const last = new Date(endDate.slice(0, 7) + '-01T00:00:00');
+  while (cur <= last) {
+    months.push(`${cur.getFullYear()}-${String(cur.getMonth() + 1).padStart(2, '0')}`);
+    cur.setMonth(cur.getMonth() + 1);
+  }
+  return months;
+}
+
+// Fractional days remaining through endDate, in the group's timezone —
+// same math as the Spend Sheet tab
+function pacingDaysLeft(endDate, tz = 'America/New_York') {
+  if (!endDate) return null;
+  const now = new Date();
+  const todayStr = new Intl.DateTimeFormat('en-CA', { timeZone: tz }).format(now);
+  const fullDaysAfterToday = Math.floor((new Date(endDate + 'T00:00:00') - new Date(todayStr + 'T00:00:00')) / 86400000);
+  if (fullDaysAfterToday < 0) return 0;
+  const parts = new Intl.DateTimeFormat('en-US', { timeZone: tz, hour: 'numeric', minute: 'numeric', second: 'numeric', hour12: false }).formatToParts(now);
+  const get = t => parseInt(parts.find(p => p.type === t)?.value || '0');
+  const fracToday = (86400 - (get('hour') * 3600 + get('minute') * 60 + get('second'))) / 86400;
+  return Math.max(1, fullDaysAfterToday + fracToday);
+}
+
+async function buildSpendView() {
+  const today = tzToday();
+  const monthStart = today.slice(0, 8) + '01';
+  const pacing = loadPacingConfig() || {};
+
+  // 1. Live daily budgets (force-fresh) + 2. month daily spend incl. today
+  const [meta, monthRows] = await Promise.all([
+    getAdsetMeta(true),
+    fetchDailyInsights({ level: 'campaign', start: monthStart, end: today, full: true }),
+  ]);
+
+  const groupOf = name => `${extractBrand(name)} ${extractState(name) || '?'}`;
+  const live = {};
+  const countedCampaigns = new Set();
+  for (const a of meta) {
+    if ((a.effectiveStatus || a.status) !== 'ACTIVE') continue;
+    const g = groupOf(a.campaignName);
+    const adsetBudget = parseFloat(a.dailyBudget) / 100 || 0;
+    if (adsetBudget > 0) live[g] = (live[g] || 0) + adsetBudget;
+    else {
+      const campBudget = parseFloat(a.campaignDailyBudget) / 100 || 0;
+      if (campBudget > 0 && !countedCampaigns.has(a.campaignId)) {
+        countedCampaigns.add(a.campaignId);
+        live[g] = (live[g] || 0) + campBudget;
+      }
+    }
+  }
+
+  const mtd = {}, todaySpend = {};
+  for (const r of monthRows) {
+    const g = groupOf(r.campaign_name);
+    const s = parseFloat(r.spend) || 0;
+    mtd[g] = (mtd[g] || 0) + s;
+    if (r.date_start === today) todaySpend[g] = (todaySpend[g] || 0) + s;
+  }
+
+  // 3. Spend since each pacing window's start (grouped by unique start date)
+  const starts = [...new Set(Object.values(pacing).map(c => c?.startDate).filter(Boolean))];
+  const sinceStart = {};
+  for (const since of starts) {
+    const r = await fetch(`http://127.0.0.1:${process.env.PORT || 3001}/api/facebook/campaign-spend?since=${since}&until=${today}&force=1`);
+    if (!r.ok) throw new Error(`campaign-spend ${since}: ${r.status}`);
+    for (const c of await r.json()) {
+      const g = groupOf(c.campaign_name);
+      if (!sinceStart[g]) sinceStart[g] = {};
+      sinceStart[g][since] = (sinceStart[g][since] || 0) + (c.spend || 0);
+    }
+  }
+
+  // 4. Compose per group
+  const groups = [...new Set([...Object.keys(live), ...Object.keys(mtd), ...Object.keys(pacing)])].filter(g => !g.endsWith('?'));
+  const rows = groups.map(g => {
+    const cfg = pacing[g] || {};
+    const months = monthsBetween(cfg.startDate, cfg.endDate);
+    const totalBudget = months.length ? months.reduce((s, ym) => s + (parseFloat(cfg.monthlyBudgets?.[ym]) || 0), 0) : null;
+    const spent = cfg.startDate ? (sinceStart[g]?.[cfg.startDate] ?? null) : null;
+    const dl = cfg.endDate ? pacingDaysLeft(cfg.endDate, cfg.timezone || 'America/New_York') : null;
+    const remaining = (totalBudget != null && totalBudget > 0 && spent != null) ? Math.max(0, totalBudget - spent) : null;
+    const dailyNeeded = (remaining != null && dl != null && dl > 0) ? remaining / dl : (dl === 0 && remaining != null ? remaining : null);
+    const liveBudget = live[g] || null;
+    const shortfall = (dailyNeeded != null && liveBudget != null) ? dailyNeeded - liveBudget : null;
+    return { g, mtd: mtd[g] || 0, today: todaySpend[g] || 0, liveBudget, dailyNeeded, shortfall };
+  }).sort((a, b) => (b.shortfall ?? -Infinity) - (a.shortfall ?? -Infinity));
+
+  const now = new Date().toLocaleString('en-US', { timeZone: DIGEST_TZ, month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  const L = [`💰 SPEND / PACING — ${now}`, 'Live budgets refreshed · month synced', ''];
+  if (!Object.keys(pacing).length)
+    L.push('⚠ No pacing budgets synced yet — open the website\'s Spend Sheet tab once and they\'ll sync automatically.', '');
+  const sign = v => `${v >= 0 ? '+' : '−'}${fmtMoney(Math.abs(v))}`;
+  for (const r of rows) {
+    L.push(r.g);
+    L.push(`   MTD ${fmtMoney(r.mtd)} · today ${fmtMoney(r.today)}`);
+    L.push(`   live/d ${r.liveBudget != null ? fmtMoney(r.liveBudget) : '—'} · need/d ${r.dailyNeeded != null ? fmtMoney(r.dailyNeeded) : '—'} · short ${r.shortfall != null ? sign(r.shortfall) : '—'}`);
+    L.push('');
+  }
+  const t = rows.reduce((a, r) => ({ mtd: a.mtd + r.mtd, today: a.today + r.today, live: a.live + (r.liveBudget || 0), need: a.need + (r.dailyNeeded || 0), short: a.short + (r.shortfall || 0) }), { mtd: 0, today: 0, live: 0, need: 0, short: 0 });
+  L.push(`TOTAL`);
+  L.push(`   MTD ${fmtMoney(t.mtd)} · today ${fmtMoney(t.today)}`);
+  L.push(`   live/d ${fmtMoney(t.live)} · need/d ${fmtMoney(t.need)} · short ${sign(t.short)}`);
+  return L.join('\n');
+}
+
 // Full list view: every active adset, numbered 1..N by spend
 async function buildListView() {
   const stats = await collectStats();
@@ -552,6 +666,10 @@ router.post('/telegram', async (req, res) => {
         await sendTelegram('On it — fresh digest in ~2 minutes.');
         runDigest().catch(e => console.error('[digest]', e.message));
       }
+    } else if (/^(spend|pacing|budgets?)\b/.test(text)) {
+      await sendTelegram('Pulling fresh spend + pacing — ~1 minute…');
+      try { await sendTelegram(await buildSpendView(), { mode: 'mono' }); }
+      catch (e) { await sendTelegram(`Spend view failed: ${e.message} — try again.`); }
     } else if (/^(rules|kpis?)\b/.test(text)) {
       await sendTelegram(rulesText(), { mode: 'mono' });
     } else if (/^reset rules\b/.test(text)) {
@@ -634,6 +752,26 @@ router.get('/latest', (req, res) => {
 router.get('/list', async (req, res) => {
   try { res.type('text/plain').send(await buildListView()); }
   catch (e) { res.status(500).type('text/plain').send(`list failed: ${e.message}`); }
+});
+
+// Pacing budgets sync — the website's Spend Sheet tab POSTs its pacing config
+// (localStorage) here so the "spend" chat command can compute shortfalls
+router.post('/pacing', (req, res) => {
+  try {
+    if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
+      return res.status(400).json({ ok: false, error: 'expected pacing config object' });
+    }
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+    fs.writeFileSync(PACING_FILE, JSON.stringify(req.body));
+    res.json({ ok: true, groups: Object.keys(req.body).length });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+router.get('/pacing', (req, res) => res.json(loadPacingConfig() || {}));
+
+// GET /api/digest/spend — the "spend" command output, browser-viewable
+router.get('/spend', async (req, res) => {
+  try { res.type('text/plain').send(await buildSpendView()); }
+  catch (e) { res.status(500).type('text/plain').send(`spend view failed: ${e.message}`); }
 });
 
 // GET /api/digest/check?name=fragment — window stats for matching adsets

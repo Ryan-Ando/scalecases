@@ -140,6 +140,20 @@ export default function SpendSheet() {
 
   // Pacing state
   const [pacing, setPacing]             = useState(() => loadPacing());
+
+  // Mirror the pacing config to the server (debounced) so the Telegram
+  // digest's "spend" command can compute shortfalls without the browser
+  useEffect(() => {
+    const t = setTimeout(() => {
+      fetch(`${BASE}/api/digest/pacing`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(pacing),
+      }).catch(() => {});
+    }, 1500);
+    return () => clearTimeout(t);
+  }, [pacing]);
+
   const [pacingSpend, setPacingSpend]   = useState({});
   const [pacingSpendDetail, setPacingSpendDetail] = useState({}); // state → [{campaign_name, spend}]
   const [spendDetailModal, setSpendDetailModal]   = useState(null); // state key or null
