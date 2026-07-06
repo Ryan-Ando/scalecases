@@ -203,6 +203,26 @@ const INSIGHTS_FIELDS = [
 // Fallback: actions[] (raw event count, can include view-through pixel fires and over-counts
 // some states). Only used when CPR is unavailable.
 function extractResults(insightRow) {
+  const actions = insightRow.actions || [];
+
+  // When cost_per_result names the campaign's configured result type (e.g.
+  // "conversions:offsite_conversion.fb_pixel_custom.sc" — a per-state custom
+  // conversion), count exactly that action. Zero fires means zero results —
+  // matching Ads Manager — NOT a fallback to generic pixel leads, which
+  // over-counts (fires for other states, dupes).
+  const indicator = Array.isArray(insightRow.cost_per_result)
+    ? insightRow.cost_per_result[0]?.indicator
+    : null;
+  if (indicator) {
+    const actionType = indicator.replace(/^(conversions|actions):/, '');
+    const act = actions.find(a => a.action_type === actionType);
+    if (act) return { results: parseInt(act.value, 10) || 0, resultType: 'Results' };
+    const cprStr = parseCpr(insightRow.cost_per_result);
+    const spend = parseFloat(insightRow.spend);
+    if (cprStr && spend > 0) return { results: Math.round(spend / parseFloat(cprStr)), resultType: 'Results' };
+    return { results: 0, resultType: 'Results' };
+  }
+
   const cprStr = parseCpr(insightRow.cost_per_result);
   const cpr = parseFloat(cprStr);
   const spend = parseFloat(insightRow.spend);
@@ -210,7 +230,6 @@ function extractResults(insightRow) {
     return { results: Math.round(spend / cpr), resultType: 'Results' };
   }
 
-  const actions = insightRow.actions || [];
   const leadTypes = [
     'offsite_conversion.fb_pixel_lead',
     'onsite_conversion.lead_grouped',
