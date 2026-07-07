@@ -159,8 +159,9 @@ const DEFAULT_KPIS = {
   kill_cpm:            150,  // KILL: CPM ≥ this (at $50+ spend)
   kill_cpl:            600,  // KILL: CPL ≥ this
   watch_noleads_spend: 200,  // WATCH: spend ≥ this with 0 leads
-  watch_cpl:           450,  // WATCH: CPL ≥ this
-  watch_cpulc:         7,    // WATCH: cost per unique link click ≥ this…
+  watch_cpl:           350,  // WATCH: CPL ≥ this…
+  watch_cpl_min_leads: 2,    // …with at least this many leads (1 lead = more time)
+  watch_cpulc:         7,    // WATCH (0-lead ads only): ULC ≥ this…
   watch_cpulc_spend:   100,  // …at spend ≥ this
   leads_source: 'hyros',     // which lead count the rules use: hyros | fb | best
 };
@@ -183,6 +184,7 @@ const KPI_ALIASES = {
   kill_noclicks_spend: ['kill noclicks', 'kill no clicks', 'kill noclicks spend'],
   watch_cpulc:         ['watch cpulc', 'watch ulc'],
   watch_cpulc_spend:   ['watch cpulc spend', 'watch ulc spend'],
+  watch_cpl_min_leads: ['watch cpl leads', 'watch min leads'],
 };
 
 function rulesText() {
@@ -200,8 +202,9 @@ function rulesText() {
     '',
     'WATCH when any of:',
     `  spend ≥ $${KPIS.watch_noleads_spend} with 0 leads      [watch noleads]`,
-    `  CPL ≥ $${KPIS.watch_cpl}                  [watch cpl]`,
-    `  ULC ≥ $${KPIS.watch_cpulc} at spend ≥ $${KPIS.watch_cpulc_spend}   [watch ulc / watch ulc spend]`,
+    `  CPL ≥ $${KPIS.watch_cpl} with ${KPIS.watch_cpl_min_leads}+ leads   [watch cpl / watch cpl leads]`,
+    `  0 leads, ULC ≥ $${KPIS.watch_cpulc} at spend ≥ $${KPIS.watch_cpulc_spend}  [watch ulc / watch ulc spend]`,
+    '  (ULC never flags an ad that has leads — good CPL wins)',
     '',
     'Change one: "set kill cpl 700"',
     'Restore defaults: "reset rules"',
@@ -243,8 +246,14 @@ function flagFor(e) {
   if (e.spend >= 50 && e.cpm >= KPIS.kill_cpm)               return { level: 'kill',  bold: ['cpm'], reason: `CPM ${fmtMoney(e.cpm)}` };
   if (cpl != null && cpl >= KPIS.kill_cpl)                   return { level: 'kill',  bold: cplBold, reason: `${srcLabel} CPL ${fmtMoney(cpl)}` };
   if (e.spend >= KPIS.watch_noleads_spend && leads === 0)    return { level: 'watch', bold: ['spend', ...leadBold], reason: `${fmtMoney(e.spend)} spent, 0 ${srcLabel} leads` };
-  if (cpl != null && cpl >= KPIS.watch_cpl)                  return { level: 'watch', bold: cplBold, reason: `${srcLabel} CPL ${fmtMoney(cpl)}` };
-  if (e.spend >= KPIS.watch_cpulc_spend && e.cpulc != null && e.cpulc >= KPIS.watch_cpulc) return { level: 'watch', bold: ['ulc'], reason: `CPULC $${e.cpulc.toFixed(2)}` };
+  // High CPL only watches once it's a pattern (2+ leads); a single expensive
+  // first lead gets more time
+  if (leads >= KPIS.watch_cpl_min_leads && cpl != null && cpl >= KPIS.watch_cpl)
+    return { level: 'watch', bold: cplBold, reason: `${srcLabel} CPL ${fmtMoney(cpl)} on ${leads} leads` };
+  // CPULC only matters when there are NO leads — an ad getting leads at a
+  // good CPL is good regardless of click cost
+  if (leads === 0 && e.spend >= KPIS.watch_cpulc_spend && e.cpulc != null && e.cpulc >= KPIS.watch_cpulc)
+    return { level: 'watch', bold: ['ulc', ...leadBold], reason: `CPULC $${e.cpulc.toFixed(2)}, 0 ${srcLabel} leads` };
   return null;
 }
 
@@ -812,6 +821,7 @@ router.get('/status', (req, res) => {
     windowDaysBack: WINDOW_DAYS_BACK,
     rosterSize: loadRoster()?.entries?.length || 0,
     telegramConfigured: !!(process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID),
+    kpis: KPIS,
   });
 });
 
