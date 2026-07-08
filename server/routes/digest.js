@@ -163,7 +163,6 @@ const DEFAULT_KPIS = {
   watch_cpl_min_leads: 2,    // …with at least this many leads (1 lead = more time)
   watch_cpulc:         7,    // WATCH (0-lead ads only): ULC ≥ this…
   watch_cpulc_spend:   100,  // …at spend ≥ this
-  leads_source: 'hyros',     // which lead count the rules use: hyros | fb | best
 };
 let KPIS = { ...DEFAULT_KPIS };
 try { KPIS = { ...DEFAULT_KPIS, ...JSON.parse(fs.readFileSync(KPI_FILE, 'utf8')) }; } catch { /* defaults */ }
@@ -188,23 +187,22 @@ const KPI_ALIASES = {
 };
 
 function rulesText() {
-  const srcDesc = { hyros: 'HYROS stage leads', fb: 'FB leads', best: 'better of FB / Hyros' }[KPIS.leads_source] || KPIS.leads_source;
   return [
     'CURRENT RULES (all plain thresholds, no AI)',
     `Window: today + previous ${WINDOW_DAYS_BACK} days`,
-    `Leads for rules: ${srcDesc}   [set leads source hyros/fb/best]`,
+    'FB and Hyros judge separately — BOTH must disqualify.',
+    `A source with CPL under $${KPIS.watch_cpl} SAVES the ad from all lead-based flags.`,
     '',
     'KILL when any of:',
-    `  spend ≥ $${KPIS.kill_noleads_spend} with 0 leads      [kill noleads]`,
-    `  spend ≥ $${KPIS.kill_noclicks_spend} with 0 link clicks  [kill noclicks]`,
-    `  CPM ≥ $${KPIS.kill_cpm} (at $50+ spend)    [kill cpm]`,
-    `  CPL ≥ $${KPIS.kill_cpl}                  [kill cpl]`,
+    `  spend ≥ $${KPIS.kill_noleads_spend}, 0 leads on FB AND Hyros  [kill noleads]`,
+    `  either CPL ≥ $${KPIS.kill_cpl}, neither under $${KPIS.watch_cpl}  [kill cpl]`,
+    `  spend ≥ $${KPIS.kill_noclicks_spend} with 0 link clicks       [kill noclicks]`,
+    `  CPM ≥ $${KPIS.kill_cpm} (at $50+ spend)         [kill cpm]`,
     '',
     'WATCH when any of:',
-    `  spend ≥ $${KPIS.watch_noleads_spend} with 0 leads      [watch noleads]`,
-    `  CPL ≥ $${KPIS.watch_cpl} with ${KPIS.watch_cpl_min_leads}+ leads   [watch cpl / watch cpl leads]`,
-    `  0 leads, ULC ≥ $${KPIS.watch_cpulc} at spend ≥ $${KPIS.watch_cpulc_spend}  [watch ulc / watch ulc spend]`,
-    '  (ULC never flags an ad that has leads — good CPL wins)',
+    `  spend ≥ $${KPIS.watch_noleads_spend}, 0 leads on FB AND Hyros  [watch noleads]`,
+    `  a source has ${KPIS.watch_cpl_min_leads}+ leads at CPL ≥ $${KPIS.watch_cpl}, neither under $${KPIS.watch_cpl}  [watch cpl / watch cpl leads]`,
+    `  0 leads both, ULC ≥ $${KPIS.watch_cpulc} at spend ≥ $${KPIS.watch_cpulc_spend}  [watch ulc / watch ulc spend]`,
     '',
     'Change one: "set kill cpl 700"',
     'Restore defaults: "reset rules"',
@@ -213,13 +211,8 @@ function rulesText() {
 
 function setKpiFromText(text) {
   const t = text.replace(/^set\s+/i, '').trim();
-  const srcMatch = t.match(/^leads?\s+source\s+(hyros|fb|facebook|best)$/i);
-  if (srcMatch) {
-    const old = KPIS.leads_source;
-    KPIS.leads_source = srcMatch[1].toLowerCase() === 'facebook' ? 'fb' : srcMatch[1].toLowerCase();
-    saveKpis();
-    return `✅ leads source: ${old} → ${KPIS.leads_source}\n\n${rulesText()}`;
-  }
+  if (/^leads?\s+source\b/i.test(t))
+    return 'The leads-source setting is retired — rules now require BOTH FB and Hyros to disqualify an ad. See "rules".';
   const m = t.match(/(-?\d+(?:\.\d+)?)\s*$/);
   if (!m) return 'Give me a number, e.g. "set kill cpl 700" (or "set leads source hyros/fb/best")';
   const value = parseFloat(m[1]);
@@ -233,27 +226,37 @@ function setKpiFromText(text) {
   return `✅ ${KPI_ALIASES[key][0]}: $${old} → $${value}\n\n${rulesText()}`;
 }
 
+// FB and Hyros judge independently; BOTH must disqualify. Either source with a
+// CPL below watch_cpl "saves" the ad from every lead-based flag.
 function flagFor(e) {
-  const src   = KPIS.leads_source;
-  const leads = src === 'fb' ? e.fbLeads : src === 'hyros' ? e.hyLeads : Math.max(e.fbLeads, e.hyLeads);
-  const srcLabel = src === 'fb' ? 'FB' : src === 'hyros' ? 'Hyros' : (e.fbLeads >= e.hyLeads ? 'FB' : 'Hyros');
-  const cpl   = leads > 0 ? e.spend / leads : null;
-  // bold: which displayed fields to emphasize as the reason (vertical layout)
-  const leadBold = src === 'fb' ? ['fbLeads'] : src === 'hyros' ? ['hyLeads'] : ['fbLeads', 'hyLeads'];
-  const cplBold  = src === 'fb' ? ['fbCpl'] : src === 'hyros' ? ['hyCpl'] : (e.fbLeads >= e.hyLeads ? ['fbCpl'] : ['hyCpl']);
-  if (e.spend >= KPIS.kill_noleads_spend && leads === 0)     return { level: 'kill',  bold: ['spend', ...leadBold], reason: `${fmtMoney(e.spend)} spent, 0 ${srcLabel} leads` };
-  if (e.spend >= KPIS.kill_noclicks_spend && e.uclicks === 0) return { level: 'kill', bold: ['spend', 'ulc'], reason: `${fmtMoney(e.spend)} spent, 0 link clicks` };
-  if (e.spend >= 50 && e.cpm >= KPIS.kill_cpm)               return { level: 'kill',  bold: ['cpm'], reason: `CPM ${fmtMoney(e.cpm)}` };
-  if (cpl != null && cpl >= KPIS.kill_cpl)                   return { level: 'kill',  bold: cplBold, reason: `${srcLabel} CPL ${fmtMoney(cpl)}` };
-  if (e.spend >= KPIS.watch_noleads_spend && leads === 0)    return { level: 'watch', bold: ['spend', ...leadBold], reason: `${fmtMoney(e.spend)} spent, 0 ${srcLabel} leads` };
-  // High CPL only watches once it's a pattern (2+ leads); a single expensive
-  // first lead gets more time
-  if (leads >= KPIS.watch_cpl_min_leads && cpl != null && cpl >= KPIS.watch_cpl)
-    return { level: 'watch', bold: cplBold, reason: `${srcLabel} CPL ${fmtMoney(cpl)} on ${leads} leads` };
-  // CPULC only matters when there are NO leads — an ad getting leads at a
-  // good CPL is good regardless of click cost
-  if (leads === 0 && e.spend >= KPIS.watch_cpulc_spend && e.cpulc != null && e.cpulc >= KPIS.watch_cpulc)
-    return { level: 'watch', bold: ['ulc', ...leadBold], reason: `CPULC $${e.cpulc.toFixed(2)}, 0 ${srcLabel} leads` };
+  const fbCpl = e.fbLeads > 0 ? e.spend / e.fbLeads : null;
+  const hyCpl = e.hyLeads > 0 ? e.spend / e.hyLeads : null;
+  const good  = KPIS.watch_cpl;
+  const saved = (fbCpl != null && fbCpl < good) || (hyCpl != null && hyCpl < good);
+  const cplStr  = c => (c != null ? fmtMoney(c) : '—');
+  const bothCpl = `FB ${cplStr(fbCpl)} / Hy ${cplStr(hyCpl)}`;
+
+  if (e.spend >= KPIS.kill_noleads_spend && e.fbLeads === 0 && e.hyLeads === 0)
+    return { level: 'kill', bold: ['spend', 'fbLeads', 'hyLeads'], reason: `${fmtMoney(e.spend)} spent, 0 leads on FB & Hyros` };
+  if (e.spend >= KPIS.kill_noclicks_spend && e.uclicks === 0)
+    return { level: 'kill', bold: ['spend', 'ulc'], reason: `${fmtMoney(e.spend)} spent, 0 link clicks` };
+  if (e.spend >= 50 && e.cpm >= KPIS.kill_cpm)
+    return { level: 'kill', bold: ['cpm'], reason: `CPM ${fmtMoney(e.cpm)}` };
+  if (!saved && ((fbCpl != null && fbCpl >= KPIS.kill_cpl) || (hyCpl != null && hyCpl >= KPIS.kill_cpl)))
+    return { level: 'kill', bold: ['fbCpl', 'hyCpl'], reason: `CPL ${bothCpl} — neither under ${fmtMoney(good)}` };
+
+  if (e.spend >= KPIS.watch_noleads_spend && e.fbLeads === 0 && e.hyLeads === 0)
+    return { level: 'watch', bold: ['spend', 'fbLeads', 'hyLeads'], reason: `${fmtMoney(e.spend)} spent, 0 leads on FB & Hyros` };
+  // High CPL only watches once it's a pattern (2+ leads on a source); a single
+  // expensive first lead gets more time
+  const pattern = (e.fbLeads >= KPIS.watch_cpl_min_leads && fbCpl >= good)
+               || (e.hyLeads >= KPIS.watch_cpl_min_leads && hyCpl >= good);
+  if (!saved && pattern)
+    return { level: 'watch', bold: ['fbCpl', 'hyCpl'], reason: `CPL ${bothCpl} — neither under ${fmtMoney(good)}` };
+  // CPULC only matters when NEITHER source has leads — an ad getting leads at
+  // a good CPL is good regardless of click cost
+  if (e.fbLeads === 0 && e.hyLeads === 0 && e.spend >= KPIS.watch_cpulc_spend && e.cpulc != null && e.cpulc >= KPIS.watch_cpulc)
+    return { level: 'watch', bold: ['ulc', 'fbLeads', 'hyLeads'], reason: `CPULC $${e.cpulc.toFixed(2)}, 0 leads` };
   return null;
 }
 
@@ -341,7 +344,7 @@ async function buildDigest() {
   const L = [];
   const now = new Date().toLocaleString('en-US', { timeZone: DIGEST_TZ, month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
   L.push(escapeHtml(`📊 SCALECASES DIGEST — ${now} · window ${windowLabel}`));
-  L.push(escapeHtml(`Scanned ${entries.length} active adsets · rules count ${KPIS.leads_source === 'best' ? 'best-of' : KPIS.leads_source.toUpperCase()} leads`));
+  L.push(escapeHtml(`Scanned ${entries.length} active adsets · flags need BOTH FB & Hyros to disqualify`));
   if (stats.failedAccounts.length)
     L.push(escapeHtml(`⚠ INCOMPLETE — FB account(s) failed after retries: ${stats.failedAccounts.join(', ')}. Numbers are missing that account; reply "run" to retry.`));
   if (stats.ledgerFailed)
