@@ -4,7 +4,11 @@ import { google } from 'googleapis';
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
-import { fetchDailyInsights, fetchWindowAdsetInsights } from './facebook.js';
+import {
+  fetchDailyInsights, fetchWindowAdsetInsights,
+  setReadTokenSource, getReadTokenSource, getRateLimitInfo,
+  runPrefetch, getPrefetchStatus,
+} from './facebook.js';
 import { runIncrementalNextSteps, getAuthClient, SHEET_ID, EVENTS_TAB } from './hyros.js';
 
 const router = Router();
@@ -349,6 +353,9 @@ async function buildDigest() {
     L.push(escapeHtml(`⚠ INCOMPLETE — FB account(s) failed after retries: ${stats.failedAccounts.join(', ')}. Numbers are missing that account; reply "run" to retry.`));
   if (stats.ledgerFailed)
     L.push(escapeHtml(`⚠ HYROS LEDGER UNAVAILABLE — Hyros lead counts read as 0 this run, so lead-based flags are unreliable. Reply "run" to retry before killing anything.`));
+  const limited = recentRateLimitAccounts(acctNames);
+  if (limited.length)
+    L.push(escapeHtml(`⚠ FB rate-limit errors in the last 2h on: ${limited.join(', ')} — reply "limits" for status, "switch app" to serve the website from the backup app.`));
 
   let n = 0;
   const pushSection = (items) => {
@@ -549,6 +556,36 @@ async function buildSpendView() {
   return L.join('\n');
 }
 
+// ── API limits view ("limits" command) ───────────────────────────────────────
+async function buildLimitsView() {
+  const info = getRateLimitInfo();
+  const ids = [...new Set([...Object.keys(info.rateLimits || {}), ...Object.keys(info.accountErrors || {})])];
+  const names = await getAccountNames(ids);
+  const L = [`📶 API LIMITS — website reads via: ${getReadTokenSource() === 'bot' ? 'BACKUP app' : 'primary (published) app'}`, ''];
+  for (const id of ids) {
+    const r = info.rateLimits?.[id] || {};
+    const appUtil  = Math.max(r.call_count || 0, r.total_time || 0, r.total_cputime || 0, r.acc_id_util_pct || 0);
+    const acctUtil = Math.max(r.biz_call_count || 0, r.biz_total_time || 0, r.biz_total_cputime || 0);
+    L.push(names[id] || id);
+    L.push(`   app util ${appUtil}% · account util ${acctUtil}%`);
+    const e = info.accountErrors?.[id];
+    if (e?.message) L.push(`   ⚠ last error ${Math.round((Date.now() - e.ts) / 60000)}m ago: ${e.message.slice(0, 90)}`);
+    L.push('');
+  }
+  if (!ids.length) L.push('No FB calls made yet this session.', '');
+  L.push('"switch app" → serve the website from the backup app');
+  L.push('"switch back" → back to the published app');
+  L.push('"refresh" → rewarm website data via the backup app');
+  return L.join('\n');
+}
+
+function recentRateLimitAccounts(acctNames, windowMs = 2 * 60 * 60 * 1000) {
+  const errs = getRateLimitInfo().accountErrors || {};
+  return Object.entries(errs)
+    .filter(([, v]) => v?.ts && Date.now() - v.ts < windowMs && /limit|throttl|#17\b|#4\b|#80004/i.test(v.message || ''))
+    .map(([id]) => acctNames[id] || id);
+}
+
 // Full list view: every active adset, numbered 1..N by spend
 async function buildListView() {
   const stats = await collectStats();
@@ -682,6 +719,29 @@ router.post('/telegram', async (req, res) => {
       await sendTelegram('Pulling fresh spend + pacing — ~1 minute…');
       try { await sendTelegram(await buildSpendView(), { mode: 'mono' }); }
       catch (e) { await sendTelegram(`Spend view failed: ${e.message} — try again.`); }
+    } else if (/^limits?\b/.test(text)) {
+      await sendTelegram(await buildLimitsView(), { mode: 'mono' });
+    } else if (/^switch\s+back\b/.test(text)) {
+      setReadTokenSource('primary');
+      await sendTelegram('✅ Website reads back on the primary (published) app.');
+    } else if (/^switch\b/.test(text)) {
+      if (!process.env.FB_WRITE_TOKEN) await sendTelegram('No FB_WRITE_TOKEN configured — nothing to switch to.');
+      else {
+        setReadTokenSource('bot');
+        await sendTelegram('✅ Website reads now go through the BACKUP app\'s quota. Reverts on "switch back" or the next deploy.');
+      }
+    } else if (/^refresh\b/.test(text)) {
+      if (getPrefetchStatus().running) await sendTelegram('A refresh is already running — give it a few minutes.');
+      else {
+        await sendTelegram('Refreshing website data through the backup app — ~3–6 min. I\'ll confirm when done.');
+        const prior = getReadTokenSource();
+        setReadTokenSource('bot');
+        try { await runPrefetch(true); } finally { setReadTokenSource(prior); }
+        const st = getPrefetchStatus();
+        await sendTelegram(st.lastError
+          ? `⚠ Refresh finished with an error: ${st.lastError}`
+          : `✅ Website data refreshed in ${Math.round((st.durationMs || 0) / 1000)}s — Ads Tracking and Spend Sheet will load from fresh cache.`);
+      }
     } else if (/^(rules|kpis?)\b/.test(text)) {
       await sendTelegram(rulesText(), { mode: 'mono' });
     } else if (/^reset rules\b/.test(text)) {
@@ -698,7 +758,7 @@ router.post('/telegram', async (req, res) => {
       // Anything else: try it as a campaign name
       const view = await buildCampaignView(text).catch(e => { console.error('[digest] campaign view:', e.message); return { text: null }; });
       if (view.text) await sendTelegram(view.text, { mode: 'mono' });
-      else await sendTelegram(`No campaign matches "${msg.text.trim()}".\nCommands: a campaign name (e.g. "LSS TN") · "kill 2 5" (numbers from the last list) · "list" · "rules" · "set kill cpl 700" · "digest" · "run"`);
+      else await sendTelegram(`No campaign matches "${msg.text.trim()}".\nCommands: a campaign name (e.g. "LSS TN") · "kill 2 5" (numbers from the last list) · "list" · "spend" · "rules" · "set kill cpl 700" · "limits" · "switch app" / "switch back" · "refresh" · "digest" · "run"`);
     }
   } catch (e) { console.error('[digest] telegram handler:', e.message); }
 });

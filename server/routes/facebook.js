@@ -279,7 +279,15 @@ function computedCpc(ins) {
   return null;
 }
 
+// Website/primary reads normally use the published app's token; "switch app"
+// (via the Telegram bot) flips them onto the backup app's separate rate-limit
+// bucket until switched back (or the server redeploys).
+let _readTokenSource = 'primary';
+function setReadTokenSource(src) { _readTokenSource = src === 'bot' ? 'bot' : 'primary'; }
+function getReadTokenSource() { return _readTokenSource; }
+
 function token() {
+  if (_readTokenSource === 'bot' && process.env.FB_WRITE_TOKEN) return process.env.FB_WRITE_TOKEN;
   return process.env.FB_ACCESS_TOKEN;
 }
 
@@ -288,6 +296,10 @@ function token() {
 // bucket from the website's published-app reads.
 function botToken() {
   return process.env.FB_WRITE_TOKEN || process.env.FB_ACCESS_TOKEN;
+}
+
+function getRateLimitInfo() {
+  return { rateLimits: _stats.rateLimits, accountErrors: _stats.accountErrors };
 }
 
 // Support multiple ad accounts: FB_AD_ACCOUNTS=act_111,act_222 (act_ prefix optional)
@@ -344,7 +356,7 @@ async function fetchInsightsRaw(level, datePreset, filters = {}, timeRange = nul
       const msg = r.reason?.message || 'unknown error';
       const acct = accounts[i];
       console.warn('FB insights skipped account:', msg);
-      _stats.accountErrors[acct] = msg;
+      _stats.accountErrors[acct] = { message: msg, ts: Date.now() };
       return [];
     }
     return r.value;
@@ -395,7 +407,7 @@ async function fetchFromAllAccounts(path, queryParams) {
       const msg = r.reason?.message || 'unknown error';
       const acct = accounts[i];
       console.warn('FB list skipped account:', msg);
-      _stats.accountErrors[acct] = msg;
+      _stats.accountErrors[acct] = { message: msg, ts: Date.now() };
       return [];
     }
     return r.value;
@@ -775,9 +787,9 @@ const _prefetch = { running: false, lastRun: null, lastSuccess: null, lastError:
 const PREFETCH_MIN_INTERVAL_MS = 20 * 60 * 1000; // don't re-run within 20 min of last success
 let _prevMonthWarmedFor = null; // 'YYYY-MM' whose previous-month daily data is already cached
 
-async function runPrefetch() {
+async function runPrefetch(force = false) {
   if (_prefetch.running) { console.log('[prefetch] already running, skipping'); return; }
-  if (_prefetch.lastSuccess && (Date.now() - _prefetch.lastSuccess) < PREFETCH_MIN_INTERVAL_MS) {
+  if (!force && _prefetch.lastSuccess && (Date.now() - _prefetch.lastSuccess) < PREFETCH_MIN_INTERVAL_MS) {
     console.log('[prefetch] skipping — last success was recent');
     return;
   }
@@ -1163,5 +1175,11 @@ async function fetchWindowAdsetInsights({ start, end }) {
   return enriched;
 }
 
-export { fetchDailyInsights, fetchWindowAdsetInsights };
+function getPrefetchStatus() { return { ..._prefetch }; }
+
+export {
+  fetchDailyInsights, fetchWindowAdsetInsights,
+  setReadTokenSource, getReadTokenSource, getRateLimitInfo,
+  runPrefetch, getPrefetchStatus,
+};
 export default router;
