@@ -475,7 +475,7 @@ async function buildSpendView() {
   // 1. Live daily budgets (force-fresh) + 2. month daily spend incl. today
   const [meta, monthRows] = await Promise.all([
     getAdsetMeta(true),
-    fetchDailyInsights({ level: 'campaign', start: monthStart, end: today, full: true }),
+    fetchDailyInsights({ level: 'campaign', start: monthStart, end: today, full: true, bot: true }),
   ]);
 
   const groupOf = name => `${extractBrand(name)} ${extractState(name) || '?'}`;

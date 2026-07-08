@@ -283,6 +283,13 @@ function token() {
   return process.env.FB_ACCESS_TOKEN;
 }
 
+// The bot/digest reads go through the second (unpublished) app's token when
+// available — Meta rate-limits per app+account, so this is a separate quota
+// bucket from the website's published-app reads.
+function botToken() {
+  return process.env.FB_WRITE_TOKEN || process.env.FB_ACCESS_TOKEN;
+}
+
 // Support multiple ad accounts: FB_AD_ACCOUNTS=act_111,act_222 (act_ prefix optional)
 function adAccounts() {
   return (process.env.FB_AD_ACCOUNTS || '')
@@ -614,7 +621,10 @@ router.get('/ads', async (req, res) => {
     // Don't cache if insights appear rate-limited (ads have spend but no results)
     const hasSpend   = merged.some(a => parseFloat(a.spend)   > 0);
     const hasResults = merged.some(a => (a.results || 0)       > 0);
-    if (!hasSpend || hasResults) cacheSet(cacheKey, merged);
+    // Lifetime totals barely move hour-to-hour and this is the heaviest FB
+    // query — hold it 24h; Sync Now (force=1) still refetches on demand
+    const ttl = date_preset === 'maximum' && !adset_id && !start ? 24 * 60 * 60 * 1000 : undefined;
+    if (!hasSpend || hasResults) cacheSet(cacheKey, merged, ttl);
 
     res.json(merged);
   } catch (err) {
@@ -626,7 +636,7 @@ router.get('/ads', async (req, res) => {
 // ── Shared daily-insights fetcher (used by /daily endpoint + prefetch) ───────
 // Pulls cost_per_result + actions so every daily row gets a per-day `results` count via
 // extractResults (matches Ads Manager — spend÷CPR first, raw event count as fallback).
-async function fetchDailyInsights({ level, datePreset, start, end, date, adIdList, adsetIdList, full }) {
+async function fetchDailyInsights({ level, datePreset, start, end, date, adIdList, adsetIdList, full, bot = false }) {
   const fields = level === 'ad'
     ? `ad_id,ad_name,campaign_name,spend,impressions,unique_inline_link_clicks,cpm,date_start,date_stop,cost_per_result,actions`
     : level === 'adset'
@@ -637,7 +647,7 @@ async function fetchDailyInsights({ level, datePreset, start, end, date, adIdLis
   const all = [];
   const failedAccounts = [];
   const settled = await Promise.allSettled(accounts.map(async account => {
-    const params = new URLSearchParams({ level, fields, time_increment: 1, access_token: token(), limit: 500 });
+    const params = new URLSearchParams({ level, fields, time_increment: 1, access_token: bot ? botToken() : token(), limit: 500 });
     if (start && end)   params.set('time_range', JSON.stringify({ since: start, until: end }));
     else if (date)      params.set('time_range', JSON.stringify({ since: date, until: date }));
     else                params.set('date_preset', datePreset || 'last_30d');
@@ -1114,7 +1124,7 @@ async function fetchWindowAdsetInsights({ start, end }) {
       // ('mixed') books them on conversion date, pulling leads across window
       // edges and mismatching what the user sees for the same range
       action_report_time: 'impression',
-      access_token: token(),
+      access_token: botToken(),
       limit: 500,
     });
     for (let attempt = 1; attempt <= 3; attempt++) {

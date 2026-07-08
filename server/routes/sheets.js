@@ -81,8 +81,10 @@ async function buildMonthGrid(year, monthIndex) {
   const since = `${ym}-01`;
   const until = `${ym}-${String(daysInMonth).padStart(2, '0')}`;
 
+  // bot: the daily cron rides the second app's rate-limit bucket, keeping the
+  // published app's quota for the website
   const rows = await fetchDailyInsights({
-    level: 'campaign', start: since, end: until, full: true,
+    level: 'campaign', start: since, end: until, full: true, bot: true,
   });
 
   const grid = {};       // grid[day][state] = spend (LSS + unbranded only — Halo excluded)
