@@ -302,6 +302,24 @@ function getRateLimitInfo() {
   return { rateLimits: _stats.rateLimits, accountErrors: _stats.accountErrors, cooldowns: _accountCooldown };
 }
 
+// Which FB app each token belongs to — if primary and backup resolve to the
+// SAME app id, there is no second quota bucket and switching does nothing.
+let _tokenApps = null;
+async function tokenAppInfo() {
+  if (_tokenApps) return _tokenApps;
+  const out = {};
+  for (const [label, tok] of [['primary', process.env.FB_ACCESS_TOKEN], ['backup', process.env.FB_WRITE_TOKEN]]) {
+    if (!tok) { out[label] = null; continue; }
+    try {
+      const r = await fetch(`${FB_API}/app?fields=id,name&access_token=${tok}`);
+      const j = await r.json();
+      out[label] = j.error ? { error: (j.error.message || '').slice(0, 80) } : { id: j.id, name: j.name };
+    } catch (e) { out[label] = { error: e.message }; }
+  }
+  _tokenApps = out;
+  return out;
+}
+
 // ── Rate-limit circuit breaker ───────────────────────────────────────────────
 // When FB throttles an account, STOP calling it for a cooldown period.
 // Retrying against a rate limit burns quota and extends the throttle — the
@@ -412,20 +430,32 @@ async function fetchFromAllAccounts(path, queryParams) {
   const accounts = adAccounts();
   const settled = await Promise.allSettled(accounts.map(async account => {
     assertAccountAvailable(account);
-    const all = [];
-    let url = `${FB_API}/${account}/${path}?${new URLSearchParams({ ...queryParams, access_token: token(), limit: 500 })}`;
-    let pages = 0;
-    while (url) {
-      const res = await fbFetch(url);
-      pages++;
-      captureRateLimit(account, res.headers);
-      const json = await res.json();
-      if (json.error) { _stats.errors++; throw new Error(`[${account}] ${json.error.message}`); }
-      all.push(...(json.data || []));
-      url = json.paging?.next || null;
+    // "Please reduce the amount of data" → the page size is too heavy for
+    // this account; retry once with small pages (more calls, but succeeds)
+    for (const limit of [500, 100]) {
+      const all = [];
+      try {
+        let url = `${FB_API}/${account}/${path}?${new URLSearchParams({ ...queryParams, access_token: token(), limit })}`;
+        let pages = 0;
+        while (url) {
+          const res = await fbFetch(url);
+          pages++;
+          captureRateLimit(account, res.headers);
+          const json = await res.json();
+          if (json.error) { _stats.errors++; throw new Error(`[${account}] ${json.error.message}`); }
+          all.push(...(json.data || []));
+          url = json.paging?.next || null;
+        }
+        recordCall(account, path, pages);
+        return all;
+      } catch (e) {
+        if (limit === 500 && /reduce the amount/i.test(e.message)) {
+          console.warn(`FB list ${account}: too much data at limit=500, retrying at limit=100`);
+          continue;
+        }
+        throw e;
+      }
     }
-    recordCall(account, path, pages);
-    return all;
   }));
   return settled.flatMap((r, i) => {
     if (r.status === 'rejected') {
@@ -1024,7 +1054,8 @@ router.get('/structure', async (req, res) => {
 });
 
 // GET /api/facebook/stats — API usage metrics for this server session
-router.get('/stats', (req, res) => {
+router.get('/stats', async (req, res) => {
+  const apps = await tokenAppInfo().catch(() => null);
   const cacheSize = _cache.size;
   const cacheKeys = [..._cache.entries()].map(([key, v]) => ({
     key,
@@ -1033,6 +1064,8 @@ router.get('/stats', (req, res) => {
   }));
   res.json({
     configuredAccounts: adAccounts(),
+    tokenApps: apps,
+    readTokenSource: getReadTokenSource(),
     sessionStart: _stats.sessionStart,
     uptimeSeconds: Math.round((Date.now() - _stats.sessionStart) / 1000),
     callCount: _stats.callCount,
@@ -1224,7 +1257,7 @@ function getPrefetchStatus() { return { ..._prefetch }; }
 
 export {
   fetchDailyInsights, fetchWindowAdsetInsights,
-  setReadTokenSource, getReadTokenSource, getRateLimitInfo,
+  setReadTokenSource, getReadTokenSource, getRateLimitInfo, tokenAppInfo,
   runPrefetch, getPrefetchStatus,
 };
 export default router;

@@ -6,7 +6,7 @@ import fs from 'fs';
 import path from 'path';
 import {
   fetchDailyInsights, fetchWindowAdsetInsights,
-  setReadTokenSource, getReadTokenSource, getRateLimitInfo,
+  setReadTokenSource, getReadTokenSource, getRateLimitInfo, tokenAppInfo,
   runPrefetch, getPrefetchStatus,
 } from './facebook.js';
 import { runIncrementalNextSteps, getAuthClient, SHEET_ID, EVENTS_TAB } from './hyros.js';
@@ -562,6 +562,14 @@ async function buildLimitsView() {
   const ids = [...new Set([...Object.keys(info.rateLimits || {}), ...Object.keys(info.accountErrors || {})])];
   const names = await getAccountNames(ids);
   const L = [`📶 API LIMITS — website reads via: ${getReadTokenSource() === 'bot' ? 'BACKUP app' : 'primary (published) app'}`, ''];
+  const apps = await tokenAppInfo().catch(() => null);
+  if (apps) {
+    L.push(`primary token app: ${apps.primary ? (apps.primary.name || apps.primary.error) + (apps.primary.id ? ` (${apps.primary.id})` : '') : 'not set'}`);
+    L.push(`backup token app:  ${apps.backup ? (apps.backup.name || apps.backup.error) + (apps.backup.id ? ` (${apps.backup.id})` : '') : 'not set'}`);
+    if (apps.primary?.id && apps.backup?.id && apps.primary.id === apps.backup.id)
+      L.push('🚨 BOTH TOKENS BELONG TO THE SAME APP — there is no separate quota. Regenerate the backup token under the second (unpublished) app.');
+    L.push('');
+  }
   for (const id of ids) {
     const r = info.rateLimits?.[id] || {};
     const appUtil  = Math.max(r.call_count || 0, r.total_time || 0, r.total_cputime || 0, r.acc_id_util_pct || 0);
