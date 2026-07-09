@@ -299,8 +299,31 @@ function botToken() {
 }
 
 function getRateLimitInfo() {
-  return { rateLimits: _stats.rateLimits, accountErrors: _stats.accountErrors };
+  return { rateLimits: _stats.rateLimits, accountErrors: _stats.accountErrors, cooldowns: _accountCooldown };
 }
+
+// ── Rate-limit circuit breaker ───────────────────────────────────────────────
+// When FB throttles an account, STOP calling it for a cooldown period.
+// Retrying against a rate limit burns quota and extends the throttle — the
+// bucket only drains while we stay quiet.
+const RATE_LIMIT_RE = /request limit|too many calls|rate limit/i;
+const ACCOUNT_COOLDOWN_MS = 15 * 60 * 1000;
+const _accountCooldown = {};
+
+function noteAccountError(account, message) {
+  _stats.accountErrors[account] = { message, ts: Date.now() };
+  if (RATE_LIMIT_RE.test(message)) {
+    _accountCooldown[account] = Date.now() + ACCOUNT_COOLDOWN_MS;
+    console.warn(`[cooldown] ${account} rate-limited — no calls for ${ACCOUNT_COOLDOWN_MS / 60000}m`);
+  }
+}
+function assertAccountAvailable(account) {
+  const until = _accountCooldown[account];
+  if (until && Date.now() < until) {
+    throw new Error(`[${account}] in rate-limit cooldown (${Math.ceil((until - Date.now()) / 60000)}m left) — call skipped`);
+  }
+}
+function isRateLimitError(e) { return RATE_LIMIT_RE.test(e?.message || ''); }
 
 // Support multiple ad accounts: FB_AD_ACCOUNTS=act_111,act_222 (act_ prefix optional)
 function adAccounts() {
@@ -315,6 +338,7 @@ function adAccounts() {
 
 // Fetch insights for one account
 async function fetchInsightsForAccount(account, level, datePreset, filters = {}, timeRange = null) {
+  assertAccountAvailable(account);
   const params = new URLSearchParams({
     level,
     fields: `${level}_id,${level}_name,${INSIGHTS_FIELDS}`,
@@ -356,7 +380,7 @@ async function fetchInsightsRaw(level, datePreset, filters = {}, timeRange = nul
       const msg = r.reason?.message || 'unknown error';
       const acct = accounts[i];
       console.warn('FB insights skipped account:', msg);
-      _stats.accountErrors[acct] = { message: msg, ts: Date.now() };
+      noteAccountError(acct, msg);
       return [];
     }
     return r.value;
@@ -387,6 +411,7 @@ async function fetchInsights(level, datePreset, filters = {}, timeRange = null, 
 async function fetchFromAllAccounts(path, queryParams) {
   const accounts = adAccounts();
   const settled = await Promise.allSettled(accounts.map(async account => {
+    assertAccountAvailable(account);
     const all = [];
     let url = `${FB_API}/${account}/${path}?${new URLSearchParams({ ...queryParams, access_token: token(), limit: 500 })}`;
     let pages = 0;
@@ -407,7 +432,7 @@ async function fetchFromAllAccounts(path, queryParams) {
       const msg = r.reason?.message || 'unknown error';
       const acct = accounts[i];
       console.warn('FB list skipped account:', msg);
-      _stats.accountErrors[acct] = { message: msg, ts: Date.now() };
+      noteAccountError(acct, msg);
       return [];
     }
     return r.value;
@@ -636,14 +661,15 @@ router.get('/ads', async (req, res) => {
     });
 
     // Don't cache if insights appear rate-limited (ads have spend but no
-    // results) or if any account failed mid-fetch (partial payload would
-    // poison the cache for every client)
+    // results). A payload where an account failed mid-fetch gets a SHORT
+    // cache — long enough to stop request loops from hammering the throttled
+    // account, short enough not to poison clients for a day.
     const hasSpend   = merged.some(a => parseFloat(a.spend)   > 0);
     const hasResults = merged.some(a => (a.results || 0)       > 0);
     // Lifetime totals barely move hour-to-hour and this is the heaviest FB
     // query — hold it 24h; the bot's "refresh" command rewarms it on demand
     const ttl = date_preset === 'maximum' && !adset_id && !start ? 24 * 60 * 60 * 1000 : undefined;
-    if ((!hasSpend || hasResults) && !accountFailedDuringFetch) cacheSet(cacheKey, merged, ttl);
+    if (!hasSpend || hasResults) cacheSet(cacheKey, merged, accountFailedDuringFetch ? 10 * 60 * 1000 : ttl);
 
     res.json(merged);
   } catch (err) {
@@ -666,6 +692,7 @@ async function fetchDailyInsights({ level, datePreset, start, end, date, adIdLis
   const all = [];
   const failedAccounts = [];
   const settled = await Promise.allSettled(accounts.map(async account => {
+    assertAccountAvailable(account);
     const params = new URLSearchParams({ level, fields, time_increment: 1, access_token: bot ? botToken() : token(), limit: 500 });
     if (start && end)   params.set('time_range', JSON.stringify({ since: start, until: end }));
     else if (date)      params.set('time_range', JSON.stringify({ since: date, until: date }));
@@ -693,7 +720,8 @@ async function fetchDailyInsights({ level, datePreset, start, end, date, adIdLis
         all.push(...rows);
         return;
       } catch (e) {
-        if (attempt === 3) throw e;
+        // Never retry a rate limit — it burns quota and extends the throttle
+        if (attempt === 3 || isRateLimitError(e)) throw e;
         console.warn(`FB daily ${account} attempt ${attempt} failed, retrying:`, e.message);
         await new Promise(res => setTimeout(res, attempt * 15_000));
       }
@@ -702,6 +730,7 @@ async function fetchDailyInsights({ level, datePreset, start, end, date, adIdLis
   settled.forEach((r, i) => {
     if (r.status === 'rejected') {
       console.warn('FB daily skipped account:', r.reason?.message);
+      noteAccountError(accounts[i], r.reason?.message || 'unknown error');
       failedAccounts.push(accounts[i]);
     }
   });
@@ -963,16 +992,17 @@ router.get('/structure', async (req, res) => {
         accountStatus[account] = 'ok';
         succeeded = true;
       } catch (err) {
-        const isLimit = /rate.?limit|Application request limit|reduce the amount/i.test(err.message);
-        if (isLimit && attempt < 3) {
-          const wait = attempt * 15_000; // 15s, 30s
-          console.warn(`[structure] ${account} rate limited, waiting ${wait / 1000}s (attempt ${attempt}/3)`);
-          accountStatus[account] = `retrying (${attempt}/3)`;
-          await new Promise(r => setTimeout(r, wait));
-        } else {
-          console.warn(`[structure] ${account} failed: ${err.message}`);
-          accountStatus[account] = isLimit ? 'rate_limited' : `error: ${err.message.slice(0, 80)}`;
+        const isLimit = /rate.?limit|Application request limit|reduce the amount|too many calls/i.test(err.message);
+        // Rate limits are never retried — waiting 15-30s doesn't drain the
+        // bucket, it just doubles the burn
+        if (isLimit) {
+          noteAccountError(account, err.message);
+          console.warn(`[structure] ${account} rate limited — skipping`);
+          accountStatus[account] = 'rate_limited';
+          break;
         }
+        console.warn(`[structure] ${account} failed: ${err.message}`);
+        accountStatus[account] = `error: ${err.message.slice(0, 80)}`;
       }
     }
     if (!accountStatus[account]) accountStatus[account] = 'error: unknown';
@@ -1139,6 +1169,7 @@ async function fetchWindowAdsetInsights({ start, end }) {
   const all = [];
   const failedAccounts = [];
   const settled = await Promise.allSettled(accounts.map(async account => {
+    assertAccountAvailable(account);
     const params = new URLSearchParams({
       level: 'adset',
       fields: 'adset_id,adset_name,campaign_name,spend,impressions,unique_inline_link_clicks,cost_per_result,actions',
@@ -1169,7 +1200,8 @@ async function fetchWindowAdsetInsights({ start, end }) {
         all.push(...rows);
         return;
       } catch (e) {
-        if (attempt === 3) throw e;
+        // Never retry a rate limit — it burns quota and extends the throttle
+        if (attempt === 3 || isRateLimitError(e)) throw e;
         console.warn(`FB window ${account} attempt ${attempt} failed, retrying:`, e.message);
         await new Promise(res => setTimeout(res, attempt * 15_000));
       }
@@ -1178,6 +1210,7 @@ async function fetchWindowAdsetInsights({ start, end }) {
   settled.forEach((r, i) => {
     if (r.status === 'rejected') {
       console.warn('FB window skipped account:', r.reason?.message);
+      noteAccountError(accounts[i], r.reason?.message || 'unknown error');
       failedAccounts.push(accounts[i]);
     }
   });

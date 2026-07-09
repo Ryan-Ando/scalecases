@@ -570,6 +570,8 @@ async function buildLimitsView() {
     L.push(`   app util ${appUtil}% · account util ${acctUtil}%`);
     const e = info.accountErrors?.[id];
     if (e?.message) L.push(`   ⚠ last error ${Math.round((Date.now() - e.ts) / 60000)}m ago: ${e.message.slice(0, 90)}`);
+    const cd = info.cooldowns?.[id];
+    if (cd && cd > Date.now()) L.push(`   ⛔ cooling down — no calls for ${Math.ceil((cd - Date.now()) / 60000)}m more`);
     L.push('');
   }
   if (!ids.length) L.push('No FB calls made yet this session.', '');
