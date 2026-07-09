@@ -595,10 +595,15 @@ router.get('/ads', async (req, res) => {
     const listParams = { fields: 'id,name,status,effective_status,adset_id,adset{name,status,effective_status},campaign_id,campaign{name},creative{id,name,thumbnail_url},created_time,updated_time' };
     if (adset_id) listParams.filtering = JSON.stringify([{ field: 'adset.id', operator: 'EQUAL', value: adset_id }]);
 
+    // Snapshot per-account error timestamps so we can tell if any account
+    // failed DURING this fetch — a partial payload must not be cached
+    const errStampBefore = JSON.stringify(Object.values(_stats.accountErrors).map(e => e?.ts));
+
     const [ads, insights] = await Promise.all([
       fetchFromAllAccounts('ads', listParams),
       fetchInsights('ad', date_preset, adset_id ? { adset_id } : {}, timeRange),
     ]);
+    const accountFailedDuringFetch = JSON.stringify(Object.values(_stats.accountErrors).map(e => e?.ts)) !== errStampBefore;
 
     const insightsMap = Object.fromEntries(insights.map(i => [i.ad_id, i]));
 
@@ -630,13 +635,15 @@ router.get('/ads', async (req, res) => {
       };
     });
 
-    // Don't cache if insights appear rate-limited (ads have spend but no results)
+    // Don't cache if insights appear rate-limited (ads have spend but no
+    // results) or if any account failed mid-fetch (partial payload would
+    // poison the cache for every client)
     const hasSpend   = merged.some(a => parseFloat(a.spend)   > 0);
     const hasResults = merged.some(a => (a.results || 0)       > 0);
     // Lifetime totals barely move hour-to-hour and this is the heaviest FB
-    // query — hold it 24h; Sync Now (force=1) still refetches on demand
+    // query — hold it 24h; the bot's "refresh" command rewarms it on demand
     const ttl = date_preset === 'maximum' && !adset_id && !start ? 24 * 60 * 60 * 1000 : undefined;
-    if (!hasSpend || hasResults) cacheSet(cacheKey, merged, ttl);
+    if ((!hasSpend || hasResults) && !accountFailedDuringFetch) cacheSet(cacheKey, merged, ttl);
 
     res.json(merged);
   } catch (err) {
@@ -859,7 +866,9 @@ async function runPrefetch(force = false) {
 
     // ── 2. Ad-level lifetime insights (AdsTracking grid) ─────────────────────
     {
+      const errStampBefore = JSON.stringify(Object.values(_stats.accountErrors).map(e => e?.ts));
       const adInsights = await fetchInsights('ad', 'maximum', {}, null);
+      const partial = JSON.stringify(Object.values(_stats.accountErrors).map(e => e?.ts)) !== errStampBefore;
       const adMap = Object.fromEntries(adInsights.map(i => [i.ad_id, i]));
       const adMerged = ads.map(a => {
         const ins = adMap[a.id] || {};
@@ -876,7 +885,10 @@ async function runPrefetch(force = false) {
           cost_per_unique_click: computedCpc(ins),
         };
       });
-      cacheSet(`ads:maximum:::`, adMerged);
+      // A partial payload (an account failed mid-fetch) must not overwrite a
+      // possibly-complete cached copy
+      if (!partial) cacheSet(`ads:maximum:::`, adMerged, 24 * 60 * 60 * 1000);
+      else console.warn('[prefetch] ads:maximum NOT cached — an account failed during fetch');
     }
 
     // ── 3. Daily campaign data for SpendSheet ────────────────────────────────

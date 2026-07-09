@@ -1983,7 +1983,12 @@ export default function AdsTracking() {
             <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
               Last synced: {lastSync ? timeAgo(lastSync) : 'never'}
             </span>
-            <button className="btn btn--sm btn--primary" onClick={() => sync(true)} disabled={syncing}>
+            <button
+              className="btn btn--sm btn--primary"
+              onClick={() => sync(false)}
+              disabled={syncing}
+              title="Loads from the server's cache (kept fresh by the bot). For a guaranteed-fresh pull, text 'refresh' to the Telegram bot first — it uses the backup app's API quota."
+            >
               {syncing ? 'Syncing…' : 'Sync Now'}
             </button>
             <button className="btn btn--sm" onClick={resetData} disabled={syncing} title="Clear all stored data and re-sync">
