@@ -562,6 +562,10 @@ async function buildLimitsView() {
   const ids = [...new Set([...Object.keys(info.rateLimits || {}), ...Object.keys(info.accountErrors || {})])];
   const names = await getAccountNames(ids);
   const L = [`📶 API LIMITS — website reads via: ${getReadTokenSource() === 'bot' ? 'BACKUP app' : 'primary (published) app'}`, ''];
+  for (const [src, until] of Object.entries(info.appCooldowns || {})) {
+    if (until > Date.now())
+      L.push(`⛔ APP-WIDE cooldown on ${src === 'bot' ? 'BACKUP' : 'PRIMARY'} app — ${Math.ceil((until - Date.now()) / 60000)}m more`);
+  }
   const apps = await tokenAppInfo().catch(() => null);
   if (apps) {
     L.push(`primary token app: ${apps.primary ? (apps.primary.name || apps.primary.error) + (apps.primary.id ? ` (${apps.primary.id})` : '') : 'not set'}`);

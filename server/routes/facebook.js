@@ -299,7 +299,12 @@ function botToken() {
 }
 
 function getRateLimitInfo() {
-  return { rateLimits: _stats.rateLimits, accountErrors: _stats.accountErrors, cooldowns: _accountCooldown };
+  const cooldowns = {}, appCooldowns = {};
+  for (const [k, v] of Object.entries(_cooldowns)) {
+    if (k.startsWith('acct:')) cooldowns[k.slice(5)] = v;
+    else if (k.startsWith('app:')) appCooldowns[k.slice(4)] = v;
+  }
+  return { rateLimits: _stats.rateLimits, accountErrors: _stats.accountErrors, cooldowns, appCooldowns };
 }
 
 // Which FB app each token belongs to — if primary and backup resolve to the
@@ -321,24 +326,39 @@ async function tokenAppInfo() {
 }
 
 // ── Rate-limit circuit breaker ───────────────────────────────────────────────
-// When FB throttles an account, STOP calling it for a cooldown period.
-// Retrying against a rate limit burns quota and extends the throttle — the
-// bucket only drains while we stay quiet.
+// When FB throttles, STOP calling — the bucket only drains while we stay
+// quiet. "Application request limit reached" is APP-level, so it trips the
+// breaker for the whole token source, not just the account that reported it.
+// Repeat strikes escalate 15m → 60m (a rolling hourly window can't recover
+// in 15-minute gaps).
 const RATE_LIMIT_RE = /request limit|too many calls|rate limit/i;
-const ACCOUNT_COOLDOWN_MS = 15 * 60 * 1000;
-const _accountCooldown = {};
+const _cooldowns = {};  // 'acct:<id>' | 'app:primary' | 'app:bot' → until-ts
+const _strikes = {};    // same keys → { count, last }
 
-function noteAccountError(account, message) {
-  _stats.accountErrors[account] = { message, ts: Date.now() };
-  if (RATE_LIMIT_RE.test(message)) {
-    _accountCooldown[account] = Date.now() + ACCOUNT_COOLDOWN_MS;
-    console.warn(`[cooldown] ${account} rate-limited — no calls for ${ACCOUNT_COOLDOWN_MS / 60000}m`);
-  }
+function tripCooldown(key) {
+  const s = _strikes[key] = _strikes[key] || { count: 0, last: 0 };
+  if (Date.now() - s.last > 90 * 60 * 1000) s.count = 0;
+  s.count++;
+  s.last = Date.now();
+  const mins = s.count >= 2 ? 60 : 15;
+  _cooldowns[key] = Date.now() + mins * 60 * 1000;
+  console.warn(`[cooldown] ${key} — no calls for ${mins}m (strike ${s.count})`);
 }
-function assertAccountAvailable(account) {
-  const until = _accountCooldown[account];
-  if (until && Date.now() < until) {
-    throw new Error(`[${account}] in rate-limit cooldown (${Math.ceil((until - Date.now()) / 60000)}m left) — call skipped`);
+
+function noteAccountError(account, message, source) {
+  _stats.accountErrors[account] = { message, ts: Date.now() };
+  if (!RATE_LIMIT_RE.test(message)) return;
+  tripCooldown(`acct:${account}`);
+  if (source && /application request limit/i.test(message)) tripCooldown(`app:${source}`);
+}
+
+function assertAccountAvailable(account, source) {
+  for (const key of [`acct:${account}`, source ? `app:${source}` : null]) {
+    if (!key) continue;
+    const until = _cooldowns[key];
+    if (until && Date.now() < until) {
+      throw new Error(`[${account}] ${key.startsWith('app:') ? 'APP-WIDE ' : ''}rate-limit cooldown (${Math.ceil((until - Date.now()) / 60000)}m left) — call skipped`);
+    }
   }
 }
 function isRateLimitError(e) { return RATE_LIMIT_RE.test(e?.message || ''); }
@@ -356,7 +376,7 @@ function adAccounts() {
 
 // Fetch insights for one account
 async function fetchInsightsForAccount(account, level, datePreset, filters = {}, timeRange = null) {
-  assertAccountAvailable(account);
+  assertAccountAvailable(account, getReadTokenSource());
   const params = new URLSearchParams({
     level,
     fields: `${level}_id,${level}_name,${INSIGHTS_FIELDS}`,
@@ -398,7 +418,7 @@ async function fetchInsightsRaw(level, datePreset, filters = {}, timeRange = nul
       const msg = r.reason?.message || 'unknown error';
       const acct = accounts[i];
       console.warn('FB insights skipped account:', msg);
-      noteAccountError(acct, msg);
+      noteAccountError(acct, msg, getReadTokenSource());
       return [];
     }
     return r.value;
@@ -429,7 +449,7 @@ async function fetchInsights(level, datePreset, filters = {}, timeRange = null, 
 async function fetchFromAllAccounts(path, queryParams) {
   const accounts = adAccounts();
   const settled = await Promise.allSettled(accounts.map(async account => {
-    assertAccountAvailable(account);
+    assertAccountAvailable(account, getReadTokenSource());
     // "Please reduce the amount of data" → the page size is too heavy for
     // this account; retry once with small pages (more calls, but succeeds)
     for (const limit of [500, 100]) {
@@ -462,7 +482,7 @@ async function fetchFromAllAccounts(path, queryParams) {
       const msg = r.reason?.message || 'unknown error';
       const acct = accounts[i];
       console.warn('FB list skipped account:', msg);
-      noteAccountError(acct, msg);
+      noteAccountError(acct, msg, getReadTokenSource());
       return [];
     }
     return r.value;
@@ -721,8 +741,9 @@ async function fetchDailyInsights({ level, datePreset, start, end, date, adIdLis
   const accounts = adAccounts();
   const all = [];
   const failedAccounts = [];
+  const dailySource = bot ? 'bot' : getReadTokenSource();
   const settled = await Promise.allSettled(accounts.map(async account => {
-    assertAccountAvailable(account);
+    assertAccountAvailable(account, dailySource);
     const params = new URLSearchParams({ level, fields, time_increment: 1, access_token: bot ? botToken() : token(), limit: 500 });
     if (start && end)   params.set('time_range', JSON.stringify({ since: start, until: end }));
     else if (date)      params.set('time_range', JSON.stringify({ since: date, until: date }));
@@ -760,7 +781,7 @@ async function fetchDailyInsights({ level, datePreset, start, end, date, adIdLis
   settled.forEach((r, i) => {
     if (r.status === 'rejected') {
       console.warn('FB daily skipped account:', r.reason?.message);
-      noteAccountError(accounts[i], r.reason?.message || 'unknown error');
+      noteAccountError(accounts[i], r.reason?.message || 'unknown error', dailySource);
       failedAccounts.push(accounts[i]);
     }
   });
@@ -1026,7 +1047,7 @@ router.get('/structure', async (req, res) => {
         // Rate limits are never retried — waiting 15-30s doesn't drain the
         // bucket, it just doubles the burn
         if (isLimit) {
-          noteAccountError(account, err.message);
+          noteAccountError(account, err.message, getReadTokenSource());
           console.warn(`[structure] ${account} rate limited — skipping`);
           accountStatus[account] = 'rate_limited';
           break;
@@ -1202,7 +1223,7 @@ async function fetchWindowAdsetInsights({ start, end }) {
   const all = [];
   const failedAccounts = [];
   const settled = await Promise.allSettled(accounts.map(async account => {
-    assertAccountAvailable(account);
+    assertAccountAvailable(account, 'bot');
     const params = new URLSearchParams({
       level: 'adset',
       fields: 'adset_id,adset_name,campaign_name,spend,impressions,unique_inline_link_clicks,cost_per_result,actions',
@@ -1243,7 +1264,7 @@ async function fetchWindowAdsetInsights({ start, end }) {
   settled.forEach((r, i) => {
     if (r.status === 'rejected') {
       console.warn('FB window skipped account:', r.reason?.message);
-      noteAccountError(accounts[i], r.reason?.message || 'unknown error');
+      noteAccountError(accounts[i], r.reason?.message || 'unknown error', 'bot');
       failedAccounts.push(accounts[i]);
     }
   });
