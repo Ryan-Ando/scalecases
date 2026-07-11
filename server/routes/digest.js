@@ -322,92 +322,94 @@ let _roster = null;
 const FOOTER = 'Reply "kill 2 5" (numbers above) · a campaign name for its ads · "list" all adsets · "rules" view/edit KPIs · "run" fresh digest';
 
 // ── Compose ───────────────────────────────────────────────────────────────────
-// The digest is a SEQUENCE of Telegram messages: a header, then one message
-// per (ad account, state) with that state's kill list, watch list, and its
-// overall CPL at the bottom — every state gets a message even when clean.
-// Message order: account (per DIGEST_ACCOUNT_ORDER) → state avg CPL high→low.
-async function buildDigestMessages() {
+async function buildDigest() {
   const stats = await collectStats(true);
-  const { entries, windowLabel } = stats;
+  const { entries, windowRows, metaById, ledger, windowLabel } = stats;
+
+  // Group order: ad account (per DIGEST_ACCOUNT_ORDER) → campaign → spend
   const acctNames = await getAccountNames([...new Set(entries.map(e => e.account).filter(Boolean))]);
+  const byGroup = (a, b) =>
+    (accountRank(acctNames[a.e.account]) - accountRank(acctNames[b.e.account]))
+    || (acctNames[a.e.account] || '').localeCompare(acctNames[b.e.account] || '')
+    || a.e.campaign.localeCompare(b.e.campaign)
+    || b.e.spend - a.e.spend;
 
-  const avgOf = g => {
-    const parts = [];
-    if (g.fb > 0) parts.push(g.spend / g.fb);
-    if (g.hy > 0) parts.push(g.spend / g.hy);
-    return parts.length ? parts.reduce((s, x) => s + x, 0) / parts.length : null;
-  };
+  // Never truncate — every flagged adset always appears (chunking handles length)
+  const flagged = entries.map(e => ({ e, flag: flagFor(e) })).filter(x => x.flag);
+  const kills   = flagged.filter(x => x.flag.level === 'kill').sort(byGroup);
+  const watches = flagged.filter(x => x.flag.level === 'watch').sort(byGroup);
 
-  // Group adsets by (account, state)
-  const groups = new Map();
-  for (const e of entries) {
-    const state = extractState(e.campaign) || '?';
-    const key = `${e.account}|${state}`;
-    if (!groups.has(key)) groups.set(key, { account: e.account, state, entries: [], spend: 0, fb: 0, hy: 0 });
-    const g = groups.get(key);
-    g.entries.push(e);
-    g.spend += e.spend;
-    g.fb    += e.fbLeads;
-    g.hy    += e.hyLeads;
-  }
-  const ordered = [...groups.values()].sort((a, b) =>
-    (accountRank(acctNames[a.account]) - accountRank(acctNames[b.account]))
-    || (acctNames[a.account] || '').localeCompare(acctNames[b.account] || '')
-    || ((avgOf(b) ?? Infinity) - (avgOf(a) ?? Infinity)));
+  // Roster = exactly what this digest displays, numbered top to bottom
+  const displayed = [...kills, ...watches];
+  saveRoster(displayed.map(x => x.e), 'digest');
 
-  const messages = [];
-
-  // Header message
-  const H = [];
+  // The digest is composed as Telegram HTML: kill/watch as vertical cards
+  // (regular text so <b> works), campaign table in a <pre> grid.
+  const L = [];
   const now = new Date().toLocaleString('en-US', { timeZone: DIGEST_TZ, month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
-  H.push(escapeHtml(`📊 SCALECASES DIGEST — ${now} · window ${windowLabel}`));
-  H.push(escapeHtml(`Scanned ${entries.length} active adsets across ${ordered.length} states · flags need BOTH FB & Hyros to disqualify`));
+  L.push(escapeHtml(`📊 SCALECASES DIGEST — ${now} · window ${windowLabel}`));
+  L.push(escapeHtml(`Scanned ${entries.length} active adsets · flags need BOTH FB & Hyros to disqualify`));
   if (stats.failedAccounts.length)
-    H.push(escapeHtml(`⚠ INCOMPLETE — FB account(s) failed after retries: ${stats.failedAccounts.join(', ')}. Numbers are missing that account; reply "run" to retry.`));
+    L.push(escapeHtml(`⚠ INCOMPLETE — FB account(s) failed after retries: ${stats.failedAccounts.join(', ')}. Numbers are missing that account; reply "run" to retry.`));
   if (stats.ledgerFailed)
-    H.push(escapeHtml(`⚠ HYROS LEDGER UNAVAILABLE — Hyros lead counts read as 0 this run, so lead-based flags are unreliable. Reply "run" to retry before killing anything.`));
+    L.push(escapeHtml(`⚠ HYROS LEDGER UNAVAILABLE — Hyros lead counts read as 0 this run, so lead-based flags are unreliable. Reply "run" to retry before killing anything.`));
   const limited = recentRateLimitAccounts(acctNames);
   if (limited.length)
-    H.push(escapeHtml(`⚠ FB rate-limit errors in the last 2h on: ${limited.join(', ')} — reply "limits" for status.`));
-  const tot = { spend: 0, fb: 0, hy: 0 };
-  for (const g of ordered) { tot.spend += g.spend; tot.fb += g.fb; tot.hy += g.hy; }
-  const totAvg = avgOf(tot);
-  H.push('', escapeHtml(`TOTAL — FB ${tot.fb}/${fmtCpl(tot.spend, tot.fb)} · Hy ${tot.hy}/${fmtCpl(tot.spend, tot.hy)} · avg ${totAvg != null ? '$' + Math.round(totAvg) : '—'}`));
-  messages.push(H.join('\n'));
+    L.push(escapeHtml(`⚠ FB rate-limit errors in the last 2h on: ${limited.join(', ')} — reply "limits" for status, "switch app" to serve the website from the backup app.`));
 
-  // One message per account+state; kill numbering runs across all messages
   let n = 0;
-  const rosterEntries = [];
-  for (const g of ordered) {
-    const acct = acctNames[g.account] || g.account || '?';
-    const inState = (a, b) => a.e.campaign.localeCompare(b.e.campaign) || b.e.spend - a.e.spend;
-    const flagged = g.entries.map(e => ({ e, flag: flagFor(e) })).filter(x => x.flag);
-    const kills   = flagged.filter(x => x.flag.level === 'kill').sort(inState);
-    const watches = flagged.filter(x => x.flag.level === 'watch').sort(inState);
+  const pushSection = (items) => {
+    let lastAcct = null;
+    for (const { e, flag } of items) {
+      const acct = acctNames[e.account] || e.account || '?';
+      if (acct !== lastAcct) { L.push('', `<b>═══ ${escapeHtml(acct)} ═══</b>`); lastAcct = acct; }
+      L.push('', fmtEntryVertical(++n, e, flag));
+    }
+  };
+  L.push('', `🔴 KILL CANDIDATES: ${kills.length || 'none'}`);
+  pushSection(kills);
 
-    const L = [`<b>═══ ${escapeHtml(acct)} · ${escapeHtml(g.state)} ═══</b>`];
-    if (kills.length) {
-      L.push('', '🔴 KILL:');
-      for (const { e, flag } of kills) { rosterEntries.push(e); L.push('', fmtEntryVertical(++n, e, flag)); }
-    }
-    if (watches.length) {
-      L.push('', '🟡 WATCH:');
-      for (const { e, flag } of watches) { rosterEntries.push(e); L.push('', fmtEntryVertical(++n, e, flag)); }
-    }
-    const avg = avgOf(g);
-    if (g.fb === 0 && g.hy === 0) {
-      L.push('', escapeHtml(`⚠ ${fmtMoney(g.spend)} spent, 0 leads`));
-    } else {
-      const good = avg != null && avg < KPIS.watch_cpl;
-      L.push('', escapeHtml(`CPL — FB ${fmtCpl(g.spend, g.fb)} · Hy ${fmtCpl(g.spend, g.hy)} · avg ${avg != null ? '$' + Math.round(avg) : '—'} ${good ? '✅' : '‼️'}`));
-    }
-    messages.push(L.join('\n'));
+  L.push('', `🟡 WATCH: ${watches.length || 'none'}`);
+  pushSection(watches);
+
+  // Campaign-level cursory glance: FB + Hyros leads/CPL per campaign, same window
+  const camps = {};
+  for (const r of windowRows) {
+    const name = r.campaign_name || '?';
+    camps[name] = camps[name] || { spend: 0, fb: 0, hy: 0 };
+    camps[name].spend += parseFloat(r.spend) || 0;
+    camps[name].fb    += r.results || 0;
   }
-  saveRoster(rosterEntries, 'digest');
+  for (const [adsetId, cnt] of Object.entries(ledger?.windowByAdset || {})) {
+    const name = metaById[adsetId]?.campaignName;
+    if (name && camps[name]) camps[name].hy += cnt;
+  }
+  L.push('', escapeHtml(`📋 CAMPAIGNS (${windowLabel}) — reply a name for its ads:`));
+  // AVG = mean of FB CPL and Hyros CPL (whichever are defined); campaigns
+  // sorted worst-first — no-lead campaigns at the very top, then AVG desc
+  const avgCpl = v => {
+    const parts = [];
+    if (v.fb > 0) parts.push(v.spend / v.fb);
+    if (v.hy > 0) parts.push(v.spend / v.hy);
+    return parts.length ? parts.reduce((s, x) => s + x, 0) / parts.length : null;
+  };
+  const cRows = Object.entries(camps).filter(([, v]) => v.spend > 0)
+    .sort((a, b) => (avgCpl(b[1]) ?? Infinity) - (avgCpl(a[1]) ?? Infinity));
+  const nameW = Math.max(...cRows.map(([name]) => name.length), 5);
+  const campRow = (name, v) => {
+    const avg = avgCpl(v);
+    return `${pE(name, nameW)} ${pS(v.fb, 3)} ${pS(fmtCpl(v.spend, v.fb), 5)}  ${pS(v.hy, 3)} ${pS(fmtCpl(v.spend, v.hy), 5)}  ${pS(avg != null ? '$' + Math.round(avg) : '—', 5)}`;
+  };
+  const table = [`${pE('', nameW)} ${pS('FB', 3)} ${pS('CPL', 5)}  ${pS('HY', 3)} ${pS('CPL', 5)}  ${pS('AVG', 5)}`];
+  for (const [name, v] of cRows) table.push(campRow(name, v));
+  const totFb    = cRows.reduce((s, [, v]) => s + v.fb, 0);
+  const totHy    = cRows.reduce((s, [, v]) => s + v.hy, 0);
+  const totSpend = cRows.reduce((s, [, v]) => s + v.spend, 0);
+  table.push(campRow('TOTAL', { spend: totSpend, fb: totFb, hy: totHy }));
+  L.push(`<pre>${escapeHtml(table.join('\n'))}</pre>`);
 
-  // Footer message
-  messages.push(escapeHtml(FOOTER));
-  return messages;
+  L.push('', escapeHtml(FOOTER));
+  return L.join('\n');
 }
 
 // Campaign view: all active adsets in one campaign, numbered 1..N
@@ -717,7 +719,7 @@ router.post('/telegram', async (req, res) => {
 
     const text = msg.text.trim().toLowerCase();
     if (/^(digest|status)\b/.test(text)) {
-      if (_digest.lastMessages?.length) await sendDigestMessages(_digest.lastMessages);
+      if (_digest.lastText) await sendTelegram(_digest.lastText, { mode: 'html' });
       else await sendTelegram('No digest yet — reply "run".');
     } else if (/^list\b/.test(text)) {
       await sendTelegram(await buildListView(), { mode: 'mono' });
@@ -776,16 +778,7 @@ router.post('/telegram', async (req, res) => {
 });
 
 // ── Run + schedule ────────────────────────────────────────────────────────────
-const _digest = { running: false, lastRun: null, lastText: null, lastMessages: null, lastError: null, lastDelivery: null };
-
-async function sendDigestMessages(messages) {
-  for (const m of messages) {
-    const r = await sendTelegram(m, { mode: 'html' });
-    if (!r.sent) return r;
-    await new Promise(res => setTimeout(res, 400));
-  }
-  return { sent: true, messages: messages.length };
-}
+const _digest = { running: false, lastRun: null, lastText: null, lastError: null, lastDelivery: null };
 
 async function runDigest({ send = true, sync = true } = {}) {
   if (_digest.running) return;
@@ -795,12 +788,11 @@ async function runDigest({ send = true, sync = true } = {}) {
       console.log('[digest] running incremental stage-lead sync…');
       await runIncrementalNextSteps(2);
     }
-    const messages = await buildDigestMessages();
-    _digest.lastMessages = messages;
-    _digest.lastText = messages.join('\n\n————————————\n\n');
+    const text = await buildDigest();
+    _digest.lastText = text;
     _digest.lastRun  = new Date().toISOString();
     _digest.lastError = null;
-    _digest.lastDelivery = send ? await sendDigestMessages(messages) : { sent: false, reason: 'send=false' };
+    _digest.lastDelivery = send ? await sendTelegram(text, { mode: 'html' }) : { sent: false, reason: 'send=false' };
     console.log(`[digest] done — delivery: ${JSON.stringify(_digest.lastDelivery)}`);
   } catch (e) {
     _digest.lastError = e.message;
