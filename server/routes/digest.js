@@ -802,19 +802,8 @@ async function runDigest({ send = true, sync = true } = {}) {
   }
 }
 
-// Schedule: DIGEST_TIMES="07:30,16:00" (in DIGEST_TZ). Set DIGEST_TIMES=off to disable.
-const DIGEST_TIMES = (process.env.DIGEST_TIMES || '07:30,16:00').split(',').map(s => s.trim()).filter(Boolean);
-let _lastSlot = '';
-if (!DIGEST_TIMES.includes('off')) {
-  setInterval(() => {
-    const hm = new Intl.DateTimeFormat('en-GB', { timeZone: DIGEST_TZ, hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date());
-    if (!DIGEST_TIMES.includes(hm)) return;
-    const slot = `${tzToday()} ${hm}`;
-    if (slot === _lastSlot) return;
-    _lastSlot = slot;
-    runDigest().catch(e => console.error('[digest]', e.message));
-  }, 60 * 1000);
-}
+// No automatic schedule — the digest runs only on demand ("run" in Telegram
+// or POST /api/digest/run).
 
 // ── Routes ────────────────────────────────────────────────────────────────────
 // POST /api/digest/run?send=0&sync=0 — trigger now (fire-and-forget)
@@ -893,7 +882,7 @@ router.get('/status', (req, res) => {
     lastRun: _digest.lastRun,
     lastError: _digest.lastError,
     lastDelivery: _digest.lastDelivery,
-    scheduledTimes: DIGEST_TIMES,
+    scheduledTimes: [],
     timezone: DIGEST_TZ,
     windowDaysBack: WINDOW_DAYS_BACK,
     rosterSize: loadRoster()?.entries?.length || 0,
