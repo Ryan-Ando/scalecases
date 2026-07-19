@@ -110,11 +110,61 @@ const CACHE_TTL = 2 * 60 * 60 * 1000;
 function cacheGet(key) {
   const entry = _cache.get(key);
   if (!entry) return null;
-  if (Date.now() - entry.ts > (entry.ttl ?? CACHE_TTL)) { _cache.delete(key); return null; }
+  // Expired entries are kept (not deleted) so routes can fall back to stale
+  // data when FB is rate-limited — a stale number beats an error page.
+  if (Date.now() - entry.ts > (entry.ttl ?? CACHE_TTL)) return null;
   _stats.cacheHits++;
   return entry.data;
 }
-function cacheSet(key, data, ttl) { _cache.set(key, { data, ts: Date.now(), ttl }); }
+function cacheGetStale(key) {
+  const entry = _cache.get(key);
+  if (!entry) return null;
+  return { data: entry.data, ageMinutes: Math.round((Date.now() - entry.ts) / 60000) };
+}
+function cacheSet(key, data, ttl) {
+  _cache.set(key, { data, ts: Date.now(), ttl });
+  // Bound memory now that expired entries linger for stale-serving
+  if (_cache.size > 400) {
+    for (const [k, v] of _cache) {
+      if (Date.now() - v.ts > 48 * 60 * 60 * 1000) _cache.delete(k);
+    }
+  }
+}
+
+// Matches both real FB throttle errors and our own breaker's "call skipped"
+// errors — the cases where serving stale cached data is the right response.
+const THROTTLED_RE = /request limit|too many calls|rate.?limit|call skipped/i;
+function isThrottled(e) { return THROTTLED_RE.test(e?.message || ''); }
+
+// Rate-limited accounts don't throw at the route level — they're skipped and
+// the payload comes back PARTIAL (whole accounts missing). Detect that via the
+// accountErrors timestamps, and never let a partial payload replace or hide a
+// fuller cached one: stale-but-complete beats fresh-but-missing-an-account.
+function errStamp() { return JSON.stringify(Object.values(_stats.accountErrors).map(e => e?.ts)); }
+
+function cachePartialAware(key, data, failedDuringFetch, ttl) {
+  if (!failedDuringFetch) { cacheSet(key, data, ttl); return data; }
+  const stale = cacheGetStale(key);
+  if (stale && Array.isArray(stale.data) && Array.isArray(data) && stale.data.length > data.length) {
+    console.warn(`FB cache ${key}: account failed mid-fetch, serving stale payload (${stale.ageMinutes}m old, ${stale.data.length} rows) over partial (${data.length} rows)`);
+    return stale.data;
+  }
+  // Partial but no fuller fallback — short-cache so a throttled account
+  // isn't hammered by refetch loops, without poisoning clients for hours
+  cacheSet(key, data, 10 * 60 * 1000);
+  return data;
+}
+
+// Coalesce concurrent identical fetches — two tabs (or a double-mount) asking
+// for the same uncached payload must cost ONE set of FB calls, not two.
+const _inflight = new Map();
+function dedupInflight(key, fn) {
+  const existing = _inflight.get(key);
+  if (existing) return existing;
+  const p = Promise.resolve().then(fn).finally(() => _inflight.delete(key));
+  _inflight.set(key, p);
+  return p;
+}
 
 // ── Serialized FB request queue ─────────────────────────────────────────────
 // All FB API page fetches run through this queue one at a time with a gap
@@ -286,9 +336,28 @@ let _readTokenSource = 'primary';
 function setReadTokenSource(src) { _readTokenSource = src === 'bot' ? 'bot' : 'primary'; }
 function getReadTokenSource() { return _readTokenSource; }
 
-function token() {
-  if (_readTokenSource === 'bot' && process.env.FB_WRITE_TOKEN) return process.env.FB_WRITE_TOKEN;
+function tokenFor(src) {
+  if (src === 'bot' && process.env.FB_WRITE_TOKEN) return process.env.FB_WRITE_TOKEN;
   return process.env.FB_ACCESS_TOKEN;
+}
+
+// Automatic failover: when the preferred app is in an app-wide rate-limit
+// cooldown but the other app's bucket is healthy, use the other app. This is
+// what keeps cheap reads (Spend Sheet budgets, adset metadata) working while
+// one app cools down, without the user having to text "switch".
+function appCooling(src) {
+  const until = _cooldowns[`app:${src}`];
+  return !!(until && Date.now() < until);
+}
+function pickSource(preferred) {
+  if (!process.env.FB_WRITE_TOKEN) return preferred; // only one bucket exists
+  const alt = preferred === 'primary' ? 'bot' : 'primary';
+  if (appCooling(preferred) && !appCooling(alt)) return alt;
+  return preferred;
+}
+
+function token() {
+  return tokenFor(pickSource(_readTokenSource));
 }
 
 // The bot/digest reads go through the second (unpublished) app's token when
@@ -301,10 +370,14 @@ function botToken() {
 function getRateLimitInfo() {
   const cooldowns = {}, appCooldowns = {};
   for (const [k, v] of Object.entries(_cooldowns)) {
-    if (k.startsWith('acct:')) cooldowns[k.slice(5)] = v;
-    else if (k.startsWith('app:')) appCooldowns[k.slice(4)] = v;
+    if (k.startsWith('acct:')) {
+      // Key shape is acct:<source>:<account id> — collapse to per-account
+      // (max remaining) for display; digest looks entries up by plain id
+      const id = k.slice(5).replace(/^(primary|bot):/, '');
+      cooldowns[id] = Math.max(cooldowns[id] || 0, v);
+    } else if (k.startsWith('app:')) appCooldowns[k.slice(4)] = v;
   }
-  return { rateLimits: _stats.rateLimits, accountErrors: _stats.accountErrors, cooldowns, appCooldowns };
+  return { rateLimits: _stats.rateLimits, accountErrors: _stats.accountErrors, cooldowns, appCooldowns, lastTrip: _stats.lastTrip || null };
 }
 
 // Which FB app each token belongs to — if primary and backup resolve to the
@@ -346,15 +419,24 @@ function tripCooldown(key) {
 }
 
 function noteAccountError(account, message, source) {
-  _stats.accountErrors[account] = { message, ts: Date.now() };
-  if (!RATE_LIMIT_RE.test(message)) return;
-  tripCooldown(`acct:${account}`);
+  const isSkip = /call skipped/.test(message);
+  // A breaker "call skipped" message must never clobber the real FB error
+  // that tripped the cooldown — that's the message the user needs to see.
+  const prev = _stats.accountErrors[account];
+  if (!isSkip || !prev || !RATE_LIMIT_RE.test(prev.message || '')) {
+    _stats.accountErrors[account] = { message, ts: Date.now() };
+  }
+  if (isSkip || !RATE_LIMIT_RE.test(message)) return;
+  _stats.lastTrip = { account, source: source || null, message, ts: Date.now() };
+  // Account throttles are per app+account, so the cooldown is keyed with the
+  // source — the same account stays callable through the OTHER app's bucket.
+  tripCooldown(`acct:${source || 'primary'}:${account}`);
   if (source && /application request limit/i.test(message)) tripCooldown(`app:${source}`);
 }
 
 function assertAccountAvailable(account, source) {
-  for (const key of [`acct:${account}`, source ? `app:${source}` : null]) {
-    if (!key) continue;
+  const src = source || 'primary';
+  for (const key of [`acct:${src}:${account}`, `app:${src}`]) {
     const until = _cooldowns[key];
     if (until && Date.now() < until) {
       throw new Error(`[${account}] ${key.startsWith('app:') ? 'APP-WIDE ' : ''}rate-limit cooldown (${Math.ceil((until - Date.now()) / 60000)}m left) — call skipped`);
@@ -375,12 +457,13 @@ function adAccounts() {
 }
 
 // Fetch insights for one account
-async function fetchInsightsForAccount(account, level, datePreset, filters = {}, timeRange = null) {
-  assertAccountAvailable(account, getReadTokenSource());
+async function fetchInsightsForAccount(account, level, datePreset, filters = {}, timeRange = null, src = null) {
+  src = src || pickSource(getReadTokenSource());
+  assertAccountAvailable(account, src);
   const params = new URLSearchParams({
     level,
     fields: `${level}_id,${level}_name,${INSIGHTS_FIELDS}`,
-    access_token: token(),
+    access_token: tokenFor(src),
     limit: 500,
   });
 
@@ -412,13 +495,16 @@ async function fetchInsightsForAccount(account, level, datePreset, filters = {},
 // Fetch insights from all accounts and merge — skips accounts that error (raw, no blacklist)
 async function fetchInsightsRaw(level, datePreset, filters = {}, timeRange = null) {
   const accounts = adAccounts();
-  const settled = await Promise.allSettled(accounts.map(a => fetchInsightsForAccount(a, level, datePreset, filters, timeRange)));
+  // Resolve the token source ONCE for the whole batch — recomputing after a
+  // parallel account already tripped a cooldown would mis-attribute errors
+  const src = pickSource(getReadTokenSource());
+  const settled = await Promise.allSettled(accounts.map(a => fetchInsightsForAccount(a, level, datePreset, filters, timeRange, src)));
   return settled.flatMap((r, i) => {
     if (r.status === 'rejected') {
       const msg = r.reason?.message || 'unknown error';
       const acct = accounts[i];
       console.warn('FB insights skipped account:', msg);
-      noteAccountError(acct, msg, getReadTokenSource());
+      noteAccountError(acct, msg, src);
       return [];
     }
     return r.value;
@@ -448,14 +534,15 @@ async function fetchInsights(level, datePreset, filters = {}, timeRange = null, 
 // Fetch a list endpoint (campaigns/adsets/ads) from all accounts and merge — skips accounts that error
 async function fetchFromAllAccounts(path, queryParams) {
   const accounts = adAccounts();
+  const src = pickSource(getReadTokenSource());
   const settled = await Promise.allSettled(accounts.map(async account => {
-    assertAccountAvailable(account, getReadTokenSource());
+    assertAccountAvailable(account, src);
     // "Please reduce the amount of data" → the page size is too heavy for
     // this account; retry once with small pages (more calls, but succeeds)
     for (const limit of [500, 100]) {
       const all = [];
       try {
-        let url = `${FB_API}/${account}/${path}?${new URLSearchParams({ ...queryParams, access_token: token(), limit })}`;
+        let url = `${FB_API}/${account}/${path}?${new URLSearchParams({ ...queryParams, access_token: tokenFor(src), limit })}`;
         let pages = 0;
         while (url) {
           const res = await fbFetch(url);
@@ -482,7 +569,7 @@ async function fetchFromAllAccounts(path, queryParams) {
       const msg = r.reason?.message || 'unknown error';
       const acct = accounts[i];
       console.warn('FB list skipped account:', msg);
-      noteAccountError(acct, msg, getReadTokenSource());
+      noteAccountError(acct, msg, src);
       return [];
     }
     return r.value;
@@ -491,14 +578,16 @@ async function fetchFromAllAccounts(path, queryParams) {
 
 // GET /api/facebook/campaigns
 router.get('/campaigns', async (req, res) => {
+  const { date_preset, start, end } = req.query;
+  const cacheKey = `campaigns:${date_preset||''}:${start||''}:${end||''}`;
   try {
-    const { date_preset, start, end } = req.query;
-    const cacheKey = `campaigns:${date_preset||''}:${start||''}:${end||''}`;
     const cached = req.query.force ? null : cacheGet(cacheKey);
     if (cached) return res.json(cached);
 
     const timeRange = start && end ? { since: start, until: end } : null;
 
+    const payload = await dedupInflight(cacheKey, async () => {
+    const stampBefore = errStamp();
     const [campaigns, insights] = await Promise.all([
       fetchFromAllAccounts('campaigns', {
         fields: 'id,name,status,effective_status,objective,created_time,daily_budget,lifetime_budget',
@@ -532,9 +621,16 @@ router.get('/campaigns', async (req, res) => {
       };
     });
 
-    cacheSet(cacheKey, merged);
-    res.json(merged);
+    return cachePartialAware(cacheKey, merged, errStamp() !== stampBefore);
+    });
+    res.json(payload);
   } catch (err) {
+    const stale = isThrottled(err) ? cacheGetStale(cacheKey) : null;
+    if (stale) {
+      console.warn(`FB campaigns: rate-limited, serving stale cache (${stale.ageMinutes}m old)`);
+      res.set('X-Stale-Minutes', String(stale.ageMinutes));
+      return res.json(stale.data);
+    }
     console.error('FB campaigns error:', err.message);
     res.status(500).json({ error: err.message });
   }
@@ -557,12 +653,12 @@ router.get('/campaign-insights', async (req, res) => {
 
 // GET /api/facebook/adsets?campaign_id=&metadata_only=true
 router.get('/adsets', async (req, res) => {
+  const { date_preset, campaign_id, start, end, metadata_only } = req.query;
+  const wantMetadataOnly = metadata_only === 'true';
+  const cacheKey = wantMetadataOnly
+    ? `adsets:meta:${campaign_id||''}`
+    : `adsets:${campaign_id||''}:${date_preset||''}:${start||''}:${end||''}`;
   try {
-    const { date_preset, campaign_id, start, end, metadata_only } = req.query;
-    const wantMetadataOnly = metadata_only === 'true';
-    const cacheKey = wantMetadataOnly
-      ? `adsets:meta:${campaign_id||''}`
-      : `adsets:${campaign_id||''}:${date_preset||''}:${start||''}:${end||''}`;
     const cached = req.query.force ? null : cacheGet(cacheKey);
     if (cached) return res.json(cached);
     const timeRange = start && end ? { since: start, until: end } : null;
@@ -573,6 +669,8 @@ router.get('/adsets', async (req, res) => {
     // Fast path: budget / status data only — no insights fetch, no per-row extractResults.
     // Used by the Spend Sheet Live Daily Budget cards which don't need spend/CPM/etc.
     if (wantMetadataOnly) {
+      const payload = await dedupInflight(cacheKey, async () => {
+      const stampBefore = errStamp();
       const adsets = await fetchFromAllAccounts('adsets', listParams);
       const seen = new Set();
       const mapped = adsets.filter(a => { if (seen.has(a.id)) return false; seen.add(a.id); return true; })
@@ -590,10 +688,13 @@ router.get('/adsets', async (req, res) => {
           campaignLifetimeBudget: a.campaign?.lifetime_budget,
           optimizationGoal: a.optimization_goal,
         }));
-      cacheSet(cacheKey, mapped);
-      return res.json(mapped);
+      return cachePartialAware(cacheKey, mapped, errStamp() !== stampBefore);
+      });
+      return res.json(payload);
     }
 
+    const payload = await dedupInflight(cacheKey, async () => {
+    const stampBefore = errStamp();
     const [adsets, insights] = await Promise.all([
       fetchFromAllAccounts('adsets', listParams),
       fetchInsights('adset', date_preset, campaign_id ? { campaign_id } : {}, timeRange),
@@ -631,9 +732,17 @@ router.get('/adsets', async (req, res) => {
 
     // Ranges ended 7+ days ago are past FB's attribution window — cache 24h
     const attribSafe = isoDateOffset(new Date().toISOString().slice(0, 10), -7);
-    cacheSet(cacheKey, merged, end && end <= attribSafe ? 24 * 60 * 60 * 1000 : undefined);
-    res.json(merged);
+    const ttl = end && end <= attribSafe ? 24 * 60 * 60 * 1000 : undefined;
+    return cachePartialAware(cacheKey, merged, errStamp() !== stampBefore, ttl);
+    });
+    res.json(payload);
   } catch (err) {
+    const stale = isThrottled(err) ? cacheGetStale(cacheKey) : null;
+    if (stale) {
+      console.warn(`FB adsets: rate-limited, serving stale cache (${stale.ageMinutes}m old)`);
+      res.set('X-Stale-Minutes', String(stale.ageMinutes));
+      return res.json(stale.data);
+    }
     console.error('FB adsets error:', err.message);
     res.status(500).json({ error: err.message });
   }
@@ -641,17 +750,19 @@ router.get('/adsets', async (req, res) => {
 
 // GET /api/facebook/ads?adset_id=&date_preset=&start=YYYY-MM-DD&end=YYYY-MM-DD
 router.get('/ads', async (req, res) => {
+  const { date_preset, adset_id, start, end } = req.query;
+  const wantMetadataOnly = req.query.metadata_only === 'true';
+  const cacheKey = wantMetadataOnly
+    ? 'ads:metadata'
+    : `ads:${date_preset}:${adset_id||''}:${start||''}:${end||''}`;
   try {
-    const { date_preset, adset_id, start, end } = req.query;
-    const cacheKey = `ads:${date_preset}:${adset_id||''}:${start||''}:${end||''}`;
-    const cached = req.query.force ? null : cacheGet(cacheKey);
+    const cached = (!wantMetadataOnly && req.query.force) ? null : cacheGet(cacheKey);
     if (cached) return res.json(cached);
 
     // Fast path: metadata only (no insights)
-    if (req.query.metadata_only === 'true') {
-      const cacheKey = 'ads:metadata';
-      const cached = cacheGet(cacheKey);
-      if (cached) return res.json(cached);
+    if (wantMetadataOnly) {
+      const payload = await dedupInflight(cacheKey, async () => {
+      const stampBefore = errStamp();
       const listParams = { fields: 'id,name,status,effective_status,adset_id,adset{name,status,effective_status},campaign_id,campaign{name},creative{id,name,thumbnail_url},created_time,updated_time,daily_budget,lifetime_budget' };
       const ads = await fetchFromAllAccounts('ads', listParams);
       const mapped = ads.map(a => ({
@@ -662,23 +773,25 @@ router.get('/ads', async (req, res) => {
         creative: a.creative, createdTime: a.created_time, updatedTime: a.updated_time,
         daily_budget: a.daily_budget, lifetime_budget: a.lifetime_budget,
       }));
-      cacheSet(cacheKey, mapped);
-      return res.json(mapped);
+      return cachePartialAware(cacheKey, mapped, errStamp() !== stampBefore);
+      });
+      return res.json(payload);
     }
 
     const timeRange = start && end ? { since: start, until: end } : null;
     const listParams = { fields: 'id,name,status,effective_status,adset_id,adset{name,status,effective_status},campaign_id,campaign{name},creative{id,name,thumbnail_url},created_time,updated_time' };
     if (adset_id) listParams.filtering = JSON.stringify([{ field: 'adset.id', operator: 'EQUAL', value: adset_id }]);
 
+    const payload = await dedupInflight(cacheKey, async () => {
     // Snapshot per-account error timestamps so we can tell if any account
     // failed DURING this fetch — a partial payload must not be cached
-    const errStampBefore = JSON.stringify(Object.values(_stats.accountErrors).map(e => e?.ts));
+    const errStampBefore = errStamp();
 
     const [ads, insights] = await Promise.all([
       fetchFromAllAccounts('ads', listParams),
       fetchInsights('ad', date_preset, adset_id ? { adset_id } : {}, timeRange),
     ]);
-    const accountFailedDuringFetch = JSON.stringify(Object.values(_stats.accountErrors).map(e => e?.ts)) !== errStampBefore;
+    const accountFailedDuringFetch = errStamp() !== errStampBefore;
 
     const insightsMap = Object.fromEntries(insights.map(i => [i.ad_id, i]));
 
@@ -710,19 +823,32 @@ router.get('/ads', async (req, res) => {
       };
     });
 
-    // Don't cache if insights appear rate-limited (ads have spend but no
-    // results). A payload where an account failed mid-fetch gets a SHORT
-    // cache — long enough to stop request loops from hammering the throttled
-    // account, short enough not to poison clients for a day.
+    // Insights that came back with spend but zero results anywhere look
+    // rate-limited — don't cache that, and prefer a stale full payload.
     const hasSpend   = merged.some(a => parseFloat(a.spend)   > 0);
     const hasResults = merged.some(a => (a.results || 0)       > 0);
+    if (hasSpend && !hasResults) {
+      const stale = cacheGetStale(cacheKey);
+      if (stale && Array.isArray(stale.data)) {
+        console.warn(`FB ads: insights look throttled, serving stale cache (${stale.ageMinutes}m old)`);
+        return stale.data;
+      }
+      return merged;
+    }
     // Lifetime totals barely move hour-to-hour and this is the heaviest FB
     // query — hold it 24h; the bot's "refresh" command rewarms it on demand
     const ttl = date_preset === 'maximum' && !adset_id && !start ? 24 * 60 * 60 * 1000 : undefined;
-    if (!hasSpend || hasResults) cacheSet(cacheKey, merged, accountFailedDuringFetch ? 10 * 60 * 1000 : ttl);
+    return cachePartialAware(cacheKey, merged, accountFailedDuringFetch, ttl);
+    });
 
-    res.json(merged);
+    res.json(payload);
   } catch (err) {
+    const stale = isThrottled(err) ? cacheGetStale(cacheKey) : null;
+    if (stale) {
+      console.warn(`FB ads: rate-limited, serving stale cache (${stale.ageMinutes}m old)`);
+      res.set('X-Stale-Minutes', String(stale.ageMinutes));
+      return res.json(stale.data);
+    }
     console.error('FB ads error:', err.message);
     res.status(500).json({ error: err.message });
   }
@@ -741,10 +867,10 @@ async function fetchDailyInsights({ level, datePreset, start, end, date, adIdLis
   const accounts = adAccounts();
   const all = [];
   const failedAccounts = [];
-  const dailySource = bot ? 'bot' : getReadTokenSource();
+  const dailySource = pickSource(bot ? 'bot' : getReadTokenSource());
   const settled = await Promise.allSettled(accounts.map(async account => {
     assertAccountAvailable(account, dailySource);
-    const params = new URLSearchParams({ level, fields, time_increment: 1, access_token: bot ? botToken() : token(), limit: 500 });
+    const params = new URLSearchParams({ level, fields, time_increment: 1, access_token: tokenFor(dailySource), limit: 500 });
     if (start && end)   params.set('time_range', JSON.stringify({ since: start, until: end }));
     else if (date)      params.set('time_range', JSON.stringify({ since: date, until: date }));
     else                params.set('date_preset', datePreset || 'last_30d');
@@ -797,24 +923,33 @@ async function fetchDailyInsights({ level, datePreset, start, end, date, adIdLis
 
 // GET /api/facebook/daily?date_preset=&level=campaign&ad_ids=id1,id2&date=YYYY-MM-DD
 router.get('/daily', async (req, res) => {
+  const { date_preset, ad_ids, adset_ids, date, start, end } = req.query;
+  const adIdList    = ad_ids    ? ad_ids.split(',').filter(Boolean)    : null;
+  const adsetIdList = adset_ids ? adset_ids.split(',').filter(Boolean) : null;
+  const level = (adIdList?.length || date) ? 'ad'
+              : adsetIdList?.length         ? 'adset'
+              : (req.query.level || 'campaign');
+  const full = req.query.full === 'true';
+  const cacheKey = `daily:${level}:${date_preset||''}:${ad_ids||''}:${adset_ids||''}:${date||''}:${start||''}:${end||''}:${full}`;
   try {
-    const { date_preset, ad_ids, adset_ids, date, start, end } = req.query;
-    const adIdList    = ad_ids    ? ad_ids.split(',').filter(Boolean)    : null;
-    const adsetIdList = adset_ids ? adset_ids.split(',').filter(Boolean) : null;
-    const level = (adIdList?.length || date) ? 'ad'
-                : adsetIdList?.length         ? 'adset'
-                : (req.query.level || 'campaign');
-    const full = req.query.full === 'true';
-    const cacheKey = `daily:${level}:${date_preset||''}:${ad_ids||''}:${adset_ids||''}:${date||''}:${start||''}:${end||''}:${full}`;
     const cached = cacheGet(cacheKey);
     if (cached) return res.json(cached);
 
-    const result = await fetchDailyInsights({ level, datePreset: date_preset, start, end, date, adIdList, adsetIdList, full });
-    // Ranges that end before the current month are immutable — cache for 24h
-    const curMonthStart = new Date().toISOString().slice(0, 8) + '01';
-    cacheSet(cacheKey, result, end && end < curMonthStart ? 24 * 60 * 60 * 1000 : undefined);
-    res.json(result);
+    const payload = await dedupInflight(cacheKey, async () => {
+      const result = await fetchDailyInsights({ level, datePreset: date_preset, start, end, date, adIdList, adsetIdList, full });
+      // Ranges that end before the current month are immutable — cache for 24h
+      const curMonthStart = new Date().toISOString().slice(0, 8) + '01';
+      const ttl = end && end < curMonthStart ? 24 * 60 * 60 * 1000 : undefined;
+      return cachePartialAware(cacheKey, result, (result.failedAccounts || []).length > 0, ttl);
+    });
+    res.json(payload);
   } catch (err) {
+    const stale = isThrottled(err) ? cacheGetStale(cacheKey) : null;
+    if (stale) {
+      console.warn(`FB daily: rate-limited, serving stale cache (${stale.ageMinutes}m old)`);
+      res.set('X-Stale-Minutes', String(stale.ageMinutes));
+      return res.json(stale.data);
+    }
     console.error('FB daily error:', err.message);
     res.status(500).json({ error: err.message });
   }
@@ -842,24 +977,32 @@ router.get('/ad/:id/preview', async (req, res) => {
 // GET /api/facebook/campaign-spend?since=YYYY-MM-DD&until=YYYY-MM-DD
 // Returns total spend per campaign for a custom date range (for pacing calculations)
 router.get('/campaign-spend', async (req, res) => {
+  const { since, until } = req.query;
+  const cacheKey = `campaign-spend:${since}:${until}`;
   try {
-    const { since, until } = req.query;
     if (!since || !until) return res.status(400).json({ error: 'since and until required' });
-    const cacheKey = `campaign-spend:${since}:${until}`;
     const cached = req.query.force ? null : cacheGet(cacheKey);
     if (cached) return res.json(cached);
 
-    // Spend tracker always gets full accurate data — blacklist bypass intentional
-    const insights = await fetchInsights('campaign', null, {}, { since, until }, true);
-    const result = insights.map(i => ({
-      campaign_id: i.campaign_id,
-      campaign_name: i.campaign_name,
-      spend: parseFloat(i.spend) || 0,
-    }));
-
-    cacheSet(cacheKey, result);
-    res.json(result);
+    const payload = await dedupInflight(cacheKey, async () => {
+      const stampBefore = errStamp();
+      // Spend tracker always gets full accurate data — blacklist bypass intentional
+      const insights = await fetchInsights('campaign', null, {}, { since, until }, true);
+      const result = insights.map(i => ({
+        campaign_id: i.campaign_id,
+        campaign_name: i.campaign_name,
+        spend: parseFloat(i.spend) || 0,
+      }));
+      return cachePartialAware(cacheKey, result, errStamp() !== stampBefore);
+    });
+    res.json(payload);
   } catch (err) {
+    const stale = isThrottled(err) ? cacheGetStale(cacheKey) : null;
+    if (stale) {
+      console.warn(`FB campaign-spend: rate-limited, serving stale cache (${stale.ageMinutes}m old)`);
+      res.set('X-Stale-Minutes', String(stale.ageMinutes));
+      return res.json(stale.data);
+    }
     console.error('FB campaign-spend error:', err.message);
     res.status(500).json({ error: err.message });
   }
@@ -1020,6 +1163,7 @@ router.get('/structure', async (req, res) => {
   const accounts = adAccounts();
   const accountStatus = {};
   const allAds = [];
+  const src = pickSource(getReadTokenSource());
 
   const FIELDS = 'id,name,status,effective_status,adset_id,adset{name,status,effective_status},campaign_id,campaign{name},created_time,updated_time';
 
@@ -1027,9 +1171,10 @@ router.get('/structure', async (req, res) => {
     let succeeded = false;
     for (let attempt = 1; attempt <= 3 && !succeeded; attempt++) {
       try {
+        assertAccountAvailable(account, src);
         const ads = [];
         let url = `${FB_API}/${account}/ads?${new URLSearchParams({
-          fields: FIELDS, limit: 500, access_token: token(),
+          fields: FIELDS, limit: 500, access_token: tokenFor(src),
         })}`;
         while (url) {
           const r = await fbFetch(url);
@@ -1047,7 +1192,7 @@ router.get('/structure', async (req, res) => {
         // Rate limits are never retried — waiting 15-30s doesn't drain the
         // bucket, it just doubles the burn
         if (isLimit) {
-          noteAccountError(account, err.message, getReadTokenSource());
+          noteAccountError(account, err.message, src);
           console.warn(`[structure] ${account} rate limited — skipping`);
           accountStatus[account] = 'rate_limited';
           break;
@@ -1087,6 +1232,8 @@ router.get('/stats', async (req, res) => {
     configuredAccounts: adAccounts(),
     tokenApps: apps,
     readTokenSource: getReadTokenSource(),
+    effectiveReadSource: pickSource(getReadTokenSource()),
+    lastTrip: _stats.lastTrip || null,
     sessionStart: _stats.sessionStart,
     uptimeSeconds: Math.round((Date.now() - _stats.sessionStart) / 1000),
     callCount: _stats.callCount,
@@ -1222,8 +1369,9 @@ async function fetchWindowAdsetInsights({ start, end }) {
   const accounts = adAccounts();
   const all = [];
   const failedAccounts = [];
+  const windowSource = pickSource('bot');
   const settled = await Promise.allSettled(accounts.map(async account => {
-    assertAccountAvailable(account, 'bot');
+    assertAccountAvailable(account, windowSource);
     const params = new URLSearchParams({
       level: 'adset',
       fields: 'adset_id,adset_name,campaign_name,spend,impressions,unique_inline_link_clicks,cost_per_result,actions',
@@ -1233,7 +1381,7 @@ async function fetchWindowAdsetInsights({ start, end }) {
       // ('mixed') books them on conversion date, pulling leads across window
       // edges and mismatching what the user sees for the same range
       action_report_time: 'impression',
-      access_token: botToken(),
+      access_token: tokenFor(windowSource),
       limit: 500,
     });
     for (let attempt = 1; attempt <= 3; attempt++) {
@@ -1264,7 +1412,7 @@ async function fetchWindowAdsetInsights({ start, end }) {
   settled.forEach((r, i) => {
     if (r.status === 'rejected') {
       console.warn('FB window skipped account:', r.reason?.message);
-      noteAccountError(accounts[i], r.reason?.message || 'unknown error', 'bot');
+      noteAccountError(accounts[i], r.reason?.message || 'unknown error', windowSource);
       failedAccounts.push(accounts[i]);
     }
   });
