@@ -40,6 +40,13 @@ function extractLeadsFromActions(actions = []) {
   return 0;
 }
 
+// City/county-targeted ads are named with one of these tokens ("0501-Lubbock-…").
+const CITY_TERMS = ['lubbock', 'bexar', 'harris', 'tarrant'];
+function isCityAd(adName) {
+  const tokens = (adName || '').toLowerCase().split(/[^a-z]+/);
+  return CITY_TERMS.some(c => tokens.includes(c));
+}
+
 // Split campaign name on separators and return the last token that is a valid US state.
 function extractState(campaignName) {
   if (!campaignName) return null;
@@ -871,6 +878,7 @@ export default function AdsTracking() {
   const [leadCutoffAds, setLeadCutoffAds]         = useState(null);
   const [leadCutoffLoading, setLeadCutoffLoading] = useState(false);
   const [leadCutoffError, setLeadCutoffError]     = useState('');
+  const [hideCityAds, setHideCityAds]     = useState(() => localStorage.getItem('hideCityAds') === '1');
   const [filterTags, setFilterTags]       = useState([]);
   const [filterMode, setFilterMode]       = useState('or');
   const [filterInput, setFilterInput]     = useState('');
@@ -1803,15 +1811,16 @@ export default function AdsTracking() {
   }, [adNames, sortKey, sortDir, grid, caseGrid, spendGrid, firstUsed, states, usedInState, lastUsedByAd, lastUsedGrid, reuseMonths]);
 
   const visibleAdNames = useMemo(() => {
-    if (!filterTags.length) return sortedAdNames;
+    const base = hideCityAds ? sortedAdNames.filter(n => !isCityAd(n)) : sortedAdNames;
+    if (!filterTags.length) return base;
     const tags = filterTags.map(t => t.toLowerCase());
-    return sortedAdNames.filter(name => {
+    return base.filter(name => {
       const n = name.toLowerCase();
       return filterMode === 'or'
         ? tags.some(t => n.includes(t))
         : tags.every(t => n.includes(t));
     });
-  }, [sortedAdNames, filterTags, filterMode]);
+  }, [sortedAdNames, filterTags, filterMode, hideCityAds]);
 
   function startColResize(key, defaultW, e) {
     e.preventDefault(); e.stopPropagation();
@@ -2155,7 +2164,7 @@ export default function AdsTracking() {
       {/* Grid stats */}
       <div style={{ display: 'flex', alignItems: 'center', marginBottom: 10, gap: 10, flexWrap: 'wrap' }}>
         <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-          {filterTags.length > 0 ? `${visibleAdNames.length} of ${adNames.length} ads` : `${adNames.length} unique ads`}
+          {(filterTags.length > 0 || hideCityAds) ? `${visibleAdNames.length} of ${adNames.length} ads` : `${adNames.length} unique ads`}
           {deletedAds.size > 0 && ` · ${deletedAds.size} hidden`}
           {(rangeStart && rangeEnd) && ` · ${rangeStart} – ${rangeEnd}`}
         </span>
@@ -2202,6 +2211,16 @@ export default function AdsTracking() {
               opacity: leadCutoffEnabled ? 1 : 0.5,
             }}
           />
+        </label>
+        {/* City ads toggle — hides ads named for a city/county (lubbock, bexar, harris, tarrant) */}
+        <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, color: 'var(--text-muted)', userSelect: 'none' }} title={`Hide city-specific ads — names containing: ${CITY_TERMS.join(', ')}`}>
+          <input
+            type="checkbox"
+            checked={hideCityAds}
+            onChange={e => { setHideCityAds(e.target.checked); localStorage.setItem('hideCityAds', e.target.checked ? '1' : '0'); }}
+            style={{ accentColor: 'var(--green)', width: 13, height: 13 }}
+          />
+          Hide city ads
         </label>
         {loadingCases && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Loading cases…</span>}
         {casesError && <span style={{ fontSize: 11, color: '#dc2626' }}>{casesError}</span>}
