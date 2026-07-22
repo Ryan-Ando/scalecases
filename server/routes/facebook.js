@@ -199,6 +199,7 @@ const _stats = {
   errors: 0,        // failed calls
   accountErrors: {}, // account → last error message
   rateLimits: {},   // account → { call_count, total_time, total_cputime } (percentages 0–100)
+  appUsage: {},     // token source → latest x-app-usage {call_count,total_time,total_cputime,ts} — FB's own app-quota gauge
   recentCalls: [],  // last 100 calls
   sessionStart: Date.now(),
 };
@@ -210,12 +211,13 @@ function recordCall(account, path, pages) {
   if (_stats.recentCalls.length > 100) _stats.recentCalls.length = 100;
 }
 
-function captureRateLimit(account, headers) {
+function captureRateLimit(account, headers, src) {
   try {
     const appUsage = headers.get('x-app-usage');
     if (appUsage) {
       const parsed = JSON.parse(appUsage);
       _stats.rateLimits[account] = { ...(_stats.rateLimits[account] || {}), ...parsed };
+      if (src) _stats.appUsage[src] = { ...parsed, ts: Date.now() };
     }
     const acctUsage = headers.get('x-ad-account-usage');
     if (acctUsage) {
@@ -377,7 +379,7 @@ function getRateLimitInfo() {
       cooldowns[id] = Math.max(cooldowns[id] || 0, v);
     } else if (k.startsWith('app:')) appCooldowns[k.slice(4)] = v;
   }
-  return { rateLimits: _stats.rateLimits, accountErrors: _stats.accountErrors, cooldowns, appCooldowns, lastTrip: _stats.lastTrip || null };
+  return { rateLimits: _stats.rateLimits, accountErrors: _stats.accountErrors, cooldowns, appCooldowns, lastTrip: _stats.lastTrip || null, appUsage: _stats.appUsage };
 }
 
 // Which FB app each token belongs to — if primary and backup resolve to the
@@ -427,7 +429,10 @@ function noteAccountError(account, message, source) {
     _stats.accountErrors[account] = { message, ts: Date.now() };
   }
   if (isSkip || !RATE_LIMIT_RE.test(message)) return;
-  _stats.lastTrip = { account, source: source || null, message, ts: Date.now() };
+  // Freeze FB's own app-quota gauge (x-app-usage from the failing response) into the
+  // trip record — call_count near 100 proves the app bucket was genuinely full
+  // (something else is burning quota); near 0 means FB burst-throttled a light call.
+  _stats.lastTrip = { account, source: source || null, message, ts: Date.now(), appUsage: _stats.appUsage[source || 'primary'] || null };
   // Account throttles are per app+account, so the cooldown is keyed with the
   // source — the same account stays callable through the OTHER app's bucket.
   tripCooldown(`acct:${source || 'primary'}:${account}`);
@@ -482,7 +487,7 @@ async function fetchInsightsForAccount(account, level, datePreset, filters = {},
   while (url) {
     const res = await fbFetch(url);
     pages++;
-    captureRateLimit(account, res.headers);
+    captureRateLimit(account, res.headers, src);
     const json = await res.json();
     if (json.error) { _stats.errors++; throw new Error(`[${account}] ${json.error.message}`); }
     all.push(...(json.data || []));
@@ -547,7 +552,7 @@ async function fetchFromAllAccounts(path, queryParams) {
         while (url) {
           const res = await fbFetch(url);
           pages++;
-          captureRateLimit(account, res.headers);
+          captureRateLimit(account, res.headers, src);
           const json = await res.json();
           if (json.error) { _stats.errors++; throw new Error(`[${account}] ${json.error.message}`); }
           all.push(...(json.data || []));
@@ -887,7 +892,7 @@ async function fetchDailyInsights({ level, datePreset, start, end, date, adIdLis
         while (url) {
           const r = await fbFetch(url);
           pages++;
-          captureRateLimit(account, r.headers);
+          captureRateLimit(account, r.headers, dailySource);
           const json = await r.json();
           if (json.error) { _stats.errors++; throw new Error(`[${account}] ${json.error.message}`); }
           rows.push(...(json.data || []).map(x => ({ ...x, account })));
@@ -1178,7 +1183,7 @@ router.get('/structure', async (req, res) => {
         })}`;
         while (url) {
           const r = await fbFetch(url);
-          captureRateLimit(account, r.headers);
+          captureRateLimit(account, r.headers, src);
           const json = await r.json();
           if (json.error) throw new Error(json.error.message);
           ads.push(...(json.data || []));
@@ -1234,6 +1239,7 @@ router.get('/stats', async (req, res) => {
     readTokenSource: getReadTokenSource(),
     effectiveReadSource: pickSource(getReadTokenSource()),
     lastTrip: _stats.lastTrip || null,
+    appUsage: _stats.appUsage,
     sessionStart: _stats.sessionStart,
     uptimeSeconds: Math.round((Date.now() - _stats.sessionStart) / 1000),
     callCount: _stats.callCount,
@@ -1308,7 +1314,7 @@ router.get('/debug/state-deep', async (req, res) => {
         let url = `${FB_API}/${account}/insights?${params}`;
         while (url) {
           const r = await fbFetch(url);
-          captureRateLimit(account, r.headers);
+          captureRateLimit(account, r.headers, pickSource(getReadTokenSource()));
           const j = await r.json();
           if (j.error) throw new Error(`[${account}] ${j.error.message}`);
           out.push(...(j.data || []));
@@ -1392,7 +1398,7 @@ async function fetchWindowAdsetInsights({ start, end }) {
         while (url) {
           const r = await fbFetch(url);
           pages++;
-          captureRateLimit(account, r.headers);
+          captureRateLimit(account, r.headers, windowSource);
           const json = await r.json();
           if (json.error) { _stats.errors++; throw new Error(`[${account}] ${json.error.message}`); }
           rows.push(...(json.data || []).map(x => ({ ...x, account })));

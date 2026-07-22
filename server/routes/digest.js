@@ -572,6 +572,18 @@ async function buildLimitsView() {
   if (anyAppCooling) L.push('↪ reads auto-failover to the other app while one is cooling');
   if (info.lastTrip) {
     L.push(`last trip ${Math.round((Date.now() - info.lastTrip.ts) / 60000)}m ago (${info.lastTrip.source || '?'} app): ${(info.lastTrip.message || '').slice(0, 90)}`);
+    const u = info.lastTrip.appUsage;
+    if (u) {
+      const pct = Math.max(u.call_count || 0, u.total_time || 0, u.total_cputime || 0);
+      L.push(pct >= 90
+        ? `   FB says app quota was ${pct}% used at trip time → something OUTSIDE this server is burning this app's quota`
+        : `   FB says app quota was only ${pct}% used at trip time → burst throttle, not a full bucket`);
+    }
+  }
+  // Live per-app quota gauge (FB's x-app-usage from the most recent call)
+  for (const [src, u] of Object.entries(info.appUsage || {})) {
+    const pct = Math.max(u.call_count || 0, u.total_time || 0, u.total_cputime || 0);
+    L.push(`${src === 'bot' ? 'BACKUP' : 'primary'} app quota now: ${pct}% used (as of ${Math.round((Date.now() - u.ts) / 60000)}m ago)`);
   }
   const apps = await tokenAppInfo().catch(() => null);
   if (apps) {
