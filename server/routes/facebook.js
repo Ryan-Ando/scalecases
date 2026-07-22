@@ -358,6 +358,16 @@ function pickSource(preferred) {
   return preferred;
 }
 
+// Multi-account fetches alternate accounts between the two apps. FB's code-4
+// throttle fires on per-app call BURSTS even with x-app-usage at 0% (proven
+// 2026-07-22), so halving each app's share of a burst prevents trips in a way
+// raw quota headroom can't.
+function spreadSource(preferred, i) {
+  if (!process.env.FB_WRITE_TOKEN) return preferred;
+  const alt = preferred === 'primary' ? 'bot' : 'primary';
+  return pickSource(i % 2 === 0 ? preferred : alt);
+}
+
 function token() {
   return tokenFor(pickSource(_readTokenSource));
 }
@@ -500,16 +510,16 @@ async function fetchInsightsForAccount(account, level, datePreset, filters = {},
 // Fetch insights from all accounts and merge — skips accounts that error (raw, no blacklist)
 async function fetchInsightsRaw(level, datePreset, filters = {}, timeRange = null) {
   const accounts = adAccounts();
-  // Resolve the token source ONCE for the whole batch — recomputing after a
+  // Resolve each account's token source ONCE up front — recomputing after a
   // parallel account already tripped a cooldown would mis-attribute errors
-  const src = pickSource(getReadTokenSource());
-  const settled = await Promise.allSettled(accounts.map(a => fetchInsightsForAccount(a, level, datePreset, filters, timeRange, src)));
+  const srcs = accounts.map((a, i) => spreadSource(getReadTokenSource(), i));
+  const settled = await Promise.allSettled(accounts.map((a, i) => fetchInsightsForAccount(a, level, datePreset, filters, timeRange, srcs[i])));
   return settled.flatMap((r, i) => {
     if (r.status === 'rejected') {
       const msg = r.reason?.message || 'unknown error';
       const acct = accounts[i];
       console.warn('FB insights skipped account:', msg);
-      noteAccountError(acct, msg, src);
+      noteAccountError(acct, msg, srcs[i]);
       return [];
     }
     return r.value;
@@ -539,8 +549,9 @@ async function fetchInsights(level, datePreset, filters = {}, timeRange = null, 
 // Fetch a list endpoint (campaigns/adsets/ads) from all accounts and merge — skips accounts that error
 async function fetchFromAllAccounts(path, queryParams) {
   const accounts = adAccounts();
-  const src = pickSource(getReadTokenSource());
-  const settled = await Promise.allSettled(accounts.map(async account => {
+  const srcs = accounts.map((a, i) => spreadSource(getReadTokenSource(), i));
+  const settled = await Promise.allSettled(accounts.map(async (account, idx) => {
+    const src = srcs[idx];
     assertAccountAvailable(account, src);
     // "Please reduce the amount of data" → the page size is too heavy for
     // this account; retry once with small pages (more calls, but succeeds)
@@ -574,7 +585,7 @@ async function fetchFromAllAccounts(path, queryParams) {
       const msg = r.reason?.message || 'unknown error';
       const acct = accounts[i];
       console.warn('FB list skipped account:', msg);
-      noteAccountError(acct, msg, src);
+      noteAccountError(acct, msg, srcs[i]);
       return [];
     }
     return r.value;
@@ -872,8 +883,9 @@ async function fetchDailyInsights({ level, datePreset, start, end, date, adIdLis
   const accounts = adAccounts();
   const all = [];
   const failedAccounts = [];
-  const dailySource = pickSource(bot ? 'bot' : getReadTokenSource());
-  const settled = await Promise.allSettled(accounts.map(async account => {
+  const dailySources = accounts.map((a, i) => spreadSource(bot ? 'bot' : getReadTokenSource(), i));
+  const settled = await Promise.allSettled(accounts.map(async (account, idx) => {
+    const dailySource = dailySources[idx];
     assertAccountAvailable(account, dailySource);
     const params = new URLSearchParams({ level, fields, time_increment: 1, access_token: tokenFor(dailySource), limit: 500 });
     if (start && end)   params.set('time_range', JSON.stringify({ since: start, until: end }));
@@ -912,7 +924,7 @@ async function fetchDailyInsights({ level, datePreset, start, end, date, adIdLis
   settled.forEach((r, i) => {
     if (r.status === 'rejected') {
       console.warn('FB daily skipped account:', r.reason?.message);
-      noteAccountError(accounts[i], r.reason?.message || 'unknown error', dailySource);
+      noteAccountError(accounts[i], r.reason?.message || 'unknown error', dailySources[i]);
       failedAccounts.push(accounts[i]);
     }
   });
@@ -1168,11 +1180,11 @@ router.get('/structure', async (req, res) => {
   const accounts = adAccounts();
   const accountStatus = {};
   const allAds = [];
-  const src = pickSource(getReadTokenSource());
 
   const FIELDS = 'id,name,status,effective_status,adset_id,adset{name,status,effective_status},campaign_id,campaign{name},created_time,updated_time';
 
-  for (const account of accounts) {
+  for (const [acctIdx, account] of accounts.entries()) {
+    const src = spreadSource(getReadTokenSource(), acctIdx);
     let succeeded = false;
     for (let attempt = 1; attempt <= 3 && !succeeded; attempt++) {
       try {
@@ -1375,8 +1387,9 @@ async function fetchWindowAdsetInsights({ start, end }) {
   const accounts = adAccounts();
   const all = [];
   const failedAccounts = [];
-  const windowSource = pickSource('bot');
-  const settled = await Promise.allSettled(accounts.map(async account => {
+  const windowSources = accounts.map((a, i) => spreadSource('bot', i));
+  const settled = await Promise.allSettled(accounts.map(async (account, idx) => {
+    const windowSource = windowSources[idx];
     assertAccountAvailable(account, windowSource);
     const params = new URLSearchParams({
       level: 'adset',
@@ -1418,7 +1431,7 @@ async function fetchWindowAdsetInsights({ start, end }) {
   settled.forEach((r, i) => {
     if (r.status === 'rejected') {
       console.warn('FB window skipped account:', r.reason?.message);
-      noteAccountError(accounts[i], r.reason?.message || 'unknown error', windowSource);
+      noteAccountError(accounts[i], r.reason?.message || 'unknown error', windowSources[i]);
       failedAccounts.push(accounts[i]);
     }
   });
