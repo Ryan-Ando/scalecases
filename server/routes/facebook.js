@@ -1,5 +1,7 @@
 import { Router } from 'express';
 import fetch from 'node-fetch';
+import fs from 'fs';
+import path from 'path';
 
 const router = Router();
 const FB_API = 'https://graph.facebook.com/v19.0';
@@ -102,10 +104,34 @@ function rangeContainsBlacklist(since, until) {
   return false;
 }
 
-// ── Server-side in-memory cache for FB API responses ────────────────────────
-// Keyed by request path+params. TTL: 2 hours. Survives across client reloads.
+// ── Server-side cache for FB API responses ──────────────────────────────────
+// Keyed by request path+params. TTL: 2 hours. Survives across client reloads
+// AND server restarts (persisted to DATA_DIR) — every deploy used to wipe the
+// cache, turning the next tab load into a cold ~20-call burst that tripped
+// FB's throttle. Warm cache across restarts is the single biggest call saver.
 const _cache = new Map();
 const CACHE_TTL = 2 * 60 * 60 * 1000;
+const CACHE_FILE = path.join(process.env.DATA_DIR || './data', 'fb-cache.json');
+
+try {
+  const saved = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8'));
+  for (const [k, v] of Object.entries(saved)) {
+    if (Date.now() - v.ts < 48 * 60 * 60 * 1000) _cache.set(k, v);
+  }
+  console.log(`[fb-cache] restored ${_cache.size} entries from disk`);
+} catch { /* first boot or no persistent disk — start cold */ }
+
+let _cacheSaveTimer = null;
+function scheduleCacheSave() {
+  if (_cacheSaveTimer) return;
+  _cacheSaveTimer = setTimeout(() => {
+    _cacheSaveTimer = null;
+    try {
+      fs.mkdirSync(path.dirname(CACHE_FILE), { recursive: true });
+      fs.writeFileSync(CACHE_FILE, JSON.stringify(Object.fromEntries(_cache)));
+    } catch (e) { console.warn('[fb-cache] save failed:', e.message); }
+  }, 30_000); // debounced — at most one disk write per 30s
+}
 
 function cacheGet(key) {
   const entry = _cache.get(key);
@@ -129,6 +155,7 @@ function cacheSet(key, data, ttl) {
       if (Date.now() - v.ts > 48 * 60 * 60 * 1000) _cache.delete(k);
     }
   }
+  scheduleCacheSave();
 }
 
 // Matches both real FB throttle errors and our own breaker's "call skipped"
@@ -424,7 +451,9 @@ const _strikes = {};    // same keys → { count, last }
 function tripCooldown(key) {
   const s = _strikes[key] = _strikes[key] || { count: 0, last: 0 };
   if (Date.now() - s.last > 90 * 60 * 1000) s.count = 0;
-  s.count++;
+  // Trips within the same 2-minute burst are ONE event — two accounts hitting
+  // the same app seconds apart must not escalate straight to a 60m lockout
+  if (s.count === 0 || Date.now() - s.last > 2 * 60 * 1000) s.count++;
   s.last = Date.now();
   const mins = s.count >= 2 ? 60 : 15;
   _cooldowns[key] = Date.now() + mins * 60 * 1000;
@@ -465,6 +494,11 @@ function isRateLimitError(e) { return RATE_LIMIT_RE.test(e?.message || ''); }
 // the failing app's breaker still trips, but the account's data arrives in THIS
 // response instead of leaving a hole in the payload until the next reload.
 // Errors noted here are marked .noted so callers don't double-record them.
+// GATED to one rescue per 90s: when several parallel account fetchers all trip
+// one app, letting every one of them refetch through the other app dumps the
+// combined burst there and trips BOTH apps (happened 2026-07-25). The rest
+// fall back to stale cache instead.
+let _lastAltRetry = 0;
 async function withAltRetry(account, src, fn) {
   try {
     return await fn(src);
@@ -473,6 +507,12 @@ async function withAltRetry(account, src, fn) {
     const throttled = isRateLimitError(e) || /call skipped/.test(e?.message || '');
     if (!throttled || !process.env.FB_WRITE_TOKEN || appCooling(alt)) throw e;
     noteAccountError(account, e.message, src);
+    if (Date.now() - _lastAltRetry < 90_000) {
+      console.warn(`[alt-retry] ${account} hit limit on ${src} app — rescue gate closed, serving stale instead`);
+      e.noted = true;
+      throw e;
+    }
+    _lastAltRetry = Date.now();
     console.warn(`[alt-retry] ${account} hit limit on ${src} app — retrying via ${alt}`);
     try {
       return await fn(alt);
