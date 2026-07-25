@@ -199,6 +199,10 @@ function dedupInflight(key, fn) {
 // the per-user rate limit.
 // Tunable from Render env without a code push (FB's burst detector is opaque)
 const FB_CALL_GAP_MS = parseInt(process.env.FB_CALL_GAP_MS, 10) || 1000; // ms between consecutive FB API calls
+// Page size for insights queries. Meta scores insights calls by complexity
+// (rows × fields × date range) and every observed code-4 trip happened during
+// heavy 500-row ad-level pages — smaller pages test the size-not-count theory.
+const FB_INSIGHTS_PAGE_SIZE = parseInt(process.env.FB_INSIGHTS_PAGE_SIZE, 10) || 250;
 const _fbQueue = [];
 let   _fbRunning = false;
 
@@ -543,7 +547,7 @@ async function fetchInsightsForAccount(account, level, datePreset, filters = {},
     level,
     fields: `${level}_id,${level}_name,${INSIGHTS_FIELDS}`,
     access_token: tokenFor(src),
-    limit: 500,
+    limit: FB_INSIGHTS_PAGE_SIZE,
   });
 
   if (timeRange) {
@@ -961,7 +965,7 @@ async function fetchDailyInsights({ level, datePreset, start, end, date, adIdLis
   const dailySources = accounts.map((a, i) => spreadSource(bot ? 'bot' : getReadTokenSource(), i));
   const settled = await Promise.allSettled(accounts.map((account, idx) => withAltRetry(account, dailySources[idx], async dailySource => {
     assertAccountAvailable(account, dailySource);
-    const params = new URLSearchParams({ level, fields, time_increment: 1, access_token: tokenFor(dailySource), limit: 500 });
+    const params = new URLSearchParams({ level, fields, time_increment: 1, access_token: tokenFor(dailySource), limit: FB_INSIGHTS_PAGE_SIZE });
     if (start && end)   params.set('time_range', JSON.stringify({ since: start, until: end }));
     else if (date)      params.set('time_range', JSON.stringify({ since: date, until: date }));
     else                params.set('date_preset', datePreset || 'last_30d');
@@ -1395,7 +1399,7 @@ router.get('/debug/state-deep', async (req, res) => {
           fields: `${idFields},${enrichedFields}`,
           date_preset: preset,
           access_token: token(),
-          limit: 500,
+          limit: FB_INSIGHTS_PAGE_SIZE,
         });
         let url = `${FB_API}/${account}/insights?${params}`;
         while (url) {
@@ -1474,7 +1478,7 @@ async function fetchWindowAdsetInsights({ start, end }) {
       // edges and mismatching what the user sees for the same range
       action_report_time: 'impression',
       access_token: tokenFor(windowSource),
-      limit: 500,
+      limit: FB_INSIGHTS_PAGE_SIZE,
     });
     for (let attempt = 1; attempt <= 3; attempt++) {
       const rows = [];
