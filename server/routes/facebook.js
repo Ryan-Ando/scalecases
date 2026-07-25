@@ -515,20 +515,31 @@ async function fetchInsightsForAccount(account, level, datePreset, filters = {},
   if (filters.campaign_id) params.set('filtering', JSON.stringify([{ field: 'campaign.id', operator: 'EQUAL', value: filters.campaign_id }]));
   if (filters.adset_id) params.set('filtering', JSON.stringify([{ field: 'adset.id', operator: 'EQUAL', value: filters.adset_id }]));
 
-  const all = [];
-  let url = `${FB_API}/${account}/insights?${params}`;
-  let pages = 0;
-  while (url) {
-    const res = await fbFetch(url);
-    pages++;
-    captureRateLimit(account, res.headers, src);
-    const json = await res.json();
-    if (json.error) { _stats.errors++; throw new Error(`[${account}] ${json.error.message}`); }
-    all.push(...(json.data || []));
-    url = json.paging?.next || null;
+  // Retry transient failures ("An unknown error occurred") — one hiccup must
+  // not drop the whole account from the tabs. Rate limits are never retried
+  // here; withAltRetry handles those through the other app.
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const all = [];
+    try {
+      let url = `${FB_API}/${account}/insights?${params}`;
+      let pages = 0;
+      while (url) {
+        const res = await fbFetch(url);
+        pages++;
+        captureRateLimit(account, res.headers, src);
+        const json = await res.json();
+        if (json.error) { _stats.errors++; throw new Error(`[${account}] ${json.error.message}`); }
+        all.push(...(json.data || []));
+        url = json.paging?.next || null;
+      }
+      recordCall(account, 'insights', pages);
+      return all;
+    } catch (e) {
+      if (attempt === 3 || isRateLimitError(e)) throw e;
+      console.warn(`FB insights ${account} attempt ${attempt} failed, retrying:`, e.message);
+      await new Promise(r => setTimeout(r, attempt * 5000));
+    }
   }
-  recordCall(account, 'insights', pages);
-  return all;
 }
 
 // Fetch insights from all accounts and merge — skips accounts that error (raw, no blacklist)
