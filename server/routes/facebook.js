@@ -197,12 +197,14 @@ function dedupInflight(key, fn) {
 // All FB API page fetches run through this queue one at a time with a gap
 // between calls. This prevents simultaneous multi-account bursts from tripping
 // the per-user rate limit.
-// Tunable from Render env without a code push (FB's burst detector is opaque)
-const FB_CALL_GAP_MS = parseInt(process.env.FB_CALL_GAP_MS, 10) || 1000; // ms between consecutive FB API calls
+// Tunable from Render env without a code push (FB's burst detector is opaque).
+// Clamped to ≥250ms — a mis-set env var (e.g. "10" meaning 10s) must never
+// machine-gun FB at 100 calls/sec (happened 2026-07-25, instant trip).
+const FB_CALL_GAP_MS = Math.max(250, parseInt(process.env.FB_CALL_GAP_MS, 10) || 1000); // ms between consecutive FB API calls
 // Page size for insights queries. Meta scores insights calls by complexity
 // (rows × fields × date range) and every observed code-4 trip happened during
 // heavy 500-row ad-level pages — smaller pages test the size-not-count theory.
-const FB_INSIGHTS_PAGE_SIZE = parseInt(process.env.FB_INSIGHTS_PAGE_SIZE, 10) || 250;
+const FB_INSIGHTS_PAGE_SIZE = Math.min(500, Math.max(25, parseInt(process.env.FB_INSIGHTS_PAGE_SIZE, 10) || 250));
 const _fbQueue = [];
 let   _fbRunning = false;
 
@@ -1340,6 +1342,7 @@ router.get('/stats', async (req, res) => {
     queueDepth: _fbQueue.length,
     queueRunning: _fbRunning,
     callGapMs: FB_CALL_GAP_MS,
+    insightsPageSize: FB_INSIGHTS_PAGE_SIZE,
     cacheSize,
     cacheKeys,
     recentCalls: _stats.recentCalls,
