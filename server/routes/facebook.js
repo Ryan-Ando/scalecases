@@ -170,7 +170,8 @@ function dedupInflight(key, fn) {
 // All FB API page fetches run through this queue one at a time with a gap
 // between calls. This prevents simultaneous multi-account bursts from tripping
 // the per-user rate limit.
-const FB_CALL_GAP_MS = 750; // ms between consecutive FB API calls
+// Tunable from Render env without a code push (FB's burst detector is opaque)
+const FB_CALL_GAP_MS = parseInt(process.env.FB_CALL_GAP_MS, 10) || 1000; // ms between consecutive FB API calls
 const _fbQueue = [];
 let   _fbRunning = false;
 
@@ -460,6 +461,29 @@ function assertAccountAvailable(account, source) {
 }
 function isRateLimitError(e) { return RATE_LIMIT_RE.test(e?.message || ''); }
 
+// One immediate retry through the OTHER app when an account hits a rate limit —
+// the failing app's breaker still trips, but the account's data arrives in THIS
+// response instead of leaving a hole in the payload until the next reload.
+// Errors noted here are marked .noted so callers don't double-record them.
+async function withAltRetry(account, src, fn) {
+  try {
+    return await fn(src);
+  } catch (e) {
+    const alt = src === 'primary' ? 'bot' : 'primary';
+    const throttled = isRateLimitError(e) || /call skipped/.test(e?.message || '');
+    if (!throttled || !process.env.FB_WRITE_TOKEN || appCooling(alt)) throw e;
+    noteAccountError(account, e.message, src);
+    console.warn(`[alt-retry] ${account} hit limit on ${src} app — retrying via ${alt}`);
+    try {
+      return await fn(alt);
+    } catch (e2) {
+      noteAccountError(account, e2.message, alt);
+      e2.noted = true;
+      throw e2;
+    }
+  }
+}
+
 // Support multiple ad accounts: FB_AD_ACCOUNTS=act_111,act_222 (act_ prefix optional)
 function adAccounts() {
   return (process.env.FB_AD_ACCOUNTS || '')
@@ -513,13 +537,14 @@ async function fetchInsightsRaw(level, datePreset, filters = {}, timeRange = nul
   // Resolve each account's token source ONCE up front — recomputing after a
   // parallel account already tripped a cooldown would mis-attribute errors
   const srcs = accounts.map((a, i) => spreadSource(getReadTokenSource(), i));
-  const settled = await Promise.allSettled(accounts.map((a, i) => fetchInsightsForAccount(a, level, datePreset, filters, timeRange, srcs[i])));
+  const settled = await Promise.allSettled(accounts.map((a, i) =>
+    withAltRetry(a, srcs[i], s => fetchInsightsForAccount(a, level, datePreset, filters, timeRange, s))));
   return settled.flatMap((r, i) => {
     if (r.status === 'rejected') {
       const msg = r.reason?.message || 'unknown error';
       const acct = accounts[i];
       console.warn('FB insights skipped account:', msg);
-      noteAccountError(acct, msg, srcs[i]);
+      if (!r.reason?.noted) noteAccountError(acct, msg, srcs[i]);
       return [];
     }
     return r.value;
@@ -550,8 +575,7 @@ async function fetchInsights(level, datePreset, filters = {}, timeRange = null, 
 async function fetchFromAllAccounts(path, queryParams) {
   const accounts = adAccounts();
   const srcs = accounts.map((a, i) => spreadSource(getReadTokenSource(), i));
-  const settled = await Promise.allSettled(accounts.map(async (account, idx) => {
-    const src = srcs[idx];
+  const settled = await Promise.allSettled(accounts.map((account, idx) => withAltRetry(account, srcs[idx], async src => {
     assertAccountAvailable(account, src);
     // "Please reduce the amount of data" → the page size is too heavy for
     // this account; retry once with small pages (more calls, but succeeds)
@@ -579,13 +603,13 @@ async function fetchFromAllAccounts(path, queryParams) {
         throw e;
       }
     }
-  }));
+  })));
   return settled.flatMap((r, i) => {
     if (r.status === 'rejected') {
       const msg = r.reason?.message || 'unknown error';
       const acct = accounts[i];
       console.warn('FB list skipped account:', msg);
-      noteAccountError(acct, msg, srcs[i]);
+      if (!r.reason?.noted) noteAccountError(acct, msg, srcs[i]);
       return [];
     }
     return r.value;
@@ -884,8 +908,7 @@ async function fetchDailyInsights({ level, datePreset, start, end, date, adIdLis
   const all = [];
   const failedAccounts = [];
   const dailySources = accounts.map((a, i) => spreadSource(bot ? 'bot' : getReadTokenSource(), i));
-  const settled = await Promise.allSettled(accounts.map(async (account, idx) => {
-    const dailySource = dailySources[idx];
+  const settled = await Promise.allSettled(accounts.map((account, idx) => withAltRetry(account, dailySources[idx], async dailySource => {
     assertAccountAvailable(account, dailySource);
     const params = new URLSearchParams({ level, fields, time_increment: 1, access_token: tokenFor(dailySource), limit: 500 });
     if (start && end)   params.set('time_range', JSON.stringify({ since: start, until: end }));
@@ -920,11 +943,11 @@ async function fetchDailyInsights({ level, datePreset, start, end, date, adIdLis
         await new Promise(res => setTimeout(res, attempt * 15_000));
       }
     }
-  }));
+  })));
   settled.forEach((r, i) => {
     if (r.status === 'rejected') {
       console.warn('FB daily skipped account:', r.reason?.message);
-      noteAccountError(accounts[i], r.reason?.message || 'unknown error', dailySources[i]);
+      if (!r.reason?.noted) noteAccountError(accounts[i], r.reason?.message || 'unknown error', dailySources[i]);
       failedAccounts.push(accounts[i]);
     }
   });
@@ -1388,8 +1411,7 @@ async function fetchWindowAdsetInsights({ start, end }) {
   const all = [];
   const failedAccounts = [];
   const windowSources = accounts.map((a, i) => spreadSource('bot', i));
-  const settled = await Promise.allSettled(accounts.map(async (account, idx) => {
-    const windowSource = windowSources[idx];
+  const settled = await Promise.allSettled(accounts.map((account, idx) => withAltRetry(account, windowSources[idx], async windowSource => {
     assertAccountAvailable(account, windowSource);
     const params = new URLSearchParams({
       level: 'adset',
@@ -1427,11 +1449,11 @@ async function fetchWindowAdsetInsights({ start, end }) {
         await new Promise(res => setTimeout(res, attempt * 15_000));
       }
     }
-  }));
+  })));
   settled.forEach((r, i) => {
     if (r.status === 'rejected') {
       console.warn('FB window skipped account:', r.reason?.message);
-      noteAccountError(accounts[i], r.reason?.message || 'unknown error', windowSources[i]);
+      if (!r.reason?.noted) noteAccountError(accounts[i], r.reason?.message || 'unknown error', windowSources[i]);
       failedAccounts.push(accounts[i]);
     }
   });
