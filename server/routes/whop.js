@@ -153,6 +153,10 @@ export async function whopDebug() {
     }));
   } catch (e) { out.campaignsError = e.message; }
   try {
+    const ids = (out.campaigns || []).map(c => c.id);
+    if (ids.length) out.adGroupsRaw = await whopList('ad_groups', { ad_campaign_ids: ids });
+  } catch (e) { out.adGroupsError = e.message; }
+  try {
     out.liveBudgetRows = await whopLiveBudgetAdsets();
   } catch (e) { out.liveBudgetError = e.message; }
   return out;
