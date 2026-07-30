@@ -138,6 +138,26 @@ export async function whopLiveBudgetAdsets() {
   }
 }
 
+// Diagnostics for GET /api/facebook/whop-debug — shows exactly what the beta
+// endpoints return so budget-card issues are debuggable without Render logs.
+export async function whopDebug() {
+  const out = { enabled: whopEnabled() };
+  if (!out.enabled) return out;
+  try {
+    const campaigns = await whopList('ad_campaigns', {});
+    out.campaignCount = campaigns.length;
+    out.campaigns = campaigns.map(c => ({
+      id: c.id, title: c.title, status: c.status, platform: c.platform,
+      budget_amount: c.budget_amount, budget_type: c.budget_type,
+      budget_optimization: c.budget_optimization, delivery_status: c.delivery_status,
+    }));
+  } catch (e) { out.campaignsError = e.message; }
+  try {
+    out.liveBudgetRows = await whopLiveBudgetAdsets();
+  } catch (e) { out.liveBudgetError = e.message; }
+  return out;
+}
+
 // Per-campaign spend totals for a range — same shape as /campaign-spend rows.
 export async function whopCampaignSpend(since, until) {
   if (!whopEnabled() || !since || !until) return [];

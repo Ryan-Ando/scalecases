@@ -2,7 +2,7 @@ import { Router } from 'express';
 import fetch from 'node-fetch';
 import fs from 'fs';
 import path from 'path';
-import { whopDailyCampaignRows, whopCampaignSpend, whopLiveBudgetAdsets } from './whop.js';
+import { whopDailyCampaignRows, whopCampaignSpend, whopLiveBudgetAdsets, whopDebug } from './whop.js';
 
 const router = Router();
 const FB_API = 'https://graph.facebook.com/v19.0';
@@ -673,6 +673,11 @@ async function fetchFromAllAccounts(path, queryParams) {
     return r.value;
   });
 }
+
+// GET /api/facebook/whop-debug — raw view of the Whop beta endpoints
+router.get('/whop-debug', async (req, res) => {
+  res.json(await whopDebug());
+});
 
 // GET /api/facebook/campaigns
 router.get('/campaigns', async (req, res) => {
