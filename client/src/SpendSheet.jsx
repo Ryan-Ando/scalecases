@@ -40,6 +40,26 @@ function extractGroup(campaignName) {
   return brand ? `${brand} ${state}` : state;
 }
 
+// Client/brand of a group key ('LSS TX' → 'LSS'). Legacy plain state keys are LSS.
+function brandOf(groupKey) {
+  const first = (groupKey || '').split(' ')[0];
+  return !first || US_STATES.has(first) ? 'LSS' : first;
+}
+// Strip the brand prefix for display inside a brand section ('LSS TX' → 'TX').
+function stateLabel(groupKey, brand) {
+  return groupKey.startsWith(brand + ' ') ? groupKey.slice(brand.length + 1) : groupKey;
+}
+// Group keys by client — LSS first, other clients alphabetical.
+function groupByBrand(keys) {
+  const m = new Map();
+  for (const k of keys) {
+    const b = brandOf(k);
+    if (!m.has(b)) m.set(b, []);
+    m.get(b).push(k);
+  }
+  return [...m.entries()].sort(([a], [b]) => (a === 'LSS' ? -1 : b === 'LSS' ? 1 : a.localeCompare(b)));
+}
+
 const MONTH_NAMES = ['January','February','March','April','May','June','July','August','September','October','November','December'];
 
 function fmt(v) {
@@ -440,10 +460,15 @@ export default function SpendSheet() {
     return [...ordered, ...added];
   }, [dataStates, colOrder]);
 
+  // Grid columns bucketed per client — each client gets its own block + total column
+  const gridBrandGroups = useMemo(() => groupByBrand(states), [states]);
+
   function onDragStart(st) { dragSrc.current = st; }
   function onDragOver(e) { e.preventDefault(); }
   function onDrop(targetSt) {
     if (!dragSrc.current || dragSrc.current === targetSt) return;
+    // Columns only reorder within the same client's block
+    if (brandOf(dragSrc.current) !== brandOf(targetSt)) { dragSrc.current = null; return; }
     const next = [...states];
     const from = next.indexOf(dragSrc.current);
     const to   = next.indexOf(targetSt);
@@ -569,17 +594,35 @@ export default function SpendSheet() {
           </div>
         )}
         {!loadingBudget && budgetStates.length > 0 && (
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'flex-end' }}>
-            {budgetStates.map(st => (
-              <div key={st} style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 8, padding: '10px 16px', minWidth: 90 }}>
-                <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>{st}</div>
-                <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text)' }}>{fmt(budgetByState[st])}</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+            {groupByBrand(budgetStates).map(([brand, sts]) => {
+              const brandTotal = sts.reduce((s, st) => s + (budgetByState[st] || 0), 0);
+              return (
+                <div key={brand}>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 6, paddingBottom: 3, borderBottom: '1px solid var(--border)' }}>{brand}</div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'flex-end' }}>
+                    {sts.map(st => (
+                      <div key={st} style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 8, padding: '10px 16px', minWidth: 90 }}>
+                        <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>{stateLabel(st, brand)}</div>
+                        <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text)' }}>{fmt(budgetByState[st])}</div>
+                      </div>
+                    ))}
+                    <div style={{ background: 'var(--green-light)', border: '1px solid var(--green)', borderRadius: 8, padding: '10px 16px', minWidth: 90 }}>
+                      <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--green-dark)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>{brand} / day</div>
+                      <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--green-dark)' }}>{fmt(brandTotal)}</div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+            {groupByBrand(budgetStates).length > 1 && (
+              <div style={{ display: 'flex' }}>
+                <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 8, padding: '10px 16px', minWidth: 90 }}>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>All clients / day</div>
+                  <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text)' }}>{fmt(totalDailyBudget)}</div>
+                </div>
               </div>
-            ))}
-            <div style={{ background: 'var(--green-light)', border: '1px solid var(--green)', borderRadius: 8, padding: '10px 16px', minWidth: 90 }}>
-              <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--green-dark)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>Total / day</div>
-              <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--green-dark)' }}>{fmt(totalDailyBudget)}</div>
-            </div>
+            )}
           </div>
         )}
       </div>
@@ -618,14 +661,25 @@ export default function SpendSheet() {
                 </tr>
               </thead>
               <tbody>
-                {pacingRows.map(r => {
+                {groupByBrand(pacingRows.map(r => r.st)).map(([brand]) => {
+                  const rows = pacingRows.filter(r => brandOf(r.st) === brand);
+                  const sum = f => (rows.some(r => r[f] != null) ? rows.reduce((s, r) => s + (r[f] || 0), 0) : null);
+                  const sub = { totalBudget: sum('totalBudget'), spentToDate: sum('spentToDate'), remaining: sum('remaining'), dailyNeeded: sum('dailyNeeded'), liveBudget: sum('liveBudget') };
+                  const subShortfall = (sub.dailyNeeded != null && sub.liveBudget != null) ? sub.dailyNeeded - sub.liveBudget : null;
+                  const subColor = subShortfall == null ? 'var(--text-muted)' : subShortfall > 0 ? '#dc2626' : '#16a34a';
+                  return (
+                    <Fragment key={brand}>
+                      <tr>
+                        <td colSpan={11} style={{ padding: '7px 12px', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text)', background: 'var(--bg)', borderBottom: '1px solid var(--border)' }}>{brand}</td>
+                      </tr>
+                      {rows.map(r => {
                   const shortfallColor = r.shortfall == null ? 'var(--text-muted)'
                     : r.shortfall > 0 ? '#dc2626' : '#16a34a';
                   const isExpanded = expandedRows.has(r.st);
                   return (
                     <Fragment key={r.st}>
                       <tr>
-                        <td style={pTdL}>{r.st}</td>
+                        <td style={pTdL}>{stateLabel(r.st, brand)}</td>
 
                         {/* Total Budget — computed from monthly breakdown */}
                         <td style={{ ...pTdEdit, minWidth: 160 }}>
@@ -759,6 +813,22 @@ export default function SpendSheet() {
                     </Fragment>
                   );
                 })}
+                      {/* Per-client subtotal */}
+                      <tr>
+                        <td style={{ ...pTdL, background: 'var(--bg)' }}>{brand} Total</td>
+                        <td style={{ ...pTd, fontWeight: 700, textAlign: 'left', background: 'var(--bg)' }}>{fmtOrDash(sub.totalBudget)}</td>
+                        <td style={{ ...pTd, background: 'var(--bg)' }} colSpan={4}></td>
+                        <td style={{ ...pTd, fontWeight: 700, background: 'var(--bg)' }}>{fmtOrDash(sub.spentToDate)}</td>
+                        <td style={{ ...pTd, fontWeight: 700, background: 'var(--bg)' }}>{fmtOrDash(sub.remaining)}</td>
+                        <td style={{ ...pTd, fontWeight: 700, background: 'var(--bg)' }}>{fmtOrDash(sub.dailyNeeded)}</td>
+                        <td style={{ ...pTd, fontWeight: 700, background: 'var(--bg)' }}>{fmtOrDash(sub.liveBudget)}</td>
+                        <td style={{ ...pTd, fontWeight: 700, color: subColor, borderLeft: '2px solid var(--border)', background: 'var(--bg)' }}>
+                          {subShortfall == null ? '—' : `${subShortfall >= 0 ? '+' : ''}${fmt(subShortfall)}`}
+                        </td>
+                      </tr>
+                    </Fragment>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -786,49 +856,75 @@ export default function SpendSheet() {
               <thead>
                 <tr>
                   <th style={dayTh}>Day</th>
-                  {states.map(st => (
-                    <th
-                      key={st}
-                      style={thBase}
-                      draggable
-                      onDragStart={() => onDragStart(st)}
-                      onDragOver={onDragOver}
-                      onDrop={() => onDrop(st)}
-                      title="Drag to reorder"
-                    >
-                      {st}
-                    </th>
+                  {gridBrandGroups.map(([brand, sts]) => (
+                    <Fragment key={brand}>
+                      {sts.map((st, i) => (
+                        <th
+                          key={st}
+                          style={{ ...thBase, ...(i === 0 ? { borderLeft: '2px solid var(--border)' } : {}) }}
+                          draggable
+                          onDragStart={() => onDragStart(st)}
+                          onDragOver={onDragOver}
+                          onDrop={() => onDrop(st)}
+                          title="Drag to reorder (within client)"
+                        >
+                          {st}
+                        </th>
+                      ))}
+                      <th style={totTh}>{brand} Total</th>
+                    </Fragment>
                   ))}
-                  <th style={totTh}>Total</th>
+                  {gridBrandGroups.length > 1 && <th style={totTh}>All Total</th>}
                 </tr>
               </thead>
               <tbody>
                 {days.map(day => (
                   <tr key={day}>
                     <td style={dayTd}>Day {day}</td>
-                    {states.map(st => {
-                      const v = grid[day]?.[st] || 0;
+                    {gridBrandGroups.map(([brand, sts]) => {
+                      const bTotal = sts.reduce((s, st) => s + (grid[day]?.[st] || 0), 0);
                       return (
-                        <td key={st} style={{ ...td, color: v ? 'var(--text)' : 'var(--text-muted)' }}>
-                          {v ? fmt(v) : ''}
-                        </td>
+                        <Fragment key={brand}>
+                          {sts.map((st, i) => {
+                            const v = grid[day]?.[st] || 0;
+                            return (
+                              <td key={st} style={{ ...td, color: v ? 'var(--text)' : 'var(--text-muted)', ...(i === 0 ? { borderLeft: '2px solid var(--border)' } : {}) }}>
+                                {v ? fmt(v) : ''}
+                              </td>
+                            );
+                          })}
+                          <td style={{ ...td, fontWeight: 600, borderLeft: '2px solid var(--border)', background: 'var(--bg)' }}>
+                            {bTotal ? fmt(bTotal) : ''}
+                          </td>
+                        </Fragment>
                       );
                     })}
-                    <td style={{ ...td, fontWeight: 600, borderLeft: '2px solid var(--border)' }}>
-                      {rowTotals[day] ? fmt(rowTotals[day]) : ''}
-                    </td>
+                    {gridBrandGroups.length > 1 && (
+                      <td style={{ ...td, fontWeight: 700, borderLeft: '2px solid var(--border)' }}>
+                        {rowTotals[day] ? fmt(rowTotals[day]) : ''}
+                      </td>
+                    )}
                   </tr>
                 ))}
               </tbody>
               <tfoot>
                 <tr>
                   <td style={totDay}>Total</td>
-                  {states.map(st => (
-                    <td key={st} style={totTd}>{fmt(colTotals[st])}</td>
+                  {gridBrandGroups.map(([brand, sts]) => (
+                    <Fragment key={brand}>
+                      {sts.map((st, i) => (
+                        <td key={st} style={{ ...totTd, ...(i === 0 ? { borderLeft: '2px solid var(--border)' } : {}) }}>{fmt(colTotals[st])}</td>
+                      ))}
+                      <td style={{ ...totTd, borderLeft: '2px solid var(--border)', color: 'var(--green)' }}>
+                        {fmt(sts.reduce((s, st) => s + (colTotals[st] || 0), 0))}
+                      </td>
+                    </Fragment>
                   ))}
-                  <td style={{ ...totTd, borderLeft: '2px solid var(--border)', color: 'var(--green)', fontSize: 13 }}>
-                    {fmt(grandTotal)}
-                  </td>
+                  {gridBrandGroups.length > 1 && (
+                    <td style={{ ...totTd, borderLeft: '2px solid var(--border)', color: 'var(--green)', fontSize: 13 }}>
+                      {fmt(grandTotal)}
+                    </td>
+                  )}
                 </tr>
               </tfoot>
             </table>
