@@ -63,6 +63,81 @@ export async function whopDailyCampaignRows(start, end) {
   }
 }
 
+// Cursor-paginated list fetch for the beta Ads endpoints (/ad_campaigns,
+// /ad_groups). `repeat` params (arrays) are appended once per value.
+async function whopList(path, params = {}) {
+  const out = [];
+  let after = null;
+  do {
+    const qs = new URLSearchParams();
+    qs.set('first', '100');
+    for (const [k, v] of Object.entries(params)) {
+      if (Array.isArray(v)) v.forEach(x => qs.append(k, x));
+      else if (v != null) qs.set(k, v);
+    }
+    if (after) qs.set('after', after);
+    const r = await fetch(`${WHOP_API}/${path}?${qs}`, {
+      headers: { Authorization: `Bearer ${process.env.WHOP_API_KEY}` },
+    });
+    const json = await r.json().catch(() => null);
+    if (!r.ok) throw new Error(`Whop ${path} HTTP ${r.status}: ${(json && (json.error?.message || json.message)) || 'unknown error'}`);
+    out.push(...(json?.data || []));
+    after = json?.page_info?.has_next_page ? json.page_info.end_cursor : null;
+  } while (after);
+  return out;
+}
+
+// Synthetic "adset" rows for the Live Daily Budget cards, from REAL Whop
+// budgets: campaign-level budget_amount for CBO campaigns
+// (budget_optimization === 'ad_campaign'), ad-group budgets for ABO
+// (budget_optimization === 'ad_group', where the campaign's budget_amount is
+// null). Only active + daily budgets count, matching how the FB cards work.
+// Shape matches /adsets?metadata_only=true rows (dailyBudget in cents).
+// Requires the ad_campaign:basic:read permission on the API key.
+export async function whopLiveBudgetAdsets() {
+  if (!whopEnabled()) return [];
+  try {
+    const campaigns = await whopList('ad_campaigns', { status: 'active' });
+    const mkRow = (id, name, campaignId, campaignTitle, dollars) => ({
+      id: `whop:${id}`,
+      name: `${name || ''} (Whop)`,
+      status: 'ACTIVE',
+      effectiveStatus: 'ACTIVE',
+      campaignId: `whop:${campaignId}`,
+      campaignName: campaignTitle || '',
+      createdTime: null,
+      dailyBudget: String(Math.round(dollars * 100)),
+      lifetimeBudget: null,
+      campaignDailyBudget: null,
+      campaignLifetimeBudget: null,
+      optimizationGoal: 'whop',
+    });
+
+    const rows = [];
+    const aboCampaigns = [];
+    for (const c of campaigns) {
+      if (c.budget_optimization === 'ad_group') { aboCampaigns.push(c); continue; }
+      const amount = parseFloat(c.budget_amount) || 0;
+      if (c.budget_type === 'daily' && amount > 0) rows.push(mkRow(c.id, c.title, c.id, c.title, amount));
+    }
+    if (aboCampaigns.length) {
+      const titleById = Object.fromEntries(aboCampaigns.map(c => [c.id, c.title]));
+      const groups = await whopList('ad_groups', { ad_campaign_ids: aboCampaigns.map(c => c.id) });
+      for (const g of groups) {
+        const campId = g.ad_campaign_id || g.campaign_id;
+        const amount = parseFloat(g.budget_amount) || 0;
+        if (g.status === 'active' && g.budget_type === 'daily' && amount > 0 && titleById[campId] != null) {
+          rows.push(mkRow(g.id, g.title || g.name, campId, titleById[campId], amount));
+        }
+      }
+    }
+    return rows;
+  } catch (e) {
+    console.warn('[whop] live budget fetch failed (serving FB-only):', e.message);
+    return [];
+  }
+}
+
 // Per-campaign spend totals for a range — same shape as /campaign-spend rows.
 export async function whopCampaignSpend(since, until) {
   if (!whopEnabled() || !since || !until) return [];

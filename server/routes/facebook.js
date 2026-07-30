@@ -2,7 +2,7 @@ import { Router } from 'express';
 import fetch from 'node-fetch';
 import fs from 'fs';
 import path from 'path';
-import { whopDailyCampaignRows, whopCampaignSpend } from './whop.js';
+import { whopDailyCampaignRows, whopCampaignSpend, whopLiveBudgetAdsets } from './whop.js';
 
 const router = Router();
 const FB_API = 'https://graph.facebook.com/v19.0';
@@ -786,6 +786,8 @@ router.get('/adsets', async (req, res) => {
           campaignLifetimeBudget: a.campaign?.lifetime_budget,
           optimizationGoal: a.optimization_goal,
         }));
+      // Whop campaigns' real budgets (beta ad_campaigns/ad_groups endpoints)
+      mapped.push(...await whopLiveBudgetAdsets());
       return cachePartialAware(cacheKey, mapped, errStamp() !== stampBefore);
       });
       return res.json(payload);
