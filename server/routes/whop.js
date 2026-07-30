@@ -63,49 +63,6 @@ export async function whopDailyCampaignRows(start, end) {
   }
 }
 
-// Synthetic "adset" rows for the Live Daily Budget cards. Whop's API exposes
-// no budget fields (stats only), so the daily budget is PROXIED by actual
-// spend: max of yesterday's and today's spend per campaign. Self-correcting —
-// a paused campaign spends nothing and drops off within a day, a new one
-// appears the same day. Shape matches /adsets?metadata_only=true rows
-// (dailyBudget in cents, like FB).
-export async function whopLiveBudgetAdsets() {
-  if (!whopEnabled()) return [];
-  try {
-    const today = new Date().toISOString().slice(0, 10);
-    const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-    const report = await whopReport({
-      from: `${yesterday}T00:00:00.000Z`,
-      to: `${today}T23:59:59.999Z`,
-      granularity: 'daily',
-      breakdown: 'campaign',
-    });
-    const rows = [];
-    for (const c of report.breakdown || []) {
-      const maxSpend = Math.max(0, ...(c.granularity || []).map(b => parseFloat(b.spend) || 0));
-      if (!maxSpend) continue;
-      rows.push({
-        id: `whop:${c.id}`,
-        name: `${c.name || ''} (Whop)`,
-        status: 'ACTIVE',
-        effectiveStatus: 'ACTIVE',
-        campaignId: `whop:${c.id}`,
-        campaignName: c.name || '',
-        createdTime: null,
-        dailyBudget: String(Math.round(maxSpend * 100)),
-        lifetimeBudget: null,
-        campaignDailyBudget: null,
-        campaignLifetimeBudget: null,
-        optimizationGoal: 'WHOP_SPEND_PROXY',
-      });
-    }
-    return rows;
-  } catch (e) {
-    console.warn('[whop] live budget fetch failed (serving FB-only):', e.message);
-    return [];
-  }
-}
-
 // Per-campaign spend totals for a range — same shape as /campaign-spend rows.
 export async function whopCampaignSpend(since, until) {
   if (!whopEnabled() || !since || !until) return [];
