@@ -124,7 +124,7 @@ export async function whopLiveBudgetAdsets() {
       const titleById = Object.fromEntries(aboCampaigns.map(c => [c.id, c.title]));
       const groups = await whopList('ad_groups', { ad_campaign_ids: aboCampaigns.map(c => c.id) });
       for (const g of groups) {
-        const campId = g.ad_campaign_id || g.campaign_id;
+        const campId = g.ad_campaign?.id || g.ad_campaign_id || g.campaign_id;
         const amount = parseFloat(g.budget_amount) || 0;
         if (g.status === 'active' && g.budget_type === 'daily' && amount > 0 && titleById[campId] != null) {
           rows.push(mkRow(g.id, g.title || g.name, campId, titleById[campId], amount));
