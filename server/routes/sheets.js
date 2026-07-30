@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { google } from 'googleapis';
 import { fetchDailyInsights } from './facebook.js';
+import { whopDailyCampaignRows } from './whop.js';
 
 const router = Router();
 
@@ -86,6 +87,9 @@ async function buildMonthGrid(year, monthIndex) {
   const rows = await fetchDailyInsights({
     level: 'campaign', start: since, end: until, full: true, bot: true,
   });
+  // Whop-run campaign spend counts too (LSS-only filter below applies by name,
+  // same as FB rows)
+  rows.push(...await whopDailyCampaignRows(since, until));
 
   const grid = {};       // grid[day][state] = spend (LSS + unbranded only — Halo excluded)
   const stateSet = new Set();

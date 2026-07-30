@@ -2,6 +2,7 @@ import { Router } from 'express';
 import fetch from 'node-fetch';
 import fs from 'fs';
 import path from 'path';
+import { whopDailyCampaignRows, whopCampaignSpend } from './whop.js';
 
 const router = Router();
 const FB_API = 'https://graph.facebook.com/v19.0';
@@ -1034,6 +1035,11 @@ router.get('/daily', async (req, res) => {
 
     const payload = await dedupInflight(cacheKey, async () => {
       const result = await fetchDailyInsights({ level, datePreset: date_preset, start, end, date, adIdList, adsetIdList, full });
+      // Spend Sheet path (full campaign-level range) also counts Whop-run
+      // campaigns — spend lives in Whop's agency account, invisible to FB tokens
+      if (full && level === 'campaign' && start && end) {
+        result.push(...await whopDailyCampaignRows(start, end));
+      }
       // Ranges that end before the current month are immutable — cache for 24h
       const curMonthStart = new Date().toISOString().slice(0, 8) + '01';
       const ttl = end && end < curMonthStart ? 24 * 60 * 60 * 1000 : undefined;
@@ -1090,6 +1096,7 @@ router.get('/campaign-spend', async (req, res) => {
         campaign_name: i.campaign_name,
         spend: parseFloat(i.spend) || 0,
       }));
+      result.push(...await whopCampaignSpend(since, until));
       return cachePartialAware(cacheKey, result, errStamp() !== stampBefore);
     });
     res.json(payload);
