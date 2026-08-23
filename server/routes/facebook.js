@@ -202,10 +202,11 @@ function dedupInflight(key, fn) {
 // Clamped to ≥250ms — a mis-set env var (e.g. "10" meaning 10s) must never
 // machine-gun FB at 100 calls/sec (happened 2026-07-25, instant trip).
 const FB_CALL_GAP_MS = Math.max(250, parseInt(process.env.FB_CALL_GAP_MS, 10) || 1000); // ms between consecutive FB API calls
-// Page size for insights queries. Meta scores insights calls by complexity
-// (rows × fields × date range) and every observed code-4 trip happened during
-// heavy 500-row ad-level pages — smaller pages test the size-not-count theory.
-const FB_INSIGHTS_PAGE_SIZE = Math.min(500, Math.max(25, parseInt(process.env.FB_INSIGHTS_PAGE_SIZE, 10) || 250));
+// Page size for insights queries. The Jul-Aug 2026 experiment settled it:
+// trips continued unchanged at 250 rows/page for a month, so FB's code-4
+// throttle keys on CALL COUNT in a burst window, not per-call weight. Bigger
+// pages = fewer calls = smaller bursts, so 500 (FB's max) is optimal.
+const FB_INSIGHTS_PAGE_SIZE = Math.min(500, Math.max(25, parseInt(process.env.FB_INSIGHTS_PAGE_SIZE, 10) || 500));
 const _fbQueue = [];
 let   _fbRunning = false;
 
