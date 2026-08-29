@@ -58,13 +58,22 @@ function extractState(campaignName) {
   return null;
 }
 
-// Remove standalone state-code segments from an ad name so state-specific
-// variants collapse into one base name: "0308-IG SC-1-WA-img" → "0308-IG SC-1-img".
-// Only whole hyphen-delimited segments count — "SC" inside "IG SC" is untouched.
+// Remove state-customization markers from an ad name so state-specific
+// variants collapse into one base name:
+//   "0308-IG SC-1-WA-img"          → "0308-IG SC-1-img"   (hyphen-delimited state)
+//   "0415-Notes 75k PR-1-img LSS OH" → "0415-Notes 75k PR-1-img"  ("LSS <STATE>" pair)
+// Only whole segments/token pairs count — "SC" inside "IG SC" is untouched, and
+// "LSS" without a valid state code after it is left alone.
 function stripStateSegments(adName) {
-  const parts = adName.split('-');
+  // "LSS <STATE>" pair (any separator style) marks a state-customized copy
+  const base = adName
+    .replace(/\s*[-–—]?\s*\bLSS[ _-]([A-Za-z]{2})\b/gi, (m, st) => (US_STATES.has(st.toUpperCase()) ? '' : m))
+    .replace(/\s{2,}/g, ' ')
+    .replace(/[-\s]+$/, '')
+    .trim() || adName;
+  const parts = base.split('-');
   const kept  = parts.filter(p => !US_STATES.has(p.trim().toUpperCase()));
-  return kept.length && kept.length < parts.length ? kept.join('-') : adName;
+  return kept.length && kept.length < parts.length ? kept.join('-') : base;
 }
 
 function fmtDate(iso) {
