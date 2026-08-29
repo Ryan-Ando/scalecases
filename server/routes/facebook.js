@@ -893,8 +893,22 @@ router.get('/ads', async (req, res) => {
     // failed DURING this fetch — a partial payload must not be cached
     const errStampBefore = errStamp();
 
+    // The ads LIST (~16 pages, the heaviest part of this route) is identical
+    // regardless of the insights date range, but it used to ride every cache
+    // key — the lead-cutoff fetch has end=today in its key, so the full list
+    // was re-downloaded twice a day. Cache the list on its own 12h key so
+    // range changes only refetch insights (~half the burst). Force bypasses.
+    const listCacheKey = `adslist:${adset_id || 'all'}`;
+    const fetchAdsList = async () => {
+      const cachedList = req.query.force ? null : cacheGet(listCacheKey);
+      if (cachedList) return cachedList;
+      const listStampBefore = errStamp();
+      const list = await fetchFromAllAccounts('ads', listParams);
+      return cachePartialAware(listCacheKey, list, errStamp() !== listStampBefore, 12 * 60 * 60 * 1000);
+    };
+
     const [ads, insights] = await Promise.all([
-      fetchFromAllAccounts('ads', listParams),
+      fetchAdsList(),
       fetchInsights('ad', date_preset, adset_id ? { adset_id } : {}, timeRange),
     ]);
     const accountFailedDuringFetch = errStamp() !== errStampBefore;
