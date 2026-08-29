@@ -170,8 +170,33 @@ function isThrottled(e) { return THROTTLED_RE.test(e?.message || ''); }
 // fuller cached one: stale-but-complete beats fresh-but-missing-an-account.
 function errStamp() { return JSON.stringify(Object.values(_stats.accountErrors).map(e => e?.ts)); }
 
+// ── Background cache rewarm ──────────────────────────────────────────────────
+// When a payload comes back partial because accounts were rate-limited, the
+// data used to stay stale until the user happened to reload after the cooldown
+// — the user was the retry mechanism. Instead, automatically re-run the fetch
+// once cooldowns clear so fresh data lands in cache before the next view.
+// Max 3 attempts per key; a successful full fetch resets the counter.
+const _rewarms = new Map(); // cacheKey → { timer, tries }
+function scheduleRewarm(cacheKey, fn) {
+  const entry = _rewarms.get(cacheKey) || { timer: null, tries: 0 };
+  if (entry.timer || entry.tries >= 3) return;
+  const active = Object.values(_cooldowns).filter(t => t > Date.now());
+  const until = active.length ? Math.max(...active) : Date.now();
+  const delay = Math.min(75 * 60_000, Math.max(3 * 60_000, until - Date.now() + 2 * 60_000));
+  entry.tries++;
+  entry.timer = setTimeout(async () => {
+    entry.timer = null;
+    try {
+      console.log(`[rewarm] refetching ${cacheKey} (attempt ${entry.tries})`);
+      await dedupInflight(cacheKey, fn);
+    } catch (e) { console.warn(`[rewarm] ${cacheKey} failed:`, e.message); }
+  }, delay);
+  _rewarms.set(cacheKey, entry);
+  console.log(`[rewarm] ${cacheKey} scheduled in ${Math.round(delay / 60000)}m (attempt ${entry.tries})`);
+}
+
 function cachePartialAware(key, data, failedDuringFetch, ttl) {
-  if (!failedDuringFetch) { cacheSet(key, data, ttl); return data; }
+  if (!failedDuringFetch) { cacheSet(key, data, ttl); _rewarms.delete(key); return data; }
   const stale = cacheGetStale(key);
   if (stale && Array.isArray(stale.data) && Array.isArray(data) && stale.data.length > data.length) {
     console.warn(`FB cache ${key}: account failed mid-fetch, serving stale payload (${stale.ageMinutes}m old, ${stale.data.length} rows) over partial (${data.length} rows)`);
@@ -888,7 +913,7 @@ router.get('/ads', async (req, res) => {
     const listParams = { fields: 'id,name,status,effective_status,adset_id,adset{name,status,effective_status},campaign_id,campaign{name},creative{id,name,thumbnail_url},created_time,updated_time' };
     if (adset_id) listParams.filtering = JSON.stringify([{ field: 'adset.id', operator: 'EQUAL', value: adset_id }]);
 
-    const payload = await dedupInflight(cacheKey, async () => {
+    const buildAdsPayload = async (force) => {
     // Snapshot per-account error timestamps so we can tell if any account
     // failed DURING this fetch — a partial payload must not be cached
     const errStampBefore = errStamp();
@@ -900,7 +925,7 @@ router.get('/ads', async (req, res) => {
     // range changes only refetch insights (~half the burst). Force bypasses.
     const listCacheKey = `adslist:${adset_id || 'all'}`;
     const fetchAdsList = async () => {
-      const cachedList = req.query.force ? null : cacheGet(listCacheKey);
+      const cachedList = force ? null : cacheGet(listCacheKey);
       if (cachedList) return cachedList;
       const listStampBefore = errStamp();
       const list = await fetchFromAllAccounts('ads', listParams);
@@ -912,6 +937,9 @@ router.get('/ads', async (req, res) => {
       fetchInsights('ad', date_preset, adset_id ? { adset_id } : {}, timeRange),
     ]);
     const accountFailedDuringFetch = errStamp() !== errStampBefore;
+    // Rate-limited mid-fetch → auto-refetch once cooldowns clear so the cache
+    // heals itself instead of waiting for the user to reload
+    if (accountFailedDuringFetch) scheduleRewarm(cacheKey, () => buildAdsPayload(false));
 
     const insightsMap = Object.fromEntries(insights.map(i => [i.ad_id, i]));
 
@@ -948,6 +976,7 @@ router.get('/ads', async (req, res) => {
     const hasSpend   = merged.some(a => parseFloat(a.spend)   > 0);
     const hasResults = merged.some(a => (a.results || 0)       > 0);
     if (hasSpend && !hasResults) {
+      scheduleRewarm(cacheKey, () => buildAdsPayload(false));
       const stale = cacheGetStale(cacheKey);
       if (stale && Array.isArray(stale.data)) {
         console.warn(`FB ads: insights look throttled, serving stale cache (${stale.ageMinutes}m old)`);
@@ -959,7 +988,8 @@ router.get('/ads', async (req, res) => {
     // query — hold it 24h; the bot's "refresh" command rewarms it on demand
     const ttl = date_preset === 'maximum' && !adset_id && !start ? 24 * 60 * 60 * 1000 : undefined;
     return cachePartialAware(cacheKey, merged, accountFailedDuringFetch, ttl);
-    });
+    };
+    const payload = await dedupInflight(cacheKey, () => buildAdsPayload(req.query.force));
 
     res.json(payload);
   } catch (err) {
