@@ -2,7 +2,17 @@ import { Router } from 'express';
 import fetch from 'node-fetch';
 import fs from 'fs';
 import path from 'path';
+import { HttpsProxyAgent } from 'https-proxy-agent';
 import { whopDailyCampaignRows, whopCampaignSpend, whopLiveBudgetAdsets, whopDebug } from './whop.js';
+
+// Optional dedicated-egress proxy for ALL FB API traffic. Render's shared
+// outbound IPs are pooled across thousands of customers, and Meta throttles
+// by source IP at the infrastructure level — the leading explanation for
+// code-4 "Application request limit reached" with every published usage
+// gauge at 0%. Set FB_PROXY_URL (http://user:pass@host:port) to route FB
+// calls through a clean static IP without touching code.
+const FB_PROXY_AGENT = process.env.FB_PROXY_URL ? new HttpsProxyAgent(process.env.FB_PROXY_URL) : null;
+if (FB_PROXY_AGENT) console.log('[fb] routing FB API traffic through FB_PROXY_URL');
 
 const router = Router();
 const FB_API = 'https://graph.facebook.com/v19.0';
@@ -247,7 +257,7 @@ async function _drainFbQueue() {
   _fbRunning = true;
   while (_fbQueue.length > 0) {
     const { url, resolve, reject } = _fbQueue.shift();
-    try { resolve(await fetch(url)); } catch (e) { reject(e); }
+    try { resolve(await fetch(url, FB_PROXY_AGENT ? { agent: FB_PROXY_AGENT } : {})); } catch (e) { reject(e); }
     if (_fbQueue.length > 0) await new Promise(r => setTimeout(r, FB_CALL_GAP_MS));
   }
   _fbRunning = false;
@@ -568,6 +578,16 @@ function adAccounts() {
     .filter(id => id !== 'act_');
 }
 
+// Keep FB's error code/subcode/trace id in thrown messages — distinguishes
+// app-level (code 4), account-level (17/80004) and insights-specific
+// (subcode 1504022) throttles, and gives Meta support a trace id to look up.
+function fbError(account, error) {
+  const bits = [`code ${error.code ?? '?'}`];
+  if (error.error_subcode) bits.push(`subcode ${error.error_subcode}`);
+  if (error.fbtrace_id) bits.push(`trace ${error.fbtrace_id}`);
+  return new Error(`[${account}] ${error.message} (${bits.join(', ')})`);
+}
+
 // Fetch insights for one account
 async function fetchInsightsForAccount(account, level, datePreset, filters = {}, timeRange = null, src = null) {
   src = src || pickSource(getReadTokenSource());
@@ -601,7 +621,7 @@ async function fetchInsightsForAccount(account, level, datePreset, filters = {},
         pages++;
         captureRateLimit(account, res.headers, src);
         const json = await res.json();
-        if (json.error) { _stats.errors++; throw new Error(`[${account}] ${json.error.message}`); }
+        if (json.error) { _stats.errors++; throw fbError(account, json.error); }
         all.push(...(json.data || []));
         url = json.paging?.next || null;
       }
@@ -623,16 +643,20 @@ async function fetchInsightsRaw(level, datePreset, filters = {}, timeRange = nul
   const srcs = accounts.map((a, i) => spreadSource(getReadTokenSource(), i));
   const settled = await Promise.allSettled(accounts.map((a, i) =>
     withAltRetry(a, srcs[i], s => fetchInsightsForAccount(a, level, datePreset, filters, timeRange, s))));
-  return settled.flatMap((r, i) => {
+  const failedAccounts = [];
+  const rows = settled.flatMap((r, i) => {
     if (r.status === 'rejected') {
       const msg = r.reason?.message || 'unknown error';
       const acct = accounts[i];
       console.warn('FB insights skipped account:', msg);
       if (!r.reason?.noted) noteAccountError(acct, msg, srcs[i]);
+      failedAccounts.push(acct);
       return [];
     }
     return r.value;
   });
+  rows.failedAccounts = failedAccounts; // per-fetch signal (never JSON-serialized)
+  return rows;
 }
 
 // Fetch insights with automatic blacklist date exclusion.
@@ -652,7 +676,9 @@ async function fetchInsights(level, datePreset, filters = {}, timeRange = null, 
     fetchInsightsRaw(level, datePreset, filters, timeRange),
     getBlacklistDeductions(level, filters),
   ]);
-  return applyBlacklistDeductions(rows, deductions);
+  const adjusted = applyBlacklistDeductions(rows, deductions);
+  adjusted.failedAccounts = rows.failedAccounts;
+  return adjusted;
 }
 
 // Fetch a list endpoint (campaigns/adsets/ads) from all accounts and merge — skips accounts that error
@@ -673,7 +699,7 @@ async function fetchFromAllAccounts(path, queryParams) {
           pages++;
           captureRateLimit(account, res.headers, src);
           const json = await res.json();
-          if (json.error) { _stats.errors++; throw new Error(`[${account}] ${json.error.message}`); }
+          if (json.error) { _stats.errors++; throw fbError(account, json.error); }
           all.push(...(json.data || []));
           url = json.paging?.next || null;
         }
@@ -688,16 +714,20 @@ async function fetchFromAllAccounts(path, queryParams) {
       }
     }
   })));
-  return settled.flatMap((r, i) => {
+  const failedAccounts = [];
+  const rows = settled.flatMap((r, i) => {
     if (r.status === 'rejected') {
       const msg = r.reason?.message || 'unknown error';
       const acct = accounts[i];
       console.warn('FB list skipped account:', msg);
       if (!r.reason?.noted) noteAccountError(acct, msg, srcs[i]);
+      failedAccounts.push(acct);
       return [];
     }
     return r.value;
   });
+  rows.failedAccounts = failedAccounts; // per-fetch signal (never JSON-serialized)
+  return rows;
 }
 
 // GET /api/facebook/whop-debug — raw view of the Whop beta endpoints
@@ -914,29 +944,29 @@ router.get('/ads', async (req, res) => {
     if (adset_id) listParams.filtering = JSON.stringify([{ field: 'adset.id', operator: 'EQUAL', value: adset_id }]);
 
     const buildAdsPayload = async (force) => {
-    // Snapshot per-account error timestamps so we can tell if any account
-    // failed DURING this fetch — a partial payload must not be cached
-    const errStampBefore = errStamp();
-
     // The ads LIST (~16 pages, the heaviest part of this route) is identical
     // regardless of the insights date range, but it used to ride every cache
     // key — the lead-cutoff fetch has end=today in its key, so the full list
     // was re-downloaded twice a day. Cache the list on its own 12h key so
     // range changes only refetch insights (~half the burst). Force bypasses.
+    // Partial detection is per-fetch (each fetcher reports which accounts IT
+    // dropped) — the old global errStamp() marked a complete list "partial"
+    // whenever the parallel insights fetch tripped, short-caching the list and
+    // re-downloading all 16 pages every load. That loop kept bursts big.
     const listCacheKey = `adslist:${adset_id || 'all'}`;
     const fetchAdsList = async () => {
       const cachedList = force ? null : cacheGet(listCacheKey);
       if (cachedList) return cachedList;
-      const listStampBefore = errStamp();
       const list = await fetchFromAllAccounts('ads', listParams);
-      return cachePartialAware(listCacheKey, list, errStamp() !== listStampBefore, 12 * 60 * 60 * 1000);
+      return cachePartialAware(listCacheKey, list, (list.failedAccounts || []).length > 0, 12 * 60 * 60 * 1000);
     };
 
     const [ads, insights] = await Promise.all([
       fetchAdsList(),
       fetchInsights('ad', date_preset, adset_id ? { adset_id } : {}, timeRange),
     ]);
-    const accountFailedDuringFetch = errStamp() !== errStampBefore;
+    const accountFailedDuringFetch =
+      (ads.failedAccounts || []).length > 0 || (insights.failedAccounts || []).length > 0;
     // Rate-limited mid-fetch → auto-refetch once cooldowns clear so the cache
     // heals itself instead of waiting for the user to reload
     if (accountFailedDuringFetch) scheduleRewarm(cacheKey, () => buildAdsPayload(false));
@@ -1039,7 +1069,7 @@ async function fetchDailyInsights({ level, datePreset, start, end, date, adIdLis
           pages++;
           captureRateLimit(account, r.headers, dailySource);
           const json = await r.json();
-          if (json.error) { _stats.errors++; throw new Error(`[${account}] ${json.error.message}`); }
+          if (json.error) { _stats.errors++; throw fbError(account, json.error); }
           rows.push(...(json.data || []).map(x => ({ ...x, account })));
           url = json.paging?.next || null;
         }
@@ -1552,7 +1582,7 @@ async function fetchWindowAdsetInsights({ start, end }) {
           pages++;
           captureRateLimit(account, r.headers, windowSource);
           const json = await r.json();
-          if (json.error) { _stats.errors++; throw new Error(`[${account}] ${json.error.message}`); }
+          if (json.error) { _stats.errors++; throw fbError(account, json.error); }
           rows.push(...(json.data || []).map(x => ({ ...x, account })));
           url = json.paging?.next || null;
         }
