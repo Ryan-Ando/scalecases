@@ -426,50 +426,49 @@ export default function Relaunch() {
                 <thead>
                   <tr>
                     <th style={{ ...th, width: 30 }}>#</th>
-                    <th style={{ ...thL, width: 90 }}>Type</th>
                     <th style={thL}>Ad</th>
                     <th style={thL} title="When this ad last ran in this state, and how many leads it got here. 'Never – 0' = never run in this state.">Last used ({rec.state})</th>
-                    <th style={th} title="Leads across ALL states for this client">Leads ttl</th>
-                    <th style={th} title={`CPL in ${rec.state} only`}>CPL here</th>
-                    <th style={th} title="CPL across all states">CPL ttl</th>
-                    <th style={th}>Cases</th>
-                    <th style={thL} title="Other states where this ad produced leads">Proven in</th>
-                    <th style={thL}>Live now in</th>
+                    <th style={th} title="Leads across ALL states for this client">Leads</th>
+                    <th style={th} title="CPL across all states">CPL</th>
+                    <th style={thL}>Why it's here</th>
                     <th style={{ ...th, width: 90 }}>Score</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {rec.candidates.map((c, i) => (
+                  {rec.candidates.map((c, i) => {
+                    const provenStr = (c.provenIn || []).slice(0, 5)
+                      .map((p, idx, arr) => `${p.st} (${p.leads}${idx === arr.length - 1 ? ' leads' : ''})`)
+                      .join(', ');
+                    const why = c.tier === 1
+                      ? <>Never run in {rec.state}. Proven in {provenStr || 'other states'} — {c.totalLeads} leads total{c.totalCpl != null ? <> @ {fmt(c.totalCpl)} CPL</> : null}.{c.cases ? ` ${c.cases} case${c.cases !== 1 ? 's' : ''}.` : ''}</>
+                      : <>Ran in {rec.state} until {c.lastUsedHere ? new Date(c.lastUsedHere).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '?'} — {c.hereLeads} leads here{c.hereCpl != null ? <> @ {fmt(c.hereCpl)}</> : null}. {c.totalLeads} leads total across all states{c.totalCpl != null ? <> @ {fmt(c.totalCpl)}</> : null}.{c.cases ? ` ${c.cases} case${c.cases !== 1 ? 's' : ''}.` : ''}</>;
+                    return (
                     <tr key={c.name} style={{ background: i % 2 ? 'var(--bg)' : 'transparent' }}>
-                      <td style={{ ...td, color: 'var(--text-muted)' }}>{i + 1}</td>
-                      <td style={tdL}>
-                        <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 10, letterSpacing: '0.05em',
+                      <td style={{ ...td, color: 'var(--text-muted)', verticalAlign: 'top' }}>{i + 1}</td>
+                      <td style={{ ...tdL, fontWeight: 600, color: 'var(--text)', minWidth: 200, verticalAlign: 'top' }}>{c.name}</td>
+                      {/* Last used in this state: "Never – 0" or "09/01 – 12" (date – leads here) */}
+                      <td style={{ ...tdL, fontVariantNumeric: 'tabular-nums', verticalAlign: 'top' }} title={c.lastUsedHere ? `Last ran in ${rec.state} on ${new Date(c.lastUsedHere).toLocaleDateString('en-US')} · ${c.hereLeads} leads here` : `Never run in ${rec.state}`}>
+                        {c.usedHere
+                          ? <span style={{ color: '#1d4ed8', fontWeight: 600 }}>{c.lastUsedHere ? new Date(c.lastUsedHere).toLocaleDateString('en-US', { month: '2-digit', day: '2-digit' }) : '?'} – {c.hereLeads}</span>
+                          : <span style={{ color: '#15803d', fontWeight: 600 }}>Never – 0</span>}
+                      </td>
+                      <td style={{ ...td, fontWeight: 700, verticalAlign: 'top' }}>{c.totalLeads}</td>
+                      <td style={{ ...td, verticalAlign: 'top', color: c.totalCpl == null ? 'var(--text-muted)' : c.totalCpl <= 300 ? '#15803d' : c.totalCpl <= 450 ? 'var(--text)' : '#dc2626' }}>
+                        {c.totalCpl == null ? '—' : fmt(c.totalCpl)}
+                      </td>
+                      <td style={{ ...tdL, fontSize: 12, color: 'var(--text)', maxWidth: 460, lineHeight: 1.45 }}>
+                        <span style={{ fontSize: 10, fontWeight: 700, padding: '1px 6px', borderRadius: 10, letterSpacing: '0.05em', marginRight: 7, verticalAlign: 'middle',
                           background: c.tier === 1 ? 'rgba(34,197,94,0.12)' : 'rgba(59,130,246,0.12)',
                           color: c.tier === 1 ? '#15803d' : '#1d4ed8',
                           border: `1px solid ${c.tier === 1 ? '#16a34a' : '#3b82f6'}` }}>
                           {c.tier === 1 ? 'NEW' : 'RELAUNCH'}
                         </span>
+                        {why}
+                        {(c.activeNow || []).length > 0 && (
+                          <span style={{ color: 'var(--text-muted)' }}> Live now in {c.activeNow.join(', ')}.</span>
+                        )}
                       </td>
-                      <td style={{ ...tdL, fontWeight: 600, color: 'var(--text)', minWidth: 220 }}>{c.name}</td>
-                      {/* Last used in this state: "Never – 0" or "09/01 – 12" (date – leads here) */}
-                      <td style={{ ...tdL, fontVariantNumeric: 'tabular-nums' }} title={c.lastUsedHere ? `Last ran in ${rec.state} on ${new Date(c.lastUsedHere).toLocaleDateString('en-US')} · ${c.hereLeads} leads here` : `Never run in ${rec.state}`}>
-                        {c.usedHere
-                          ? <span style={{ color: '#1d4ed8', fontWeight: 600 }}>{c.lastUsedHere ? new Date(c.lastUsedHere).toLocaleDateString('en-US', { month: '2-digit', day: '2-digit' }) : '?'} – {c.hereLeads}</span>
-                          : <span style={{ color: '#15803d', fontWeight: 600 }}>Never – 0</span>}
-                      </td>
-                      <td style={{ ...td, fontWeight: 700 }}>{c.totalLeads}</td>
-                      <td style={{ ...td, color: c.hereCpl == null ? 'var(--text-muted)' : c.hereCpl <= 300 ? '#15803d' : c.hereCpl <= 450 ? 'var(--text)' : '#dc2626' }}>
-                        {c.hereCpl == null ? '—' : fmt(c.hereCpl)}
-                      </td>
-                      <td style={{ ...td, color: c.totalCpl == null ? 'var(--text-muted)' : c.totalCpl <= 300 ? '#15803d' : c.totalCpl <= 450 ? 'var(--text)' : '#dc2626' }}>
-                        {c.totalCpl == null ? '—' : fmt(c.totalCpl)}
-                      </td>
-                      <td style={td}>{c.cases || ''}</td>
-                      <td style={{ ...tdL, fontSize: 11, color: 'var(--text-muted)', maxWidth: 240 }}>
-                        {(c.provenIn || []).slice(0, 5).map(p => `${p.st} ${p.leads}`).join(' · ')}
-                      </td>
-                      <td style={{ ...tdL, fontSize: 11, color: 'var(--text-muted)' }}>{(c.activeNow || []).join(', ')}</td>
-                      <td style={td}>
+                      <td style={{ ...td, verticalAlign: 'top' }}>
                         <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                           <div style={{ width: 48, height: 6, borderRadius: 3, background: 'var(--border)', overflow: 'hidden' }}>
                             <div style={{ width: `${Math.round(c.score * 100)}%`, height: '100%', background: 'var(--green, #16a34a)' }} />
@@ -478,7 +477,8 @@ export default function Relaunch() {
                         </div>
                       </td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
