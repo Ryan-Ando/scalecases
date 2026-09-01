@@ -310,41 +310,47 @@ export default function Relaunch() {
         const usedHere = usage.statesByAd.get(name)?.has(sf.state);
         const cell     = usage.map.get(`${name}|${sf.state}`);
 
+        // Stats split: "here" = the underspending state, "total" = every state
+        // (brand-scoped). Both are shown so the ranking is auditable at a glance.
+        let totalLeads = 0, totalSpend = 0, totalCases = 0;
+        const proven = [];
+        for (const [key, v] of windowAgg) {
+          const [b, n, st] = key.split('|');
+          if (b !== sf.brand || n !== name) continue;
+          totalLeads += v.leads; totalSpend += v.spend;
+          totalCases += caseAgg.get(`${n}|${st}`) || 0;
+          if (st !== sf.state && v.leads > 0) proven.push({ st, leads: v.leads });
+        }
+        const here = windowAgg.get(`${sf.brand}|${name}|${sf.state}`) || { leads: 0, spend: 0 };
+        const hereLeads = here.leads;
+        const hereCpl   = hereLeads > 0 && here.spend > 0 ? here.spend / hereLeads : null;
+        const totalCpl  = totalLeads > 0 && totalSpend > 0 ? totalSpend / totalLeads : null;
+
+        const base = {
+          name,
+          hereLeads, hereCpl,
+          totalLeads, totalCpl,
+          cases: totalCases,
+          lastUsedHere: usedHere ? (cell?.last || null) : null,
+          usedHere: !!usedHere,
+          provenIn: proven.sort((a, b) => b.leads - a.leads),
+          activeNow: [...(usage.activeStatesByAd.get(name) || [])],
+        };
+
         if (!usedHere) {
           // Tier 1 — proven elsewhere, never run in this state
-          let leads = 0, spend = 0, cases = 0;
-          const proven = [];
-          for (const [key, v] of windowAgg) {
-            const [b, n, st] = key.split('|');
-            if (b !== sf.brand || n !== name || st === sf.state) continue;
-            leads += v.leads; spend += v.spend;
-            cases += caseAgg.get(`${n}|${st}`) || 0;
-            if (v.leads > 0) proven.push({ st, leads: v.leads });
-          }
-          if (leads < minLeads) continue;
-          const cpl = leads > 0 && spend > 0 ? spend / leads : null;
-          candidates.push({
-            name, tier: 1, leads, cpl, cases, spend,
-            provenIn: proven.sort((a, b) => b.leads - a.leads),
-            activeNow: [...(usage.activeStatesByAd.get(name) || [])],
-            score: scoreCandidate({ leads, cpl, cases }),
-          });
+          const otherLeads = totalLeads - hereLeads;
+          const otherSpend = totalSpend - here.spend;
+          if (otherLeads < minLeads) continue;
+          const otherCpl = otherLeads > 0 && otherSpend > 0 ? otherSpend / otherLeads : null;
+          candidates.push({ ...base, tier: 1, score: scoreCandidate({ leads: otherLeads, cpl: otherCpl, cases: totalCases }) });
         } else {
-          // Tier 2 — ran here before, dormant past the threshold, did well
+          // Tier 2 — ran here before, dormant past the threshold, did well here
           if (cell?.active) continue;
           if (!cell?.last || new Date(cell.last).getTime() >= dormantCutoff) continue;
-          const v = windowAgg.get(`${sf.brand}|${name}|${sf.state}`);
-          const leads = v?.leads || 0;
-          if (leads < minLeads) continue;
-          const spend = v?.spend || 0;
-          const cases = caseAgg.get(`${name}|${sf.state}`) || 0;
-          const cpl = leads > 0 && spend > 0 ? spend / leads : null;
-          candidates.push({
-            name, tier: 2, leads, cpl, cases, spend,
-            lastUsed: cell.last,
-            activeNow: [...(usage.activeStatesByAd.get(name) || [])],
-            score: scoreCandidate({ leads, cpl, cases }),
-          });
+          if (hereLeads < minLeads) continue;
+          const hereCases = caseAgg.get(`${name}|${sf.state}`) || 0;
+          candidates.push({ ...base, tier: 2, score: scoreCandidate({ leads: hereLeads, cpl: hereCpl, cases: hereCases }) });
         }
       }
       candidates.sort((a, b) => a.tier - b.tier || b.score - a.score);
@@ -384,7 +390,8 @@ export default function Relaunch() {
       </div>
       <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 18 }}>
         Underspend comes from the Spend Sheet pacing config · performance window since {LEAD_CUTOFF} · ranked by leads, then CPL, then cases ·
-        <strong> NEW</strong> = proven in other states, never run there · <strong>RELAUNCH</strong> = did well there, dormant ≥{reuseMonths} mo
+        <strong> NEW</strong> = never run in that state (proven elsewhere) · <strong>RELAUNCH</strong> = did well there, dormant ≥{reuseMonths} mo ·
+        "Last used" shows <strong>Never – 0</strong> or <strong>date – leads it got in that state</strong>
       </div>
 
       {error && <div style={{ fontSize: 12, color: '#dc2626', padding: '10px 14px', background: 'rgba(220,38,38,0.06)', border: '1px solid #dc2626', borderRadius: 8, marginBottom: 14 }}>{error}</div>}
@@ -421,11 +428,12 @@ export default function Relaunch() {
                     <th style={{ ...th, width: 30 }}>#</th>
                     <th style={{ ...thL, width: 90 }}>Type</th>
                     <th style={thL}>Ad</th>
-                    <th style={th}>Leads</th>
-                    <th style={th}>CPL</th>
+                    <th style={thL} title="When this ad last ran in this state, and how many leads it got here. 'Never – 0' = never run in this state.">Last used ({rec.state})</th>
+                    <th style={th} title="Leads across ALL states for this client">Leads ttl</th>
+                    <th style={th} title={`CPL in ${rec.state} only`}>CPL here</th>
+                    <th style={th} title="CPL across all states">CPL ttl</th>
                     <th style={th}>Cases</th>
-                    <th style={th}>Spend</th>
-                    <th style={thL}>Evidence</th>
+                    <th style={thL} title="Other states where this ad produced leads">Proven in</th>
                     <th style={thL}>Live now in</th>
                     <th style={{ ...th, width: 90 }}>Score</th>
                   </tr>
@@ -443,16 +451,22 @@ export default function Relaunch() {
                         </span>
                       </td>
                       <td style={{ ...tdL, fontWeight: 600, color: 'var(--text)', minWidth: 220 }}>{c.name}</td>
-                      <td style={{ ...td, fontWeight: 700 }}>{c.leads}</td>
-                      <td style={{ ...td, color: c.cpl == null ? 'var(--text-muted)' : c.cpl <= 300 ? '#15803d' : c.cpl <= 450 ? 'var(--text)' : '#dc2626' }}>
-                        {c.cpl == null ? '—' : fmt(c.cpl)}
+                      {/* Last used in this state: "Never – 0" or "09/01 – 12" (date – leads here) */}
+                      <td style={{ ...tdL, fontVariantNumeric: 'tabular-nums' }} title={c.lastUsedHere ? `Last ran in ${rec.state} on ${new Date(c.lastUsedHere).toLocaleDateString('en-US')} · ${c.hereLeads} leads here` : `Never run in ${rec.state}`}>
+                        {c.usedHere
+                          ? <span style={{ color: '#1d4ed8', fontWeight: 600 }}>{c.lastUsedHere ? new Date(c.lastUsedHere).toLocaleDateString('en-US', { month: '2-digit', day: '2-digit' }) : '?'} – {c.hereLeads}</span>
+                          : <span style={{ color: '#15803d', fontWeight: 600 }}>Never – 0</span>}
+                      </td>
+                      <td style={{ ...td, fontWeight: 700 }}>{c.totalLeads}</td>
+                      <td style={{ ...td, color: c.hereCpl == null ? 'var(--text-muted)' : c.hereCpl <= 300 ? '#15803d' : c.hereCpl <= 450 ? 'var(--text)' : '#dc2626' }}>
+                        {c.hereCpl == null ? '—' : fmt(c.hereCpl)}
+                      </td>
+                      <td style={{ ...td, color: c.totalCpl == null ? 'var(--text-muted)' : c.totalCpl <= 300 ? '#15803d' : c.totalCpl <= 450 ? 'var(--text)' : '#dc2626' }}>
+                        {c.totalCpl == null ? '—' : fmt(c.totalCpl)}
                       </td>
                       <td style={td}>{c.cases || ''}</td>
-                      <td style={{ ...td, color: 'var(--text-muted)' }}>{fmt(c.spend)}</td>
-                      <td style={{ ...tdL, fontSize: 11, color: 'var(--text-muted)', maxWidth: 260 }}>
-                        {c.tier === 1
-                          ? (c.provenIn || []).slice(0, 5).map(p => `${p.st} ${p.leads}`).join(' · ')
-                          : `ran here until ${c.lastUsed ? new Date(c.lastUsed).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '?'}`}
+                      <td style={{ ...tdL, fontSize: 11, color: 'var(--text-muted)', maxWidth: 240 }}>
+                        {(c.provenIn || []).slice(0, 5).map(p => `${p.st} ${p.leads}`).join(' · ')}
                       </td>
                       <td style={{ ...tdL, fontSize: 11, color: 'var(--text-muted)' }}>{(c.activeNow || []).join(', ')}</td>
                       <td style={td}>
