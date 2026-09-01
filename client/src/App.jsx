@@ -3,17 +3,15 @@ import './App.css';
 import LoginGate from './LoginGate.jsx';
 import AdsTracking from './AdsTracking.jsx';
 import SpendSheet from './SpendSheet.jsx';
-import StateVariations from './StateVariations.jsx';
-import CplTracker from './CplTracker.jsx';
-import LeadReports from './LeadReports.jsx';
-import AngleMatrix from './AngleMatrix.jsx';
-import KillAnalysis from './KillAnalysis.jsx';
+import Relaunch from './Relaunch.jsx';
 
 function Logo() {
   return <img src="/logo.png" width="32" height="32" style={{ borderRadius: 8, display: 'block' }} alt="Scale Cases" />;
 }
 
-const TABS = ['Ads Tracking', 'Kill Analysis', 'Angle Matrix', 'Spend Sheet', 'State Variations', 'CPL Tracker', 'Lead Reports'];
+// Only the tabs in active use — Kill Analysis, Angle Matrix, State Variations,
+// CPL Tracker and Lead Reports are hidden (components still exist in the repo)
+const TABS = ['Ads Tracking', 'Spend Sheet', 'Relaunch'];
 
 function logout() {
   localStorage.removeItem('sc_auth_token');
@@ -22,12 +20,18 @@ function logout() {
 
 // Lazy-mount: components mount on first visit and stay mounted (preserves state + ongoing work)
 export default function App() {
-  const [tab, setTab] = useState('Ads Tracking');
-  const [mounted, setMounted] = useState(new Set(['Ads Tracking']));
+  // Reopen on whatever tab was last active (falls back to Ads Tracking)
+  const initialTab = (() => {
+    const saved = localStorage.getItem('activeTab');
+    return TABS.includes(saved) ? saved : 'Ads Tracking';
+  })();
+  const [tab, setTab] = useState(initialTab);
+  const [mounted, setMounted] = useState(new Set([initialTab]));
 
   function switchTab(t) {
     setMounted(m => new Set([...m, t]));
     setTab(t);
+    localStorage.setItem('activeTab', t);
   }
 
   const show = t => ({ display: tab === t ? 'block' : 'none' });
@@ -61,13 +65,9 @@ export default function App() {
         </button>
       </header>
       <main className="content" style={{ padding: 0, boxSizing: 'border-box', minWidth: 0, overflow: 'clip' }}>
-        {mounted.has('Ads Tracking')     && <div style={show('Ads Tracking')}><AdsTracking /></div>}
-        {mounted.has('Kill Analysis')    && <div style={show('Kill Analysis')}><KillAnalysis /></div>}
-        {mounted.has('Angle Matrix')     && <div style={show('Angle Matrix')}><AngleMatrix /></div>}
-        {mounted.has('Spend Sheet')      && <div style={show('Spend Sheet')}><SpendSheet /></div>}
-        {mounted.has('State Variations') && <div style={show('State Variations')}><StateVariations /></div>}
-        {mounted.has('CPL Tracker')      && <div style={show('CPL Tracker')}><CplTracker /></div>}
-        {mounted.has('Lead Reports')     && <div style={show('Lead Reports')}><LeadReports /></div>}
+        {mounted.has('Ads Tracking') && <div style={show('Ads Tracking')}><AdsTracking /></div>}
+        {mounted.has('Spend Sheet')  && <div style={show('Spend Sheet')}><SpendSheet /></div>}
+        {mounted.has('Relaunch')     && <div style={show('Relaunch')}><Relaunch /></div>}
       </main>
       <footer style={{ textAlign: 'center', padding: '12px 0', fontSize: 11, color: 'var(--text-muted)', borderTop: '1px solid var(--border)' }}>
         <a href="/privacy-policy.html" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--text-muted)', textDecoration: 'underline' }}>
