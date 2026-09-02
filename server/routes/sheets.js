@@ -188,21 +188,25 @@ async function pushSpendToSheet({ year, monthIndex, tabName, preview = false }) 
     throw new Error(`No header row with state codes found in "${resolvedTab}".`);
   }
 
-  // 2. Build colByState from the header row (0-based column index). Take ONLY the
-  //    first contiguous block of state-code columns — any duplicate state block
-  //    further right (totals strip, summary section) is ignored.
+  // 2. Build colByState from the header row (0-based column index). The whole
+  //    row is scanned; header cells that aren't a recognizable LSS state column
+  //    (blank, "Date"/"Total" labels, =AI() formulas, other brands, junk) are
+  //    SKIPPED and reported — never fatal, and never a reason to stop scanning.
+  //    Only the FIRST occurrence of each state is writable, so any duplicate
+  //    state block further right (totals strip, summary section) stays ignored.
   const colByState = {};
+  const skippedColumns = [];
   const headerCells = rows[headerRowIdx] || [];
-  let runStarted = false;
   for (let c = 0; c < headerCells.length; c++) {
     const key = parseHeaderCell(headerCells[c]);
     if (key) {
-      runStarted = true;
       if (colByState[key] == null) colByState[key] = c;
-    } else if (runStarted) {
-      break; // end of first state-code block — ignore any later blocks
+    } else {
+      const raw = String(headerCells[c] || '').trim();
+      if (raw) skippedColumns.push(`${colLetter(c + 1)}="${raw.slice(0, 50)}"`);
     }
   }
+  if (skippedColumns.length) console.warn(`[spend-push] skipped unrecognized header columns: ${skippedColumns.join(' · ')}`);
 
   // 3. Build rowByDay by scanning rows BELOW the header for a day-parseable cell.
   //    Stops at the first row that has no day in any column (covers a TOTALS row).
@@ -265,6 +269,7 @@ async function pushSpendToSheet({ year, monthIndex, tabName, preview = false }) 
       nonZeroWrites: nonZero.length,
       sample,
       skippedStates: [...skippedStates],
+      skippedColumns,
     };
   }
 
@@ -288,6 +293,7 @@ async function pushSpendToSheet({ year, monthIndex, tabName, preview = false }) 
     statesMatched: Object.keys(colByState).length,
     daysMatched: Object.keys(rowByDay).length,
     skippedStates: [...skippedStates],
+    skippedColumns,
     sample,
     colByState,
     rowByDay,
