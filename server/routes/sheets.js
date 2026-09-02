@@ -336,24 +336,8 @@ router.post('/push-spend', async (req, res) => {
   }
 });
 
-// Daily auto-push of the current month at ~06:15 ET. Same minute-tick pattern used by hyros.
-let _lastSpendPushDate = '';
-function runSpendPushSchedule() {
-  if (!spendSheetId()) return; // skip silently if not configured
-  const now = new Date();
-  const fmt = (key, opts) => new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', ...opts }).format(now);
-  const hh = parseInt(fmt('h', { hour: 'numeric', hour12: false }), 10);
-  const mm = parseInt(fmt('m', { minute: 'numeric' }), 10);
-  const todayET = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(now);
-  if (hh === 6 && mm === 15 && todayET !== _lastSpendPushDate) {
-    _lastSpendPushDate = todayET;
-    const [y, m] = todayET.split('-').map(n => parseInt(n, 10));
-    pushSpendToSheet({ year: y, monthIndex: m - 1 })
-      .then(r => console.log(`[spend-push] daily push OK — ${r.tab}: ${r.updated} cells (${r.statesMatched} states × ${r.daysMatched} days)${r.skippedStates?.length ? ` · skipped: ${r.skippedStates.join(',')}` : ''}`))
-      .catch(e => console.error('[spend-push] daily push failed:', e.message));
-  }
-}
-setInterval(runSpendPushSchedule, 60 * 1000);
+// The daily 06:15 ET auto-push was removed 2026-09-02 (user request) — the
+// sheet is only written via the manual Push to Sheet / Preview buttons now.
 
 function getSheetConfig() {
   return {

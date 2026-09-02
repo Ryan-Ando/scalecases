@@ -1,6 +1,5 @@
 import { useState } from 'react';
 import './App.css';
-import LoginGate from './LoginGate.jsx';
 import AdsTracking from './AdsTracking.jsx';
 import SpendSheet from './SpendSheet.jsx';
 import Relaunch from './Relaunch.jsx';
@@ -12,11 +11,6 @@ function Logo() {
 // Only the tabs in active use — Kill Analysis, Angle Matrix, State Variations,
 // CPL Tracker and Lead Reports are hidden (components still exist in the repo)
 const TABS = ['Ads Tracking', 'Spend Sheet', 'Relaunch'];
-
-function logout() {
-  localStorage.removeItem('sc_auth_token');
-  window.location.reload();
-}
 
 // Lazy-mount: components mount on first visit and stay mounted (preserves state + ongoing work)
 export default function App() {
@@ -37,7 +31,6 @@ export default function App() {
   const show = t => ({ display: tab === t ? 'block' : 'none' });
 
   return (
-    <LoginGate>
     <div className="app">
       <header className="header">
         <div className="header-brand"><Logo /> Scale Cases</div>
@@ -57,12 +50,6 @@ export default function App() {
         >
           ● Meta API · ads_read · system user token (S2S)
         </span>
-        <button
-          onClick={logout}
-          style={{ marginLeft: 8, fontSize: 12, padding: '5px 12px', background: 'none', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text-muted)', cursor: 'pointer', whiteSpace: 'nowrap' }}
-        >
-          Log out
-        </button>
       </header>
       <main className="content" style={{ padding: 0, boxSizing: 'border-box', minWidth: 0, overflow: 'clip' }}>
         {mounted.has('Ads Tracking') && <div style={show('Ads Tracking')}><AdsTracking /></div>}
@@ -79,6 +66,5 @@ export default function App() {
         </a>
       </footer>
     </div>
-    </LoginGate>
   );
 }
