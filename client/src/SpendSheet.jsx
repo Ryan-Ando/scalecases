@@ -299,6 +299,9 @@ export default function SpendSheet() {
       for (const st of Object.keys(detailMap)) {
         detailMap[st].sort((a, b) => b.spend - a.spend);
       }
+      // A configured state with NO spend rows means $0 spent, not "unknown" —
+      // otherwise a fully-budgeted state with nothing live never shows a shortfall
+      for (const [st] of entries) if (spendMap[st] == null) spendMap[st] = 0;
       setPacingSpend(spendMap);
       setPacingSpendDetail(detailMap);
     } catch (e) {
@@ -355,7 +358,9 @@ export default function SpendSheet() {
       const remaining   = (totalBudget != null && totalBudget > 0 && spentToDate != null) ? Math.max(0, totalBudget - spentToDate) : null;
       const dailyNeeded = (remaining != null && dl != null && dl > 0) ? remaining / dl : (dl === 0 && remaining != null ? remaining : null);
       const liveBudget  = budgetByState[st] || null;
-      const shortfall   = (dailyNeeded != null && liveBudget != null) ? dailyNeeded - liveBudget : null;
+      // No live budget = $0/day live, so the whole daily need is the shortfall —
+      // a budgeted state with nothing running must show as underspending
+      const shortfall   = dailyNeeded != null ? dailyNeeded - (liveBudget || 0) : null;
       return { st, totalBudget, startDate, endDate, months, daysLeft: dl, spentToDate, remaining, dailyNeeded, liveBudget, shortfall };
     });
   }, [pacingStates, pacing, pacingSpend, budgetByState]);

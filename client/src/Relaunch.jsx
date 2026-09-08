@@ -175,6 +175,9 @@ export default function Relaunch() {
           const group = `${extractBrand(r.campaign_name)} ${st}`;
           if (groupsForDate.has(group)) spend[group] = (spend[group] || 0) + (r.spend || 0);
         }
+        // Configured groups with no spend rows have spent $0 — they must still
+        // surface as underspending (full budget remaining)
+        for (const g of groupsForDate) if (spend[g] == null) spend[g] = 0;
       }
       setPacingSpend(spend);
       setLoadedAt(Date.now());

@@ -1115,18 +1115,24 @@ router.get('/daily', async (req, res) => {
     const cached = cacheGet(cacheKey);
     if (cached) return res.json(cached);
 
-    const payload = await dedupInflight(cacheKey, async () => {
+    const buildDailyPayload = async () => {
       const result = await fetchDailyInsights({ level, datePreset: date_preset, start, end, date, adIdList, adsetIdList, full });
+      const failed = result.failedAccounts || [];
+      if (failed.length && failed.length >= adAccounts().length) {
+        throw new Error(`all ad accounts are rate-limit cooling — daily fetch skipped (${failed.length} accounts)`);
+      }
       // Spend Sheet path (full campaign-level range) also counts Whop-run
       // campaigns — spend lives in Whop's agency account, invisible to FB tokens
       if (full && level === 'campaign' && start && end) {
         result.push(...await whopDailyCampaignRows(start, end));
       }
+      if (failed.length) scheduleRewarm(cacheKey, buildDailyPayload);
       // Ranges that end before the current month are immutable — cache for 24h
       const curMonthStart = new Date().toISOString().slice(0, 8) + '01';
       const ttl = end && end < curMonthStart ? 24 * 60 * 60 * 1000 : undefined;
-      return cachePartialAware(cacheKey, result, (result.failedAccounts || []).length > 0, ttl);
-    });
+      return cachePartialAware(cacheKey, result, failed.length > 0, ttl);
+    };
+    const payload = await dedupInflight(cacheKey, buildDailyPayload);
     res.json(payload);
   } catch (err) {
     const stale = isThrottled(err) ? cacheGetStale(cacheKey) : null;
@@ -1169,18 +1175,26 @@ router.get('/campaign-spend', async (req, res) => {
     const cached = req.query.force ? null : cacheGet(cacheKey);
     if (cached) return res.json(cached);
 
-    const payload = await dedupInflight(cacheKey, async () => {
-      const stampBefore = errStamp();
+    const buildSpendPayload = async () => {
       // Spend tracker always gets full accurate data — blacklist bypass intentional
       const insights = await fetchInsights('campaign', null, {}, { since, until }, true);
+      const failed = insights.failedAccounts || [];
+      // Every FB account skipped → the payload would be just the Whop row and
+      // pacing would silently blank out. Throw (throttle-flavored) so the
+      // route serves stale or returns an HONEST error the UI can show.
+      if (failed.length && failed.length >= adAccounts().length) {
+        throw new Error(`all ad accounts are rate-limit cooling — spend fetch skipped (${failed.length} accounts)`);
+      }
       const result = insights.map(i => ({
         campaign_id: i.campaign_id,
         campaign_name: i.campaign_name,
         spend: parseFloat(i.spend) || 0,
       }));
       result.push(...await whopCampaignSpend(since, until));
-      return cachePartialAware(cacheKey, result, errStamp() !== stampBefore);
-    });
+      if (failed.length) scheduleRewarm(cacheKey, buildSpendPayload);
+      return cachePartialAware(cacheKey, result, failed.length > 0);
+    };
+    const payload = await dedupInflight(cacheKey, buildSpendPayload);
     res.json(payload);
   } catch (err) {
     const stale = isThrottled(err) ? cacheGetStale(cacheKey) : null;
