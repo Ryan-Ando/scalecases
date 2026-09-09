@@ -79,3 +79,26 @@ test('concurrent shared downloads execute once and can retry after rejection', a
   await vm.runInContext('dedupInflight("list", work)', ctx);
   assert.equal(calls, 2);
 });
+
+test('an app cooldown encountered during pagination is not retried as a transient failure', async () => {
+  let calls = 0, retries = 0;
+  const message = '[act_758516163121709] APP-WIDE rate-limit cooldown (15m left) ? call skipped';
+  const ctx = vm.createContext({
+    URLSearchParams, FB_API: 'https://example.invalid', INSIGHTS_FIELDS: 'spend',
+    FB_INSIGHTS_PAGE_SIZE: 500, tokenFor: () => 'test',
+    assertAccountAvailable: () => {},
+    fbFetch: async () => { calls++; throw Error(message); },
+    console: { warn: () => {} },
+    setTimeout: fn => { retries++; fn(); },
+  });
+  vm.runInContext(source.match(/const RATE_LIMIT_RE = .*;/)[0], ctx);
+  vm.runInContext(source.match(/function isRateLimitError\(e\) \{[^\n]+/)[0], ctx);
+  const start = source.indexOf('async function fetchInsightsForAccount(');
+  const end = source.indexOf('// Fetch insights from all accounts', start);
+  vm.runInContext(source.slice(start, end), ctx);
+  await assert.rejects(vm.runInContext('fetchInsightsForAccount("act_758516163121709", "ad", "maximum", {}, null, "primary")', ctx), /call skipped/);
+  assert.equal(calls, 1);
+  assert.equal(retries, 0);
+  ctx.error = Error('An unknown error occurred');
+  assert.equal(vm.runInContext('isRateLimitError(error)', ctx), false);
+});

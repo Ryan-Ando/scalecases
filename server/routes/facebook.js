@@ -533,7 +533,7 @@ async function tokenAppInfo() {
 // breaker for the whole token source, not just the account that reported it.
 // Repeat strikes escalate 15m → 60m (a rolling hourly window can't recover
 // in 15-minute gaps).
-const RATE_LIMIT_RE = /request limit|too many calls|rate limit/i;
+const RATE_LIMIT_RE = /request limit|too many calls|rate.?limit|call skipped/i;
 const _cooldowns = {};  // 'acct:<id>' | 'app:primary' | 'app:bot' → until-ts
 const _strikes = {};    // same keys → { count, last }
 
