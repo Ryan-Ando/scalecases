@@ -20,6 +20,7 @@ const PORT = process.env.PORT || 3001;
 
 app.use(cors({
   origin: process.env.CLIENT_URL || 'http://localhost:5173',
+  exposedHeaders: ['X-Stale-Minutes', 'X-FB-Failed-Accounts'],
 }));
 app.use(express.json({ limit: '30mb' }));
 app.use(express.urlencoded({ extended: true, limit: '30mb' }));

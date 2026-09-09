@@ -151,6 +151,11 @@ function cacheGet(key) {
   // data when FB is rate-limited — a stale number beats an error page.
   if (Date.now() - entry.ts > (entry.ttl ?? CACHE_TTL)) return null;
   _stats.cacheHits++;
+  if (entry.partial && Array.isArray(entry.data)) {
+    const partial = [...entry.data];
+    partial.failedAccounts = entry.failedAccounts || adAccounts();
+    return partial;
+  }
   return entry.data;
 }
 function cacheGetStale(key) {
@@ -167,6 +172,12 @@ function cacheSet(key, data, ttl) {
     }
   }
   scheduleCacheSave();
+}
+
+function sendCachedPayload(res, payload) {
+  if (payload.failedAccounts?.length) res.set('X-FB-Failed-Accounts', payload.failedAccounts.join(','));
+  if (payload.staleAgeMinutes != null) res.set('X-Stale-Minutes', String(payload.staleAgeMinutes));
+  return res.json(payload);
 }
 
 // Matches both real FB throttle errors and our own breaker's "call skipped"
@@ -206,15 +217,26 @@ function scheduleRewarm(cacheKey, fn) {
 }
 
 function cachePartialAware(key, data, failedDuringFetch, ttl) {
-  if (!failedDuringFetch) { cacheSet(key, data, ttl); _rewarms.delete(key); return data; }
-  const stale = cacheGetStale(key);
-  if (stale && Array.isArray(stale.data) && Array.isArray(data) && stale.data.length > data.length) {
-    console.warn(`FB cache ${key}: account failed mid-fetch, serving stale payload (${stale.ageMinutes}m old, ${stale.data.length} rows) over partial (${data.length} rows)`);
-    return stale.data;
+  if (!failedDuringFetch) {
+    cacheSet(key, data, ttl);
+    const rewarm = _rewarms.get(key);
+    if (rewarm?.timer) clearTimeout(rewarm.timer);
+    _rewarms.delete(key);
+    return data;
   }
-  // Partial but no fuller fallback — short-cache so a throttled account
-  // isn't hammered by refetch loops, without poisoning clients for hours
+  const stale = cacheGetStale(key);
+  // Equal row counts do not imply complete metrics: metadata can succeed
+  // while an entire account's insights fail. Keep the last good snapshot.
+  if (stale && !_cache.get(key)?.partial && Array.isArray(stale.data) && Array.isArray(data)) {
+    const fallback = [...stale.data];
+    fallback.failedAccounts = data.failedAccounts || adAccounts();
+    fallback.staleAgeMinutes = stale.ageMinutes;
+    return fallback;
+  }
   cacheSet(key, data, 10 * 60 * 1000);
+  _cache.get(key).partial = true;
+  _cache.get(key).failedAccounts = data.failedAccounts || adAccounts();
+  data.failedAccounts = _cache.get(key).failedAccounts;
   return data;
 }
 
@@ -243,11 +265,12 @@ const FB_CALL_GAP_MS = Math.max(250, parseInt(process.env.FB_CALL_GAP_MS, 10) ||
 // pages = fewer calls = smaller bursts, so 500 (FB's max) is optimal.
 const FB_INSIGHTS_PAGE_SIZE = Math.min(500, Math.max(25, parseInt(process.env.FB_INSIGHTS_PAGE_SIZE, 10) || 500));
 const _fbQueue = [];
-let   _fbRunning = false;
+let _fbRunning = false;
+let _fbNextCallAt = 0;
 
-function fbFetch(url) {
+function fbFetch(url, account, source) {
   return new Promise((resolve, reject) => {
-    _fbQueue.push({ url, resolve, reject });
+    _fbQueue.push({ url, account, source, resolve, reject });
     _drainFbQueue();
   });
 }
@@ -255,15 +278,39 @@ function fbFetch(url) {
 async function _drainFbQueue() {
   if (_fbRunning) return;
   _fbRunning = true;
-  while (_fbQueue.length > 0) {
-    const { url, resolve, reject } = _fbQueue.shift();
-    try { resolve(await fetch(url, FB_PROXY_AGENT ? { agent: FB_PROXY_AGENT } : {})); } catch (e) { reject(e); }
-    if (_fbQueue.length > 0) await new Promise(r => setTimeout(r, FB_CALL_GAP_MS));
-  }
-  _fbRunning = false;
+  try {
+    while (_fbQueue.length > 0) {
+      const { url, account, source, resolve, reject } = _fbQueue.shift();
+      try {
+        assertAccountAvailable(account, source);
+        const delay = _fbNextCallAt - Date.now();
+        if (delay > 0) await new Promise(r => setTimeout(r, delay));
+        assertAccountAvailable(account, source);
+        _stats.callCount++;
+        try {
+          const response = await fetch(url, FB_PROXY_AGENT ? { agent: FB_PROXY_AGENT } : {});
+          captureRateLimit(account, response.headers, source);
+          // Process errors before advancing the queue, so queued pages cannot
+          // slip through while the caller is still decoding the response.
+          const body = await response.json();
+          response.json = async () => body;
+          if (body?.error) {
+            _stats.errors++;
+            const error = fbError(account, body.error);
+            noteAccountError(account, error.message, source);
+            error.noted = true;
+            throw error;
+          }
+          resolve(response);
+        } finally {
+          // Retain the deadline across idle periods, including pagination gaps.
+          _fbNextCallAt = Date.now() + FB_CALL_GAP_MS;
+        }
+      } catch (error) { reject(error); }
+    }
+  } finally { _fbRunning = false; }
 }
 
-// ── API usage stats tracker ──────────────────────────────────────────────────
 const _stats = {
   callCount: 0,     // total real FB API calls (not cache hits)
   cacheHits: 0,     // served from cache
@@ -276,7 +323,6 @@ const _stats = {
 };
 
 function recordCall(account, path, pages) {
-  _stats.callCount++;
   const entry = { ts: Date.now(), account, path, pages };
   _stats.recentCalls.unshift(entry);
   if (_stats.recentCalls.length > 100) _stats.recentCalls.length = 100;
@@ -549,7 +595,7 @@ async function withAltRetry(account, src, fn) {
     const alt = src === 'primary' ? 'bot' : 'primary';
     const throttled = isRateLimitError(e) || /call skipped/.test(e?.message || '');
     if (!throttled || !process.env.FB_WRITE_TOKEN || appCooling(alt)) throw e;
-    noteAccountError(account, e.message, src);
+    if (!e.noted) noteAccountError(account, e.message, src);
     if (Date.now() - _lastAltRetry < 90_000) {
       console.warn(`[alt-retry] ${account} hit limit on ${src} app — rescue gate closed, serving stale instead`);
       e.noted = true;
@@ -560,7 +606,7 @@ async function withAltRetry(account, src, fn) {
     try {
       return await fn(alt);
     } catch (e2) {
-      noteAccountError(account, e2.message, alt);
+      if (!e2.noted) noteAccountError(account, e2.message, alt);
       e2.noted = true;
       throw e2;
     }
@@ -617,7 +663,7 @@ async function fetchInsightsForAccount(account, level, datePreset, filters = {},
       let url = `${FB_API}/${account}/insights?${params}`;
       let pages = 0;
       while (url) {
-        const res = await fbFetch(url);
+        const res = await fbFetch(url, account, src);
         pages++;
         captureRateLimit(account, res.headers, src);
         const json = await res.json();
@@ -695,7 +741,7 @@ async function fetchFromAllAccounts(path, queryParams) {
         let url = `${FB_API}/${account}/${path}?${new URLSearchParams({ ...queryParams, access_token: tokenFor(src), limit })}`;
         let pages = 0;
         while (url) {
-          const res = await fbFetch(url);
+          const res = await fbFetch(url, account, src);
           pages++;
           captureRateLimit(account, res.headers, src);
           const json = await res.json();
@@ -741,7 +787,7 @@ router.get('/campaigns', async (req, res) => {
   const cacheKey = `campaigns:${date_preset||''}:${start||''}:${end||''}`;
   try {
     const cached = req.query.force ? null : cacheGet(cacheKey);
-    if (cached) return res.json(cached);
+    if (cached) return sendCachedPayload(res, cached);
 
     const timeRange = start && end ? { since: start, until: end } : null;
 
@@ -782,7 +828,7 @@ router.get('/campaigns', async (req, res) => {
 
     return cachePartialAware(cacheKey, merged, errStamp() !== stampBefore);
     });
-    res.json(payload);
+    sendCachedPayload(res, payload);
   } catch (err) {
     const stale = isThrottled(err) ? cacheGetStale(cacheKey) : null;
     if (stale) {
@@ -819,7 +865,7 @@ router.get('/adsets', async (req, res) => {
     : `adsets:${campaign_id||''}:${date_preset||''}:${start||''}:${end||''}`;
   try {
     const cached = req.query.force ? null : cacheGet(cacheKey);
-    if (cached) return res.json(cached);
+    if (cached) return sendCachedPayload(res, cached);
     const timeRange = start && end ? { since: start, until: end } : null;
 
     const listParams = { fields: 'id,name,status,effective_status,campaign_id,campaign{name,daily_budget,lifetime_budget},created_time,daily_budget,lifetime_budget,optimization_goal' };
@@ -851,7 +897,7 @@ router.get('/adsets', async (req, res) => {
       mapped.push(...await whopLiveBudgetAdsets());
       return cachePartialAware(cacheKey, mapped, errStamp() !== stampBefore);
       });
-      return res.json(payload);
+      return sendCachedPayload(res, payload);
     }
 
     const payload = await dedupInflight(cacheKey, async () => {
@@ -896,7 +942,7 @@ router.get('/adsets', async (req, res) => {
     const ttl = end && end <= attribSafe ? 24 * 60 * 60 * 1000 : undefined;
     return cachePartialAware(cacheKey, merged, errStamp() !== stampBefore, ttl);
     });
-    res.json(payload);
+    sendCachedPayload(res, payload);
   } catch (err) {
     const stale = isThrottled(err) ? cacheGetStale(cacheKey) : null;
     if (stale) {
@@ -918,7 +964,7 @@ router.get('/ads', async (req, res) => {
     : `ads:${date_preset}:${adset_id||''}:${start||''}:${end||''}`;
   try {
     const cached = (!wantMetadataOnly && req.query.force) ? null : cacheGet(cacheKey);
-    if (cached) return res.json(cached);
+    if (cached) return sendCachedPayload(res, cached);
 
     // Fast path: metadata only (no insights)
     if (wantMetadataOnly) {
@@ -936,7 +982,7 @@ router.get('/ads', async (req, res) => {
       }));
       return cachePartialAware(cacheKey, mapped, errStamp() !== stampBefore);
       });
-      return res.json(payload);
+      return sendCachedPayload(res, payload);
     }
 
     const timeRange = start && end ? { since: start, until: end } : null;
@@ -957,8 +1003,10 @@ router.get('/ads', async (req, res) => {
     const fetchAdsList = async () => {
       const cachedList = force ? null : cacheGet(listCacheKey);
       if (cachedList) return cachedList;
-      const list = await fetchFromAllAccounts('ads', listParams);
-      return cachePartialAware(listCacheKey, list, (list.failedAccounts || []).length > 0, 12 * 60 * 60 * 1000);
+      return dedupInflight(listCacheKey, async () => {
+        const list = await fetchFromAllAccounts('ads', listParams);
+        return cachePartialAware(listCacheKey, list, (list.failedAccounts || []).length > 0, 12 * 60 * 60 * 1000);
+      });
     };
 
     const [ads, insights] = await Promise.all([
@@ -1001,6 +1049,8 @@ router.get('/ads', async (req, res) => {
       };
     });
 
+    merged.failedAccounts = [...new Set([...(ads.failedAccounts || []), ...(insights.failedAccounts || [])])];
+
     // Insights that came back with spend but zero results anywhere look
     // rate-limited — don't cache that, and prefer a stale full payload.
     const hasSpend   = merged.some(a => parseFloat(a.spend)   > 0);
@@ -1010,7 +1060,9 @@ router.get('/ads', async (req, res) => {
       const stale = cacheGetStale(cacheKey);
       if (stale && Array.isArray(stale.data)) {
         console.warn(`FB ads: insights look throttled, serving stale cache (${stale.ageMinutes}m old)`);
-        return stale.data;
+        const fallback = [...stale.data];
+        fallback.staleAgeMinutes = stale.ageMinutes;
+        return fallback;
       }
       return merged;
     }
@@ -1021,7 +1073,7 @@ router.get('/ads', async (req, res) => {
     };
     const payload = await dedupInflight(cacheKey, () => buildAdsPayload(req.query.force));
 
-    res.json(payload);
+    sendCachedPayload(res, payload);
   } catch (err) {
     const stale = isThrottled(err) ? cacheGetStale(cacheKey) : null;
     if (stale) {
@@ -1065,7 +1117,7 @@ async function fetchDailyInsights({ level, datePreset, start, end, date, adIdLis
         let url = `${FB_API}/${account}/insights?${params}`;
         let pages = 0;
         while (url) {
-          const r = await fbFetch(url);
+          const r = await fbFetch(url, account, dailySource);
           pages++;
           captureRateLimit(account, r.headers, dailySource);
           const json = await r.json();
@@ -1113,7 +1165,7 @@ router.get('/daily', async (req, res) => {
   const cacheKey = `daily:${level}:${date_preset||''}:${ad_ids||''}:${adset_ids||''}:${date||''}:${start||''}:${end||''}:${full}`;
   try {
     const cached = cacheGet(cacheKey);
-    if (cached) return res.json(cached);
+    if (cached) return sendCachedPayload(res, cached);
 
     const buildDailyPayload = async () => {
       const result = await fetchDailyInsights({ level, datePreset: date_preset, start, end, date, adIdList, adsetIdList, full });
@@ -1133,7 +1185,7 @@ router.get('/daily', async (req, res) => {
       return cachePartialAware(cacheKey, result, failed.length > 0, ttl);
     };
     const payload = await dedupInflight(cacheKey, buildDailyPayload);
-    res.json(payload);
+    sendCachedPayload(res, payload);
   } catch (err) {
     const stale = isThrottled(err) ? cacheGetStale(cacheKey) : null;
     if (stale) {
@@ -1173,7 +1225,7 @@ router.get('/campaign-spend', async (req, res) => {
   try {
     if (!since || !until) return res.status(400).json({ error: 'since and until required' });
     const cached = req.query.force ? null : cacheGet(cacheKey);
-    if (cached) return res.json(cached);
+    if (cached) return sendCachedPayload(res, cached);
 
     const buildSpendPayload = async () => {
       // Spend tracker always gets full accurate data — blacklist bypass intentional
@@ -1195,7 +1247,7 @@ router.get('/campaign-spend', async (req, res) => {
       return cachePartialAware(cacheKey, result, failed.length > 0);
     };
     const payload = await dedupInflight(cacheKey, buildSpendPayload);
-    res.json(payload);
+    sendCachedPayload(res, payload);
   } catch (err) {
     const stale = isThrottled(err) ? cacheGetStale(cacheKey) : null;
     if (stale) {
@@ -1377,7 +1429,7 @@ router.get('/structure', async (req, res) => {
           fields: FIELDS, limit: 500, access_token: tokenFor(src),
         })}`;
         while (url) {
-          const r = await fbFetch(url);
+          const r = await fbFetch(url, account, src);
           captureRateLimit(account, r.headers, src);
           const json = await r.json();
           if (json.error) throw new Error(json.error.message);
@@ -1426,7 +1478,7 @@ router.get('/stats', async (req, res) => {
   const cacheKeys = [..._cache.entries()].map(([key, v]) => ({
     key,
     age: Math.round((Date.now() - v.ts) / 1000),
-    expiresIn: Math.round((CACHE_TTL - (Date.now() - v.ts)) / 1000),
+    expiresIn: Math.round(((v.ttl ?? CACHE_TTL) - (Date.now() - v.ts)) / 1000),
   }));
   res.json({
     configuredAccounts: adAccounts(),
@@ -1500,17 +1552,18 @@ router.get('/debug/state-deep', async (req, res) => {
         ? 'adset_id,adset_name,campaign_id,campaign_name'
         : 'ad_id,ad_name,adset_id,adset_name,campaign_id,campaign_name';
       for (const account of accounts) {
+        const levelSource = pickSource(getReadTokenSource());
         const params = new URLSearchParams({
           level,
           fields: `${idFields},${enrichedFields}`,
           date_preset: preset,
-          access_token: token(),
+          access_token: tokenFor(levelSource),
           limit: FB_INSIGHTS_PAGE_SIZE,
         });
         let url = `${FB_API}/${account}/insights?${params}`;
         while (url) {
-          const r = await fbFetch(url);
-          captureRateLimit(account, r.headers, pickSource(getReadTokenSource()));
+          const r = await fbFetch(url, account, levelSource);
+          captureRateLimit(account, r.headers, levelSource);
           const j = await r.json();
           if (j.error) throw new Error(`[${account}] ${j.error.message}`);
           out.push(...(j.data || []));
@@ -1592,7 +1645,7 @@ async function fetchWindowAdsetInsights({ start, end }) {
         let url = `${FB_API}/${account}/insights?${params}`;
         let pages = 0;
         while (url) {
-          const r = await fbFetch(url);
+          const r = await fbFetch(url, account, windowSource);
           pages++;
           captureRateLimit(account, r.headers, windowSource);
           const json = await r.json();

@@ -14,7 +14,11 @@ async function apiFetch(path) {
     const err = await res.json().catch(() => ({ error: res.statusText }));
     throw new Error(err.error || res.statusText);
   }
-  return res.json();
+  const data = await res.json();
+  if (Array.isArray(data)) {
+    data.incomplete = !!res.headers.get('X-FB-Failed-Accounts') || res.headers.has('X-Stale-Minutes');
+  }
+  return data;
 }
 
 const US_STATES = new Set([
@@ -1146,10 +1150,12 @@ export default function AdsTracking() {
       // Merge: if an ad's new results=0 but DB already has results>0 for it,
       // preserve the old count (guards against rate-limited insights wiping data).
       const existingAds = await dbGetAll('fbAds');
+      const existingAdsById = new Map(existingAds.map(a => [a.id, a]));
       const existingResultsById = Object.fromEntries(
         existingAds.filter(a => (a.results || 0) > 0).map(a => [a.id, a.results])
       );
       const mergedAds = ads.map(a =>
+        ads.incomplete && existingAdsById.has(a.id) ? existingAdsById.get(a.id) :
         (a.results || 0) === 0 && existingResultsById[a.id]
           ? { ...a, results: existingResultsById[a.id] }
           : a
@@ -1161,9 +1167,12 @@ export default function AdsTracking() {
         dbUpsert('fbDailyInsights', dailyRecords),
       ]);
 
-      await dbSetMeta('lastSync', now);
+      const incomplete = ads.incomplete || dailyRaw.incomplete;
+      if (!incomplete) await dbSetMeta('lastSync', now);
       await loadFromDB();
-      if (rateLimited) {
+      if (incomplete) {
+        setSyncNote('Some Facebook accounts could not refresh. Previously saved data is retained; sync is incomplete.');
+      } else if (rateLimited) {
         setSyncNote(`⚠ FB rate-limited: leads not returned by API. Try re-syncing in a few minutes.`);
       } else {
         setSyncNote(`Done — ${ads.length} ads loaded`);
