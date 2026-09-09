@@ -901,6 +901,7 @@ export default function AdsTracking() {
   const [rangeAds, setRangeAds]         = useState(null);
   const [loadingRange, setLoadingRange] = useState(false);
   const [rangeError, setRangeError]     = useState('');
+  const [gridRefresh, setGridRefresh] = useState(0);
   const [colOrder, setColOrder]         = useState(() => {
     try { const s = localStorage.getItem('trackingColOrder'); return s ? JSON.parse(s) : null; }
     catch { return null; }
@@ -995,31 +996,31 @@ export default function AdsTracking() {
   // Fetch aggregated insights for custom date range; clear when range is cleared
   useEffect(() => {
     if (!rangeStart || !rangeEnd || rangeStart > rangeEnd) {
-      setRangeAds(null); setRangeError(''); return;
+      setRangeAds(null); setRangeError(''); setLoadingRange(false); return;
     }
     let cancelled = false;
     setLoadingRange(true); setRangeError('');
     apiFetch(`/api/facebook/ads?start=${rangeStart}&end=${rangeEnd}`)
-      .then(data => { if (!cancelled) { setRangeAds(data); setLoadingRange(false); } })
+      .then(data => { if (!cancelled) { setRangeAds(data); setRangeError(data.incomplete ? 'Selected date range is incomplete or cached because some Facebook accounts could not refresh. Try Sync Now after the cooldown.' : ''); setLoadingRange(false); } })
       .catch(err  => { if (!cancelled) { setRangeError(err.message); setLoadingRange(false); } });
     return () => { cancelled = true; };
-  }, [rangeStart, rangeEnd]);
+  }, [rangeStart, rangeEnd, gridRefresh]);
 
   // Fetch ad-level insights restricted to the lead-cutoff window.
   // FB returns each ad with results/spend aggregated over [leadCutoffDate, today], so the
   // cells become "leads generated since X" instead of lifetime totals.
   useEffect(() => {
     if (!leadCutoffEnabled || !leadCutoffDate) {
-      setLeadCutoffAds(null); setLeadCutoffError(''); return;
+      setLeadCutoffAds(null); setLeadCutoffError(''); setLeadCutoffLoading(false); return;
     }
     let cancelled = false;
     setLeadCutoffLoading(true); setLeadCutoffError('');
     const today = new Date().toISOString().slice(0, 10);
     apiFetch(`/api/facebook/ads?start=${leadCutoffDate}&end=${today}`)
-      .then(data => { if (!cancelled) { setLeadCutoffAds(data); setLeadCutoffLoading(false); } })
+      .then(data => { if (!cancelled) { setLeadCutoffAds(data); setLeadCutoffError(data.incomplete ? 'Lead-date results are incomplete or cached because some Facebook accounts could not refresh. Try Sync Now after the cooldown.' : ''); setLeadCutoffLoading(false); } })
       .catch(err  => { if (!cancelled) { setLeadCutoffError(err.message); setLeadCutoffLoading(false); } });
     return () => { cancelled = true; };
-  }, [leadCutoffEnabled, leadCutoffDate]);
+  }, [leadCutoffEnabled, leadCutoffDate, gridRefresh]);
 
   // Grid source priority: manual range > lead cutoff window > lifetime
   // adNames (row visibility) is still derived from allAds + ad-creation cutoff elsewhere.
@@ -1184,6 +1185,9 @@ export default function AdsTracking() {
     } finally {
       syncingRef.current = false;
       setSyncing(false);
+      // Refresh the date-window payload used by the grid, even if the
+      // independent lifetime/daily sync failed. Normal server caching applies.
+      setGridRefresh(version => version + 1);
     }
   }, []);
 
@@ -2078,6 +2082,17 @@ export default function AdsTracking() {
           )}
         </div>
       </div>
+
+      {(loadingRange || leadCutoffLoading) && (
+        <div role="status" style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12 }}>
+          Refreshing leads for the selected dates...
+        </div>
+      )}
+      {(rangeError || (leadCutoffEnabled && leadCutoffError)) && (
+        <div role="status" style={{ fontSize: 12, color: '#b45309', marginBottom: 12 }}>
+          {rangeError || leadCutoffError}
+        </div>
+      )}
 
       {/* Charts */}
       <div style={{ marginBottom: 32 }}>
