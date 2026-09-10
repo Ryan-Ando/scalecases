@@ -1,4 +1,7 @@
 import { Router } from 'express';
+import fs from 'node:fs';
+import path from 'node:path';
+import { createSpendSchedule, monthWindow, easternDate } from '../spendSchedule.js';
 import { google } from 'googleapis';
 import { fetchDailyInsights } from './facebook.js';
 import { whopDailyCampaignRows } from './whop.js';
@@ -76,20 +79,25 @@ function colLetter(n) {
 }
 
 // Build day × state spend grid from daily campaign insights for the given month.
-async function buildMonthGrid(year, monthIndex) {
+async function buildMonthGrid(year, monthIndex, today = easternDate()) {
   const ym = `${year}-${String(monthIndex + 1).padStart(2, '0')}`;
   const daysInMonth = new Date(year, monthIndex + 1, 0).getDate();
-  const since = `${ym}-01`;
-  const until = `${ym}-${String(daysInMonth).padStart(2, '0')}`;
+  const window = monthWindow(year, monthIndex, today);
+  if (!window) throw new Error('No completed days in the selected month');
+  const { start: since, end: until } = window;
+  if (!process.env.FB_AD_ACCOUNTS?.trim()) throw new Error('FB_AD_ACCOUNTS not set');
 
   // bot: the daily cron rides the second app's rate-limit bucket, keeping the
   // published app's quota for the website
   const rows = await fetchDailyInsights({
     level: 'campaign', start: since, end: until, full: true, bot: true,
   });
+  if (rows.failedAccounts?.length) {
+    throw new Error(`Spend export stopped: incomplete Facebook data for ${rows.failedAccounts.join(', ')}. Sheet unchanged.`);
+  }
   // Whop-run campaign spend counts too (LSS-only filter below applies by name,
   // same as FB rows)
-  rows.push(...await whopDailyCampaignRows(since, until));
+  rows.push(...await whopDailyCampaignRows(since, until, { strict: true }));
 
   const grid = {};       // grid[day][state] = spend (LSS + unbranded only — Halo excluded)
   const stateSet = new Set();
@@ -225,14 +233,11 @@ async function pushSpendToSheet({ year, monthIndex, tabName, preview = false }) 
     throw new Error(`No date/day rows found below the header in "${resolvedTab}".`);
   }
 
-  // 4. Build the FB grid and queue per-cell updates.
-  const { states, days, grid } = await buildMonthGrid(year, monthIndex);
-
-  // Today (ET) — if we're pushing the current month, skip today + future days so
-  // an in-progress day doesn't get logged as a partial number.
-  const todayET = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(new Date());
-  const [tY, tM, tD] = todayET.split('-').map(n => parseInt(n, 10));
-  const isCurrentMonth = (tY === year) && (tM === monthIndex + 1);
+  // Freeze the calendar boundary for the whole export, including long fetches.
+  const todayET = easternDate();
+  const window = monthWindow(year, monthIndex, todayET);
+  if (!window) throw new Error('No completed days in the selected month');
+  const { states, grid } = await buildMonthGrid(year, monthIndex, todayET);
 
   const updates = [];
   const skippedStates = new Set();
@@ -240,7 +245,7 @@ async function pushSpendToSheet({ year, monthIndex, tabName, preview = false }) 
   for (const st of Object.keys(colByState)) {
     const col = colByState[st];
     for (const day of Object.keys(rowByDay).map(Number)) {
-      if (isCurrentMonth && day >= tD) continue; // skip today + future
+      if (day > Number(window.end.slice(8))) continue; // completed days only
       const row = rowByDay[day];
       const spend = grid[day]?.[st] || 0;
       updates.push({
@@ -336,8 +341,29 @@ router.post('/push-spend', async (req, res) => {
   }
 });
 
-// The daily 06:15 ET auto-push was removed 2026-09-02 (user request) — the
-// sheet is only written via the manual Push to Sheet / Preview buttons now.
+let spendSchedule;
+export function startSpendSchedule() {
+  if (spendSchedule) return;
+  const file = path.join(process.env.DATA_DIR || './data', 'spend-schedule.json');
+  spendSchedule = createSpendSchedule({
+    push: pushSpendToSheet,
+    enabled: () => process.env.SPEND_AUTO_PUSH !== 'false' && !!spendSheetId(),
+    load: () => { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return {}; } },
+    save: state => {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(`${file}.tmp`, JSON.stringify(state));
+      fs.renameSync(`${file}.tmp`, file);
+    },
+  });
+  // Also catch up after a restart that missed the scheduled minute.
+  void spendSchedule.tick();
+  const timer = setInterval(() => { void spendSchedule.tick(); }, 60_000);
+  timer.unref();
+  console.log('[spend-push] daily scheduler started: 06:15 America/New_York');
+}
+router.get('/spend-schedule', (_req, res) => {
+  res.json(spendSchedule?.status() || { enabled: false, running: false });
+});
 
 function getSheetConfig() {
   return {

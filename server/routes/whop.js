@@ -30,7 +30,7 @@ async function whopReport(params) {
 // Daily per-campaign spend rows in the same shape as FB daily campaign
 // insights, so extractGroup/extractBrand/extractState work unchanged.
 // Whop failures must never break the FB payload — callers get [] and a warn.
-export async function whopDailyCampaignRows(start, end) {
+export async function whopDailyCampaignRows(start, end, { strict = false } = {}) {
   if (!whopEnabled() || !start || !end) return [];
   try {
     const report = await whopReport({
@@ -58,6 +58,7 @@ export async function whopDailyCampaignRows(start, end) {
     }
     return rows;
   } catch (e) {
+    if (strict) throw e;
     console.warn('[whop] daily spend fetch failed (serving FB-only):', e.message);
     return [];
   }

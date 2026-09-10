@@ -3,7 +3,7 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import authRoutes from './routes/auth.js';
 import facebookRoutes from './routes/facebook.js';
-import sheetsRoutes from './routes/sheets.js';
+import sheetsRoutes, { startSpendSchedule } from './routes/sheets.js';
 import ghlRoutes from './routes/ghl.js';
 import chatRoutes from './routes/chat.js';
 import reportsRoutes from './routes/reports.js';
@@ -39,4 +39,7 @@ app.use('/api/digest', digestRoutes);
 
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+  startSpendSchedule();
+});
