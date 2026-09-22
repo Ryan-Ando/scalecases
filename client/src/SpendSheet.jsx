@@ -160,6 +160,9 @@ export default function SpendSheet() {
 
   // Pacing state
   const [pacing, setPacing]             = useState(() => loadPacing());
+  const [newPacingBrand, setNewPacingBrand] = useState('LSS');
+  const [newPacingState, setNewPacingState] = useState('TX');
+  const [addRowNote, setAddRowNote] = useState('');
 
   // Mirror the pacing config to the server (debounced) so the Telegram
   // digest's "spend" command can compute shortfalls without the browser
@@ -233,6 +236,16 @@ export default function SpendSheet() {
     });
   }
 
+  function addPacingRow() {
+    const key = `${newPacingBrand} ${newPacingState}`;
+    if (pacingStates.includes(key)) {
+      setAddRowNote(`${key} already has a row. Its settings have been kept.`);
+      return;
+    }
+    updatePacing(key, 'enabled', true);
+    setAddRowNote(`Added ${key}. Incoming spend will use this row.`);
+  }
+
   function updateMonthBudget(st, ym, value) {
     setPacing(prev => {
       const next = {
@@ -268,8 +281,8 @@ export default function SpendSheet() {
   }
 
   async function fetchPacingSpend() {
-    const entries = Object.entries(pacing).filter(([, cfg]) => cfg?.startDate);
-    if (!entries.length) { setPacingError('Enter a start date for at least one state first.'); return; }
+    const entries = Object.entries(pacing).filter(([, cfg]) => cfg?.enabled !== false && cfg?.startDate);
+    if (!entries.length) { setPacingError('Enable a row and enter its start date first.'); return; }
 
     setPacingLoading(true);
     setPacingError('');
@@ -289,7 +302,7 @@ export default function SpendSheet() {
         if (!r.ok) throw new Error(data.error || 'Fetch failed');
         for (const c of data) {
           const st = extractGroup(c.campaign_name);
-          if (!st) continue;
+          if (!st || pacing[st]?.enabled === false || pacing[st]?.startDate !== since) continue;
           spendMap[st] = (spendMap[st] || 0) + c.spend;
           if (!detailMap[st]) detailMap[st] = [];
           detailMap[st].push({ name: c.campaign_name, spend: c.spend });
@@ -340,9 +353,10 @@ export default function SpendSheet() {
 
   // ── Pacing table rows ───────────────────────────────────────────────────────
   const pacingStates = useMemo(() => {
-    const all = new Set([...budgetStates, ...Object.keys(pacing)]);
+    const detected = insights.map(r => extractGroup(r.campaign_name)).filter(Boolean);
+    const all = new Set([...budgetStates, ...detected, ...Object.keys(pacing)]);
     return [...all].sort();
-  }, [budgetStates, pacing]);
+  }, [budgetStates, pacing, insights]);
 
   const pacingRows = useMemo(() => {
     return pacingStates.map(st => {
@@ -350,6 +364,11 @@ export default function SpendSheet() {
       const startDate = cfg.startDate || '';
       const endDate   = cfg.endDate   || '';
       const months    = monthsBetween(startDate, endDate);
+      if (cfg.enabled === false) return {
+        st, enabled: false, startDate, endDate, months,
+        totalBudget: null, daysLeft: null, spentToDate: null, remaining: null,
+        dailyNeeded: null, liveBudget: null, shortfall: null,
+      };
       const totalBudget = months.length > 0
         ? months.reduce((s, ym) => s + (parseFloat(cfg.monthlyBudgets?.[ym]) || 0), 0)
         : null;
@@ -361,7 +380,7 @@ export default function SpendSheet() {
       // No live budget = $0/day live, so the whole daily need is the shortfall —
       // a budgeted state with nothing running must show as underspending
       const shortfall   = dailyNeeded != null ? dailyNeeded - (liveBudget || 0) : null;
-      return { st, totalBudget, startDate, endDate, months, daysLeft: dl, spentToDate, remaining, dailyNeeded, liveBudget, shortfall };
+      return { st, enabled: true, totalBudget, startDate, endDate, months, daysLeft: dl, spentToDate, remaining, dailyNeeded, liveBudget, shortfall };
     });
   }, [pacingStates, pacing, pacingSpend, budgetByState]);
 
@@ -633,8 +652,7 @@ export default function SpendSheet() {
       </div>
 
       {/* ── Budget Pacing ─────────────────────────────────────────────────── */}
-      {pacingStates.length > 0 && (
-        <div style={{ marginBottom: 32 }}>
+      <div style={{ marginBottom: 32 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12, flexWrap: 'wrap' }}>
             <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>
               Budget Pacing
@@ -645,6 +663,16 @@ export default function SpendSheet() {
             <button className="btn btn--sm" onClick={fetchPacingSpend} disabled={pacingLoading} style={{ marginLeft: 'auto' }}>
               {pacingLoading ? 'Fetching…' : 'Fetch Spend'}
             </button>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
+            <label>Client <select aria-label="New pacing row client" value={newPacingBrand} onChange={e => setNewPacingBrand(e.target.value)}>
+              {['LSS', 'Halo', 'Bulktide'].map(brand => <option key={brand}>{brand}</option>)}
+            </select></label>
+            <label>State <select aria-label="New pacing row state" value={newPacingState} onChange={e => setNewPacingState(e.target.value)}>
+              {[...US_STATES].sort().map(state => <option key={state}>{state}</option>)}
+            </select></label>
+            <button className="btn btn--sm" onClick={addPacingRow}>Add Row</button>
+            {addRowNote && <span role="status" style={{ fontSize: 12, color: 'var(--text-muted)' }}>{addRowNote}</span>}
           </div>
           {pacingError && <div style={{ fontSize: 12, color: '#dc2626', marginBottom: 8 }}>{pacingError}</div>}
 
@@ -684,7 +712,15 @@ export default function SpendSheet() {
                   return (
                     <Fragment key={r.st}>
                       <tr>
-                        <td style={pTdL}>{stateLabel(r.st, brand)}</td>
+                        <td style={pTdL}>
+                          <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <input type="checkbox" role="switch" aria-label={`Enable pacing for ${r.st}`}
+                              checked={r.enabled} onChange={e => updatePacing(r.st, 'enabled', e.target.checked)}
+                              style={{ accentColor: 'var(--green)' }} />
+                            {stateLabel(r.st, brand)}
+                            {!r.enabled && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Off</span>}
+                          </label>
+                        </td>
 
                         {/* Total Budget — computed from monthly breakdown */}
                         <td style={{ ...pTdEdit, minWidth: 160 }}>
@@ -751,7 +787,7 @@ export default function SpendSheet() {
 
                         {/* Spent to Date */}
                         <td style={pTd}>
-                          {pacingLoading ? (
+                          {pacingLoading && r.enabled ? (
                             <span style={{ color: 'var(--text-muted)' }}>…</span>
                           ) : r.spentToDate != null ? (
                             <span
@@ -808,7 +844,7 @@ export default function SpendSheet() {
                                   ))}
                                 </div>
                                 <div style={{ marginTop: 10, fontSize: 12, color: 'var(--text-muted)' }}>
-                                  Total: <strong style={{ color: 'var(--text)' }}>{fmt(r.totalBudget || 0)}</strong>
+                                  Total: <strong style={{ color: 'var(--text)' }}>{r.enabled ? fmt(r.totalBudget || 0) : 'Off'}</strong>
                                 </div>
                               </div>
                             )}
@@ -842,7 +878,7 @@ export default function SpendSheet() {
             Shortfall = Daily Needed − Live Daily Budget · Red = underpacing · Green = on track · Click <strong>▼ monthly</strong> to enter per-month budgets · <strong>Fetch Spend</strong> pulls cumulative spend from start date to today
           </div>
         </div>
-      )}
+
 
       {/* ── Daily spend grid ─────────────────────────────────────────────── */}
       {loading ? (

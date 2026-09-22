@@ -511,7 +511,7 @@ async function buildSpendView() {
   }
 
   // 3. Spend since each pacing window's start (grouped by unique start date)
-  const starts = [...new Set(Object.values(pacing).map(c => c?.startDate).filter(Boolean))];
+  const starts = [...new Set(Object.values(pacing).filter(c => c?.enabled !== false).map(c => c?.startDate).filter(Boolean))];
   const sinceStart = {};
   for (const since of starts) {
     const r = await fetch(`http://127.0.0.1:${process.env.PORT || 3001}/api/facebook/campaign-spend?since=${since}&until=${today}&force=1`);
@@ -527,6 +527,7 @@ async function buildSpendView() {
   const groups = [...new Set([...Object.keys(live), ...Object.keys(mtd), ...Object.keys(pacing)])].filter(g => !g.endsWith('?'));
   const rows = groups.map(g => {
     const cfg = pacing[g] || {};
+    if (cfg.enabled === false) return { g, mtd: mtd[g] || 0, today: todaySpend[g] || 0, liveBudget: null, dailyNeeded: null, shortfall: null };
     const months = monthsBetween(cfg.startDate, cfg.endDate);
     const totalBudget = months.length ? months.reduce((s, ym) => s + (parseFloat(cfg.monthlyBudgets?.[ym]) || 0), 0) : null;
     const spent = cfg.startDate ? (sinceStart[g]?.[cfg.startDate] ?? null) : null;
