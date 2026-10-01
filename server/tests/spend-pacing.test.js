@@ -1,3 +1,4 @@
+import { pacingWindows } from '../../client/src/pacingWindows.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -27,9 +28,9 @@ test('manual and detected rows share one brand/state key', () => {
 test('spend uses each enabled row start date without cross-window double counting', async () => {
   let result; const requests = [];
   const ctx = vm.createContext({
-    BASE: '', Date, pacingRequest: { current: 0 }, pacing: {
-      'LSS TX': { startDate: '2026-09-01' },
-      'Halo GA': { startDate: '2026-09-10' },
+    BASE: '', Date, pacingWindows, pacingRequest: { current: 0 }, pacing: {
+      'LSS TX': { startDate: '2026-09-01', endDate: '2026-09-30', monthlyBudgets: { '2026-09': 5000 } },
+      'Halo GA': { startDate: '2026-09-10', endDate: '2026-09-30', monthlyBudgets: { '2026-09': 5000 } },
       'LSS AL': { startDate: '2026-08-01', enabled: false },
     },
     extractGroup: name => name, setPacingError: () => {}, setPacingLoading: () => {},
@@ -69,7 +70,7 @@ test('pacing automatically refreshes for enabled start-date changes, not budget 
 test('partial spend cannot become a zero-spend pacing calculation', async () => {
   let saved = false, error;
   const ctx = vm.createContext({
-    BASE: '', Date, pacingRequest: { current: 0 }, pacing: { 'LSS TX': { startDate: '2026-10-01' } },
+    BASE: '', Date, pacingWindows, pacingRequest: { current: 0 }, pacing: { 'LSS TX': { startDate: '2026-09-01', endDate: '2026-09-30', monthlyBudgets: { '2026-09': 5000 } } },
     setPacingLoading: () => {}, setPacingError: value => { error = value; },
     setPacingSpend: () => { saved = true; }, setPacingSpendDetail: () => {},
     fetch: async () => ({ ok: true, headers: { get: () => 'act_missing' }, json: async () => [] }),
@@ -78,4 +79,21 @@ test('partial spend cannot become a zero-spend pacing calculation', async () => 
   vm.runInContext(source.slice(start, source.indexOf('  const budgetByState', start)), ctx);
   await vm.runInContext('fetchPacingSpend()', ctx);
   assert.equal(saved, false); assert.match(error, /incomplete or stale/);
+});
+
+test('blank September excludes its spend window for AL, MD and OH', async () => {
+  const { pacingWindows: serverWindows } = await import('../pacingWindows.js');
+  for (const budget of [5000, 10000]) {
+    const cfg = { startDate: '2026-09-01', endDate: '2026-10-15', monthlyBudgets: { '2026-09': '', '2026-10': budget } };
+    const expected = [{ since: '2026-10-01', until: '2026-10-03' }];
+    assert.deepEqual(pacingWindows(cfg, '2026-10-03'), expected);
+    assert.deepEqual(serverWindows(cfg, '2026-10-03'), expected);
+  }
+});
+test('explicit zero includes a month; blank middle months and future dates are excluded', () => {
+  const cfg = { startDate: '2026-08-12', endDate: '2026-10-15', monthlyBudgets: { '2026-08': 0, '2026-09': ' ', '2026-10': '5000', '2026-11': 9000 } };
+  assert.deepEqual(pacingWindows(cfg, '2026-10-20'), [
+    { since: '2026-08-12', until: '2026-08-31' }, { since: '2026-10-01', until: '2026-10-15' },
+  ]);
+  assert.deepEqual(pacingWindows({ ...cfg, enabled: false }, '2026-10-20'), []);
 });

@@ -1,3 +1,4 @@
+import { pacingWindows } from '../pacingWindows.js';
 import { Router } from 'express';
 import fetch from 'node-fetch';
 import { google } from 'googleapis';
@@ -510,16 +511,25 @@ async function buildSpendView() {
     if (r.date_start === today) todaySpend[g] = (todaySpend[g] || 0) + s;
   }
 
-  // 3. Spend since each pacing window's start (grouped by unique start date)
-  const starts = [...new Set(Object.values(pacing).filter(c => c?.enabled !== false).map(c => c?.startDate).filter(Boolean))];
-  const sinceStart = {};
-  for (const since of starts) {
-    const r = await fetch(`http://127.0.0.1:${process.env.PORT || 3001}/api/facebook/campaign-spend?since=${since}&until=${today}&force=1`);
+  // Deduplicate identical budgeted-month requests across states.
+  const windows = new Map();
+  const pacingSpent = {};
+  for (const [group, cfg] of Object.entries(pacing)) {
+    if (cfg?.enabled === false || !cfg?.startDate) continue;
+    pacingSpent[group] = 0;
+    for (const window of pacingWindows(cfg, today)) {
+      const key = `${window.since}:${window.until}`;
+      if (!windows.has(key)) windows.set(key, { ...window, groups: new Set() });
+      windows.get(key).groups.add(group);
+    }
+  }
+  for (const { since, until, groups } of windows.values()) {
+    const r = await fetch(`http://127.0.0.1:${process.env.PORT || 3001}/api/facebook/campaign-spend?since=${since}&until=${until}`);
     if (!r.ok) throw new Error(`campaign-spend ${since}: ${r.status}`);
+    if (r.headers.get('X-FB-Failed-Accounts') || r.headers.has('X-Stale-Minutes')) throw new Error('Pacing spend is incomplete or stale');
     for (const c of await r.json()) {
       const g = groupOf(c.campaign_name);
-      if (!sinceStart[g]) sinceStart[g] = {};
-      sinceStart[g][since] = (sinceStart[g][since] || 0) + (c.spend || 0);
+      if (groups.has(g)) pacingSpent[g] += Number(c.spend) || 0;
     }
   }
 
@@ -530,7 +540,7 @@ async function buildSpendView() {
     if (cfg.enabled === false) return { g, mtd: mtd[g] || 0, today: todaySpend[g] || 0, liveBudget: null, dailyNeeded: null, shortfall: null };
     const months = monthsBetween(cfg.startDate, cfg.endDate);
     const totalBudget = months.length ? months.reduce((s, ym) => s + (parseFloat(cfg.monthlyBudgets?.[ym]) || 0), 0) : null;
-    const spent = cfg.startDate ? (sinceStart[g]?.[cfg.startDate] ?? null) : null;
+    const spent = cfg.startDate ? (pacingSpent[g] ?? null) : null;
     const dl = cfg.endDate ? pacingDaysLeft(cfg.endDate, cfg.timezone || 'America/New_York') : null;
     const remaining = (totalBudget != null && totalBudget > 0 && spent != null) ? Math.max(0, totalBudget - spent) : null;
     const dailyNeeded = (remaining != null && dl != null && dl > 0) ? remaining / dl : (dl === 0 && remaining != null ? remaining : null);

@@ -1,3 +1,4 @@
+import { pacingWindows } from './pacingWindows.js';
 import { useState, useEffect, useMemo, useRef, Fragment } from 'react';
 import { dbGetAll, dbUpsert } from './db.js';
 
@@ -285,7 +286,7 @@ export default function SpendSheet() {
   // recalculates locally without spending additional Facebook quota.
   const pacingSpendKey = JSON.stringify(Object.entries(pacing)
     .filter(([, cfg]) => cfg?.enabled !== false && cfg?.startDate)
-    .map(([st, cfg]) => [st, cfg.startDate]).sort());
+    .map(([st, cfg]) => [st, cfg.startDate, cfg.endDate, Object.entries(cfg.monthlyBudgets || {}).filter(([, amount]) => amount != null && String(amount).trim() !== '').map(([ym]) => ym).sort()]).sort());
   useEffect(() => {
     setPacingSpend({});
     setPacingSpendDetail({});
@@ -305,15 +306,18 @@ export default function SpendSheet() {
     setPacingError('');
     try {
       const today = new Date().toISOString().slice(0, 10);
-      // Group by unique startDate to minimise API calls
       const byStart = {};
-      for (const [, cfg] of entries) {
-        if (!byStart[cfg.startDate]) byStart[cfg.startDate] = { since: cfg.startDate, until: today };
+      for (const [st, cfg] of entries) {
+        for (const window of pacingWindows(cfg, today)) {
+          const key = `${window.since}:${window.until}`;
+          if (!byStart[key]) byStart[key] = { ...window, states: new Set() };
+          byStart[key].states.add(st);
+        }
       }
 
       const spendMap = {};
       const detailMap = {};
-      await Promise.all(Object.values(byStart).map(async ({ since, until }) => {
+      await Promise.all(Object.values(byStart).map(async ({ since, until, states }) => {
         const r = await fetch(`${BASE}/api/facebook/campaign-spend?since=${since}&until=${until}`);
         const data = await r.json();
         if (!r.ok) throw new Error(data.error || 'Fetch failed');
@@ -322,8 +326,8 @@ export default function SpendSheet() {
         }
         for (const c of data) {
           const st = extractGroup(c.campaign_name);
-          if (!st || pacing[st]?.enabled === false || pacing[st]?.startDate !== since) continue;
-          spendMap[st] = (spendMap[st] || 0) + c.spend;
+          if (!st || !states.has(st)) continue;
+          spendMap[st] = (spendMap[st] || 0) + (Number(c.spend) || 0);
           if (!detailMap[st]) detailMap[st] = [];
           detailMap[st].push({ name: c.campaign_name, spend: c.spend });
         }
@@ -896,7 +900,7 @@ export default function SpendSheet() {
           </div>
 
           <div style={{ marginTop: 8, fontSize: 11, color: 'var(--text-muted)' }}>
-            Shortfall = Daily Needed − Live Daily Budget · Red = underpacing · Green = on track · Click <strong>▼ monthly</strong> to enter per-month budgets · <strong>Fetch Spend</strong> pulls cumulative spend from start date to today
+            Shortfall = Daily Needed − Live Daily Budget · Red = underpacing · Green = on track · Click <strong>▼ monthly</strong> to enter per-month budgets · <strong>Fetch Spend</strong> pulls spend only for months with a budget; blank months are excluded (enter 0 to include a zero-budget month)
           </div>
         </div>
 
