@@ -182,6 +182,7 @@ export default function SpendSheet() {
   const [spendDetailModal, setSpendDetailModal]   = useState(null); // state key or null
   const [pacingLoading, setPacingLoading] = useState(false);
   const [pacingError, setPacingError]   = useState('');
+  const pacingRequest = useRef(0);
   const [expandedRows, setExpandedRows] = useState(new Set());
 
   // Push-to-Sheet state
@@ -280,10 +281,26 @@ export default function SpendSheet() {
     });
   }
 
+  // Only spend-window changes trigger a request; editing monthly budgets
+  // recalculates locally without spending additional Facebook quota.
+  const pacingSpendKey = JSON.stringify(Object.entries(pacing)
+    .filter(([, cfg]) => cfg?.enabled !== false && cfg?.startDate)
+    .map(([st, cfg]) => [st, cfg.startDate]).sort());
+  useEffect(() => {
+    setPacingSpend({});
+    setPacingSpendDetail({});
+    setPacingError('');
+    setPacingLoading(false);
+    if (pacingSpendKey === '[]') return;
+    const timer = setTimeout(() => { void fetchPacingSpend(); }, 800);
+    return () => { clearTimeout(timer); pacingRequest.current++; };
+  }, [pacingSpendKey]);
+
   async function fetchPacingSpend() {
     const entries = Object.entries(pacing).filter(([, cfg]) => cfg?.enabled !== false && cfg?.startDate);
     if (!entries.length) { setPacingError('Enable a row and enter its start date first.'); return; }
 
+    const request = ++pacingRequest.current;
     setPacingLoading(true);
     setPacingError('');
     try {
@@ -300,6 +317,9 @@ export default function SpendSheet() {
         const r = await fetch(`${BASE}/api/facebook/campaign-spend?since=${since}&until=${until}`);
         const data = await r.json();
         if (!r.ok) throw new Error(data.error || 'Fetch failed');
+        if (r.headers?.get('X-FB-Failed-Accounts') || r.headers?.has('X-Stale-Minutes')) {
+          throw new Error('Facebook spend is incomplete or stale. Try Fetch Spend after the cooldown; missing spend has not been treated as zero.');
+        }
         for (const c of data) {
           const st = extractGroup(c.campaign_name);
           if (!st || pacing[st]?.enabled === false || pacing[st]?.startDate !== since) continue;
@@ -315,12 +335,13 @@ export default function SpendSheet() {
       // A configured state with NO spend rows means $0 spent, not "unknown" —
       // otherwise a fully-budgeted state with nothing live never shows a shortfall
       for (const [st] of entries) if (spendMap[st] == null) spendMap[st] = 0;
+      if (request !== pacingRequest.current) return;
       setPacingSpend(spendMap);
       setPacingSpendDetail(detailMap);
     } catch (e) {
-      setPacingError(e.message);
+      if (request === pacingRequest.current) setPacingError(e.message);
     } finally {
-      setPacingLoading(false);
+      if (request === pacingRequest.current) setPacingLoading(false);
     }
   }
 
@@ -797,7 +818,7 @@ export default function SpendSheet() {
                             >
                               {fmt(r.spentToDate)}
                             </span>
-                          ) : '—'}
+                          ) : r.enabled && r.startDate ? <span style={{ fontSize: 11 }}>Awaiting spend</span> : '—'}
                         </td>
 
                         {/* Remaining */}
