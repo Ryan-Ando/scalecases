@@ -1,3 +1,4 @@
+import CreativeLibrary from './CreativeLibrary.jsx';
 import { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import {
@@ -2093,6 +2094,8 @@ export default function AdsTracking() {
           {rangeError || leadCutoffError}
         </div>
       )}
+
+      <CreativeLibrary ads={allAds} merges={allMergeGroups} deleted={deletedAds} />
 
       {/* Charts */}
       <div style={{ marginBottom: 32 }}>

@@ -1,3 +1,6 @@
+import CreativeLibrary, { CreativePreview } from './CreativeLibrary.jsx';
+import { useCreativeLibrary } from './useCreativeLibrary.js';
+import { groupLibrary, prependUntested } from './creativeMatching.js';
 import { useState, useEffect, useMemo } from 'react';
 import { dbGetAll, dbGetMeta } from './db.js';
 
@@ -99,6 +102,7 @@ function scoreCandidate({ leads, cpl, cases }) {
 }
 
 export default function Relaunch() {
+  const library = useCreativeLibrary();
   const [allAds, setAllAds]           = useState([]);
   const [windowAds, setWindowAds]     = useState([]);
   const [deletedAds, setDeletedAds]   = useState(new Set());
@@ -112,6 +116,14 @@ export default function Relaunch() {
   const [loadedAt, setLoadedAt] = useState(null);
   const [reuseMonths, setReuseMonths] = useState(() => parseInt(localStorage.getItem('reuseThresholdMonths'), 10) || 2);
   const [minLeads, setMinLeads]       = useState(() => parseInt(localStorage.getItem('relaunchMinLeads'), 10) || 3);
+
+  const localGroups = useMemo(() => groupLibrary(library.files,
+    [...allAds, ...windowAds, ...(library.evidence?.inventory.ads || [])], mergeGroups, deletedAds),
+    [library.files, library.evidence, allAds, windowAds, mergeGroups, deletedAds]);
+  const localCampaigns = useMemo(() => (library.evidence?.campaigns.rows || []).map(c => ({
+    ...c, state: extractState(c.name), brand: extractBrand(c.name),
+  })), [library.evidence]);
+  const libraryReady = library.connected && !library.evidenceError && library.evidence?.inventory.complete && library.evidence?.campaigns.complete;
 
   const pacing = useMemo(() => loadPacing(), [loadedAt]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -357,9 +369,10 @@ export default function Relaunch() {
         }
       }
       candidates.sort((a, b) => a.tier - b.tier || b.score - a.score);
-      return { ...sf, candidates: candidates.slice(0, 25) };
+      const ranked = prependUntested(candidates.slice(0, 25), localGroups.filter(g => !g.known && !isCityAd(g.name)).slice(0, 25), localCampaigns, sf.brand, sf.state, libraryReady);
+      return { ...sf, candidates: ranked };
     });
-  }, [shortfalls, windowAgg, caseAgg, usage, reuseMonths, minLeads]);
+  }, [shortfalls, windowAgg, caseAgg, usage, reuseMonths, minLeads, localGroups, localCampaigns, libraryReady]);
 
   // ── Styles ───────────────────────────────────────────────────────────────────
   const th = { padding: '7px 10px', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)', textAlign: 'right', whiteSpace: 'nowrap', borderBottom: '2px solid var(--border)', background: 'var(--surface)' };
@@ -410,6 +423,14 @@ export default function Relaunch() {
         </div>
       )}
 
+      <CreativeLibrary ads={[...allAds, ...windowAds]} merges={mergeGroups} deleted={deletedAds} />
+      {library.connected && <p style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+        New creatives appear first only for campaigns below $300 CPL over the last 30 completed days.
+        Proven recommendations stay unchanged for campaigns at $300 or above, or without reliable CPL.
+        {library.evidence && ` Window: ${library.evidence.since} to ${library.evidence.until}.`}
+        {!libraryReady && ' New-ad suggestions are paused until the Facebook checks complete.'}
+      </p>}
+
       {recommendations.map(rec => (
         <div key={rec.group} style={{ marginBottom: 30 }}>
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, marginBottom: 8, flexWrap: 'wrap' }}>
@@ -442,13 +463,19 @@ export default function Relaunch() {
                     const provenStr = (c.provenIn || []).slice(0, 5)
                       .map((p, idx, arr) => `${p.st} (${p.leads}${idx === arr.length - 1 ? ' leads' : ''})`)
                       .join(', ');
-                    const why = c.tier === 1
+                    const why = c.tier === 0
+                      ? <>Untested in synced Facebook accounts. Test in {c.targets.map(t => `${t.name} (${fmt(t.spend / t.results)} CPL)`).join(', ')}. If needed, make a version for {rec.state}.</>
+                      : c.tier === 1
                       ? <>Never run in {rec.state}. Proven in {provenStr || 'other states'} — {c.totalLeads} leads total{c.totalCpl != null ? <> @ {fmt(c.totalCpl)} CPL</> : null}.{c.cases ? ` ${c.cases} case${c.cases !== 1 ? 's' : ''}.` : ''}</>
                       : <>Ran in {rec.state} until {c.lastUsedHere ? new Date(c.lastUsedHere).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '?'} — {c.hereLeads} leads here{c.hereCpl != null ? <> @ {fmt(c.hereCpl)}</> : null}. {c.totalLeads} leads total across all states{c.totalCpl != null ? <> @ {fmt(c.totalCpl)}</> : null}.{c.cases ? ` ${c.cases} case${c.cases !== 1 ? 's' : ''}.` : ''}</>;
                     return (
                     <tr key={c.name} style={{ background: i % 2 ? 'var(--bg)' : 'transparent' }}>
                       <td style={{ ...td, color: 'var(--text-muted)', verticalAlign: 'top' }}>{i + 1}</td>
-                      <td style={{ ...tdL, fontWeight: 600, color: 'var(--text)', minWidth: 200, verticalAlign: 'top' }}>{c.name}</td>
+                      <td style={{ ...tdL, fontWeight: 600, color: 'var(--text)', minWidth: 200, verticalAlign: 'top' }}>{c.name}{c.library && <div style={{ fontSize: 11, fontWeight: 400, marginTop: 6 }}>
+                        <CreativePreview file={c.library.files.find(f => f.state === rec.state) || c.library.files[0]} enabled={library.previews && library.connected} />
+                        <div>{c.library.files[0].folder} / {c.library.date || 'Date unknown'}</div>
+                        <details><summary>{c.library.files.length} local version(s)</summary>{c.library.files.map(f => <div key={f.id}>{f.relativePath}</div>)}</details>
+                      </div>}</td>
                       {/* Last used in this state: "Never – 0" or "09/01 – 12" (date – leads here) */}
                       <td style={{ ...tdL, fontVariantNumeric: 'tabular-nums', verticalAlign: 'top' }} title={c.lastUsedHere ? `Last ran in ${rec.state} on ${new Date(c.lastUsedHere).toLocaleDateString('en-US')} · ${c.hereLeads} leads here` : `Never run in ${rec.state}`}>
                         {c.usedHere
@@ -464,7 +491,7 @@ export default function Relaunch() {
                           background: c.tier === 1 ? 'rgba(34,197,94,0.12)' : 'rgba(59,130,246,0.12)',
                           color: c.tier === 1 ? '#15803d' : '#1d4ed8',
                           border: `1px solid ${c.tier === 1 ? '#16a34a' : '#3b82f6'}` }}>
-                          {c.tier === 1 ? 'NEW' : 'RELAUNCH'}
+                          {c.tier === 0 ? 'UNTESTED' : c.tier === 1 ? 'NEW' : 'RELAUNCH'}
                         </span>
                         {why}
                         {(c.activeNow || []).length > 0 && (
@@ -472,12 +499,12 @@ export default function Relaunch() {
                         )}
                       </td>
                       <td style={{ ...td, verticalAlign: 'top' }}>
-                        <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                        {c.tier === 0 ? <span style={{ fontSize: 11 }}>Not tested</span> : <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                           <div style={{ width: 48, height: 6, borderRadius: 3, background: 'var(--border)', overflow: 'hidden' }}>
                             <div style={{ width: `${Math.round(c.score * 100)}%`, height: '100%', background: 'var(--green, #16a34a)' }} />
                           </div>
                           <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{Math.round(c.score * 100)}</span>
-                        </div>
+                        </div>}
                       </td>
                     </tr>
                     );

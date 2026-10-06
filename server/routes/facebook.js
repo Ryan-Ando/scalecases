@@ -1217,6 +1217,44 @@ router.get('/ad/:id/preview', async (req, res) => {
   }
 });
 
+// Metadata-only inventory plus campaign CPL for the last 30 complete days.
+// Local filenames/media never enter this endpoint.
+router.get('/creative-evidence', async (_req, res) => {
+  try {
+    if (!adAccounts().length) return res.status(503).json({ error: 'No Facebook accounts configured' });
+    const today = new Date().toISOString().slice(0, 10);
+    const since = isoDateOffset(today, -30), until = isoDateOffset(today, -1);
+    const inventoryKey = 'creative-inventory:v1';
+    const campaignKey = `creative-campaigns:${since}:${until}`;
+    const [inventory, campaigns] = await Promise.all([
+      dedupInflight(inventoryKey, async () => {
+        const cached = cacheGet(inventoryKey);
+        if (cached) return cached;
+        const ads = await fetchFromAllAccounts('ads', { fields: 'id,name,status,created_time,updated_time,campaign{id,name}' });
+        const failed = ads.failedAccounts || [];
+        const previous = cacheGetStale(inventoryKey)?.data;
+        const seen = new Map((previous?.ads || []).map(a => [a.id, a]));
+        for (const a of ads) seen.set(a.id, { id: a.id, name: a.name, campaignName: a.campaign?.name || '' });
+        const result = { ads: [...seen.values()], complete: failed.length === 0, failedAccounts: failed, checkedAt: new Date().toISOString() };
+        cacheSet(inventoryKey, result, failed.length ? 10 * 60_000 : 12 * 60 * 60_000);
+        return result;
+      }),
+      dedupInflight(campaignKey, async () => {
+        const cached = cacheGet(campaignKey);
+        if (cached) return cached;
+        const rows = await fetchInsightsRaw('campaign', null, {}, { since, until });
+        const failed = rows.failedAccounts || [];
+        const result = { complete: failed.length === 0, failedAccounts: failed, rows: rows.map(r => ({
+          id: r.campaign_id, name: r.campaign_name, spend: Number(r.spend) || 0, results: extractResults(r).results,
+        })) };
+        cacheSet(campaignKey, result, failed.length ? 10 * 60_000 : CACHE_TTL);
+        return result;
+      }),
+    ]);
+    res.json({ inventory, campaigns, since, until });
+  } catch (error) { res.status(503).json({ error: error.message }); }
+});
+
 // GET /api/facebook/campaign-spend?since=YYYY-MM-DD&until=YYYY-MM-DD
 // Returns total spend per campaign for a custom date range (for pacing calculations)
 router.get('/campaign-spend', async (req, res) => {
