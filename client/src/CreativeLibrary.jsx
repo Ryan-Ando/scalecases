@@ -15,7 +15,7 @@ export default function CreativeLibrary({ ads = [], merges = [], deleted = new S
   const [query, setQuery] = useState('');
   const [limit, setLimit] = useState(30);
   const groups = useMemo(() => groupLibrary(library.files, [...ads, ...(library.evidence?.inventory.ads || [])], merges, deleted), [library.files, library.evidence, ads, merges, deleted]);
-  const complete = library.connected && library.evidence?.inventory.complete && !library.evidenceError;
+  const complete = library.connected && library.evidence?.inventory.complete && library.evidence?.inventory.historyComplete && !library.evidenceError;
   const fresh = groups.filter(g => !g.known);
   const filtered = fresh.filter(g => `${g.name} ${g.files.map(f => f.relativePath).join(' ')}`.toLowerCase().includes(query.toLowerCase()));
   return <section style={{ margin: '16px 0 24px', padding: 16, border: '1px solid var(--border)', borderRadius: 10 }}>
@@ -39,7 +39,7 @@ export default function CreativeLibrary({ ads = [], merges = [], deleted = new S
           <td style={{ padding: 8 }}>{group.name}</td>
           <td style={{ padding: 8 }}>{group.files[0].folder || '/'}<br />{group.date || 'Date unknown'}</td>
           <td style={{ padding: 8 }}>{group.files.length} file(s){group.files.some(f => f.state) ? `; ${[...new Set(group.files.map(f => f.state).filter(Boolean))].join(', ')}` : ''}<details><summary>File paths</summary>{group.files.map(f => <div key={f.id}>{f.relativePath}</div>)}</details></td>
-          <td style={{ padding: 8 }}>{complete ? 'Untested in synced accounts' : 'Unverified'}</td>
+          <td style={{ padding: 8 }}>{!group.identifiable ? 'Unclear filename - excluded from suggestions' : complete ? 'No match in available Facebook history' : 'Unverified'}</td>
         </tr>)}</tbody>
       </table></div>
       {filtered.length > limit && <button className="btn btn--sm" onClick={() => setLimit(n => n + 30)}>Show more</button>}

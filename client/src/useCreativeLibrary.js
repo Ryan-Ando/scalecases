@@ -16,8 +16,8 @@ async function refreshEvidence() {
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || 'Facebook inventory unavailable');
       const saved = await dbGetMeta('creativeSeenAds') || [];
-      const seen = new Map(saved.map(a => [a.id, a]));
-      for (const ad of data.inventory.ads) seen.set(ad.id, ad);
+      const seen = new Map(saved.map(a => [JSON.stringify([a.id, a.name]), a]));
+      for (const ad of data.inventory.ads) seen.set(JSON.stringify([ad.id, ad.name]), ad);
       data.inventory.ads = [...seen.values()];
       await dbSetMeta('creativeSeenAds', data.inventory.ads);
       lastEvidence = Date.now();

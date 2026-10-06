@@ -123,7 +123,7 @@ export default function Relaunch() {
   const localCampaigns = useMemo(() => (library.evidence?.campaigns.rows || []).map(c => ({
     ...c, state: extractState(c.name), brand: extractBrand(c.name),
   })), [library.evidence]);
-  const libraryReady = library.connected && !library.evidenceError && library.evidence?.inventory.complete && library.evidence?.campaigns.complete;
+  const libraryReady = library.connected && !library.evidenceError && library.evidence?.inventory.complete && library.evidence?.inventory.historyComplete && library.evidence?.campaigns.complete;
 
   const pacing = useMemo(() => loadPacing(), [loadedAt]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -369,7 +369,7 @@ export default function Relaunch() {
         }
       }
       candidates.sort((a, b) => a.tier - b.tier || b.score - a.score);
-      const ranked = prependUntested(candidates.slice(0, 25), localGroups.filter(g => !g.known && !isCityAd(g.name)).slice(0, 25), localCampaigns, sf.brand, sf.state, libraryReady);
+      const ranked = prependUntested(candidates.slice(0, 25), localGroups.filter(g => !g.known && g.identifiable && !isCityAd(g.name)).slice(0, 25), localCampaigns, sf.brand, sf.state, libraryReady);
       return { ...sf, candidates: ranked };
     });
   }, [shortfalls, windowAgg, caseAgg, usage, reuseMonths, minLeads, localGroups, localCampaigns, libraryReady]);

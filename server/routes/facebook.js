@@ -1226,15 +1226,15 @@ router.get('/creative-evidence', async (_req, res) => {
     const since = isoDateOffset(today, -30), until = isoDateOffset(today, -1);
     const inventoryKey = 'creative-inventory:v1';
     const campaignKey = `creative-campaigns:${since}:${until}`;
-    const [inventory, campaigns] = await Promise.all([
+    const [inventory, campaigns, history] = await Promise.all([
       dedupInflight(inventoryKey, async () => {
         const cached = cacheGet(inventoryKey);
         if (cached) return cached;
         const ads = await fetchFromAllAccounts('ads', { fields: 'id,name,status,created_time,updated_time,campaign{id,name}' });
         const failed = ads.failedAccounts || [];
         const previous = cacheGetStale(inventoryKey)?.data;
-        const seen = new Map((previous?.ads || []).map(a => [a.id, a]));
-        for (const a of ads) seen.set(a.id, { id: a.id, name: a.name, campaignName: a.campaign?.name || '' });
+        const seen = new Map((previous?.ads || []).map(a => [JSON.stringify([a.id, a.name]), a]));
+        for (const a of ads) seen.set(JSON.stringify([a.id, a.name]), { id: a.id, name: a.name, campaignName: a.campaign?.name || '' });
         const result = { ads: [...seen.values()], complete: failed.length === 0, failedAccounts: failed, checkedAt: new Date().toISOString() };
         cacheSet(inventoryKey, result, failed.length ? 10 * 60_000 : 12 * 60 * 60_000);
         return result;
@@ -1250,8 +1250,24 @@ router.get('/creative-evidence', async (_req, res) => {
         cacheSet(campaignKey, result, failed.length ? 10 * 60_000 : CACHE_TTL);
         return result;
       }),
+      dedupInflight('creative-history:v1', async () => {
+        const cached = cacheGet('creative-history:v1');
+        if (cached) return cached;
+        const rows = await fetchInsightsRaw('ad', 'maximum');
+        const failed = rows.failedAccounts || [];
+        const seen = new Map((cacheGetStale('creative-history:v1')?.data?.ads || []).map(a => [JSON.stringify([a.id, a.name]), a]));
+        for (const row of rows) if (row.ad_name) seen.set(JSON.stringify([row.ad_id, row.ad_name]), { id: row.ad_id, name: row.ad_name });
+        const result = { ads: [...seen.values()], complete: failed.length === 0, failedAccounts: failed };
+        cacheSet('creative-history:v1', result, failed.length ? 10 * 60_000 : 24 * 60 * 60_000);
+        return result;
+      }),
     ]);
-    res.json({ inventory, campaigns, since, until });
+    res.json({ inventory: {
+      ...inventory, ads: [...inventory.ads, ...history.ads],
+      complete: inventory.complete && history.complete,
+      historyComplete: history.complete,
+      failedAccounts: [...inventory.failedAccounts, ...history.failedAccounts],
+    }, campaigns, since, until });
   } catch (error) { res.status(503).json({ error: error.message }); }
 });
 

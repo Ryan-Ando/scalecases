@@ -8,6 +8,18 @@ export function creativeKey(value) {
   return name.split(/[-–—]+/).map(s => s.trim()).filter(s => s && !STATES.has(s.toUpperCase())).join('-').replace(/\s+/g, ' ').toLowerCase();
 }
 
+// Broader identity is only exclusion evidence, never an automatic manual-group merge.
+export function usageKey(value) {
+  const adapted = String(value || '').replace(/\bD\.C\./gi, 'DC')
+    .replace(/([-\u2013\u2014])\s*([a-z]{2})\s+(?:LHP|SL|LSS)\b/gi, (all, dash, state) => STATES.has(state.toUpperCase()) ? dash : all)
+    .replace(/([-\u2013\u2014])\s*(?:Texas|California|Colorado|District of Columbia)\s*(?=[-\u2013\u2014.]|$)/gi, '$1');
+  return creativeKey(adapted).replace(/[- ](?:c|l)$/i, '').replace(/[^a-z0-9]/g, '');
+}
+
+export function identifiableCreative(name) {
+  return /^\d{4}[-\u2013\u2014 ]+[a-z]/i.test(String(name || '').trim());
+}
+
 export function groupLibrary(files, facebookAds, merges = [], deleted = []) {
   const parents = new Map(), labels = new Map();
   function find(key) {
@@ -20,14 +32,16 @@ export function groupLibrary(files, facebookAds, merges = [], deleted = []) {
     labels.set(target, group.canonical);
     for (const name of group.members || []) parents.set(find(creativeKey(name)), target);
   }
-  const known = new Set(facebookAds.map(a => find(creativeKey(a.name))).filter(Boolean));
+  const seenUsage = new Set(facebookAds.map(a => usageKey(a.name || a.ad_name)).filter(Boolean));
+  const known = new Set(facebookAds.map(a => find(creativeKey(a.name || a.ad_name))).filter(Boolean));
   const hidden = new Set([...deleted].map(name => find(creativeKey(name))));
   const groups = new Map();
   for (const file of files) {
     const key = find(creativeKey(file.name));
     if (!key || hidden.has(key)) continue;
-    if (!groups.has(key)) groups.set(key, { key, name: labels.get(key) || file.name, files: [], known: known.has(key), date: file.date });
+    if (!groups.has(key)) groups.set(key, { key, name: labels.get(key) || file.name, files: [], known: known.has(key), identifiable: identifiableCreative(file.name), date: file.date });
     const group = groups.get(key); group.files.push(file);
+    if (seenUsage.has(usageKey(file.name)) || seenUsage.has(usageKey(group.name))) group.known = true;
     // A later state export does not make an old creative new again.
     if (file.date && (!group.date || file.date < group.date)) group.date = file.date;
   }
@@ -47,7 +61,7 @@ export function prependUntested(proven, localGroups, campaigns, brand, state, co
   const targets = eligibleCampaigns(campaigns, brand, state);
   if (!targets.length) return proven;
   const used = new Set(proven.map(c => creativeKey(c.name)));
-  const fresh = localGroups.filter(g => !g.known && !used.has(creativeKey(g.name))).map(g => ({
+  const fresh = localGroups.filter(g => g.identifiable !== false && !g.known && !used.has(creativeKey(g.name))).map(g => ({
     name: g.name, tier: 0, library: g, targets, score: 0, hereLeads: 0, totalLeads: 0,
     hereCpl: null, totalCpl: null, cases: 0, usedHere: false, provenIn: [], activeNow: [],
   }));

@@ -16,6 +16,25 @@ test('state versions normalize without collapsing creative numbers or media vari
   assert.match(creativeKey('0901-IG SC-1-img'), /ig sc/);
 });
 const file = (name, id = name) => ({ id, name, relativePath: `0901/${name}.png`, folder: '0901', date: '2026-09-01' });
+
+test('actual firm and spelled-out state exports are excluded when the base ad ran', () => {
+  const pairs = [
+    ['0315-Notes Notif Bank-3-CA LHP-img', '0315-Notes Notif Bank-3-img'],
+    ['0329-Reddit Comment PR-CA SL-img', '0329-Reddit Comment PR-img'],
+    ['0323-GPT Chat-2-D.C.-img', '0323-GPT Chat-2-img'],
+    ['0319-GptVid-3-Texas-UGC', '0319-GptVid-3-UGC'],
+    ['0616-No Police Report PR-Iles BG-1-CA LSS', '0616-No Police Report PR-Iles BG-1-C'],
+  ];
+  for (const [local, used] of pairs) {
+    assert.equal(groupLibrary([file(local)], [{ name: used }])[0].known, true, local);
+  }
+  assert.equal(groupLibrary([file('0315-Notes Notif Bank-4-img')], [{ name: pairs[0][1] }])[0].known, false);
+});
+
+test('unidentifiable exports cannot become new-ad recommendations', () => {
+  const groups = groupLibrary([file('image'), file('311')], []);
+  assert.equal(prependUntested([], groups, [{brand: 'LSS', state: 'TX', spend: 200, results: 1}], 'LSS', 'TX', true).length, 0);
+});
 test('manual merges and known inactive ads exclude every matching state version', () => {
   const files = [file('0901-Notes-1-img-LSSCA'), file('0901-Notes-1-img-LSS CO'), file('0910-Different name')];
   const groups = groupLibrary(files, [{ name: 'old name', status: 'ARCHIVED' }], [{ canonical: 'Main ad', members: ['old name', '0901-Notes-1-img', '0910-Different name'] }]);
