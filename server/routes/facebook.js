@@ -1683,7 +1683,7 @@ async function fetchWindowAdsetInsights({ start, end }) {
     assertAccountAvailable(account, windowSource);
     const params = new URLSearchParams({
       level: 'adset',
-      fields: 'adset_id,adset_name,campaign_name,spend,impressions,unique_inline_link_clicks,cost_per_result,actions',
+      fields: 'adset_id,adset_name,campaign_id,campaign_name,spend,impressions,unique_inline_link_clicks,cost_per_result,actions',
       time_range: JSON.stringify({ since: start, until: end }),
       use_unified_attribution_setting: 'true',
       // Ads Manager books conversions on the impression date; the API default

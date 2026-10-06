@@ -1,3 +1,4 @@
+import { reportWindow, campaignTotals, formatCampaignReport, createCampaignSchedule } from '../campaignCplReport.js';
 import { pacingWindows } from '../pacingWindows.js';
 import { Router } from 'express';
 import fetch from 'node-fetch';
@@ -75,14 +76,15 @@ function accountRank(name) {
 
 // Adset metadata (names, status, budgets). force bypasses the 2h server cache
 // so a digest never judges "active" from stale statuses.
-async function getAdsetMeta(force = false) {
+async function getAdsetMeta(force = false, strict = false) {
   const r = await fetch(`http://127.0.0.1:${process.env.PORT || 3001}/api/facebook/adsets?metadata_only=true${force ? '&force=true' : ''}`);
   if (!r.ok) throw new Error(`adsets meta: ${r.status}`);
+  if (strict && (r.headers.get('X-FB-Failed-Accounts') || r.headers.get('X-Stale-Minutes'))) throw new Error('Facebook adset metadata incomplete or stale');
   return r.json();
 }
 
 // Ledger stage-leads (the /next-steps definition): counts per adset and per date
-async function getLedger(fromDate) {
+async function getLedger(fromDate, throughDate = null) {
   const auth   = await getAuthClient();
   const sheets = google.sheets({ version: 'v4', auth });
   const data   = await sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: `${EVENTS_TAB}!A:J` });
@@ -90,7 +92,7 @@ async function getLedger(fromDate) {
   const byAdsetByDate = {}, byDate = {}, windowByAdset = {};
   for (const r of rows) {
     const [, date, adsetId, state] = r;
-    if (!date || date < fromDate) continue;
+    if (!date || date < fromDate || (throughDate && date > throughDate)) continue;
     byDate[date] = (byDate[date] || 0) + 1;
     if (adsetId) {
       if (!byAdsetByDate[date]) byAdsetByDate[date] = {};
@@ -748,7 +750,10 @@ router.post('/telegram', async (req, res) => {
     if (String(msg.chat?.id) !== String(process.env.TELEGRAM_CHAT_ID)) return;
 
     const text = msg.text.trim().toLowerCase();
-    if (/^(digest|status)\b/.test(text)) {
+    if (/^(cpl|campaign cpl)\b/.test(text)) {
+      try { await sendTelegram(await buildMorningCplReport(new Date()), { mode: 'mono' }); }
+      catch (error) { await sendTelegram(`Campaign CPL report unavailable: ${error.message}`); }
+    } else if (/^(digest|status)\b/.test(text)) {
       if (_digest.lastText) await sendTelegram(_digest.lastText, { mode: 'html' });
       else await sendTelegram('No digest yet — reply "run".');
     } else if (/^list\b/.test(text)) {
@@ -832,8 +837,58 @@ async function runDigest({ send = true, sync = true } = {}) {
   }
 }
 
-// No automatic schedule — the digest runs only on demand ("run" in Telegram
-// or POST /api/digest/run).
+// Daily campaign report reuses the bot's read tools and Telegram delivery.
+const CPL_SORT = process.env.CAMPAIGN_CPL_SORT === 'hyros' ? 'hyros' : 'fb';
+let campaignSchedule;
+let morningReportFlight;
+async function buildMorningCplReport(now) {
+  if (morningReportFlight) return morningReportFlight;
+  morningReportFlight = (async () => {
+    const window = reportWindow(now);
+    const sync = await runIncrementalNextSteps(4);
+    if (!sync?.ok) throw new Error(sync?.error || sync?.message || 'Hyros refresh failed');
+    const [rows, ledger, metadata] = await Promise.all([
+      fetchWindowAdsetInsights(window), getLedger(window.start, window.end), getAdsetMeta(false, true),
+    ]);
+    if (rows.failedAccounts?.length) throw new Error('Facebook account cooldown: report data is incomplete');
+    return formatCampaignReport(campaignTotals(rows, ledger, metadata, CPL_SORT), window, CPL_SORT);
+  })().finally(() => { morningReportFlight = null; });
+  return morningReportFlight;
+}
+
+export function startCampaignCplSchedule() {
+  if (campaignSchedule) return;
+  const file = path.join(DATA_DIR, 'campaign-cpl-schedule.json');
+  campaignSchedule = createCampaignSchedule({
+    enabled: () => !!(process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID),
+    load: () => { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch (error) { if (error.code !== 'ENOENT') console.error('[campaign-cpl] checkpoint load:', error.message); return {}; } },
+    save: state => {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+      fs.writeFileSync(file + '.tmp', JSON.stringify(state));
+      fs.renameSync(file + '.tmp', file);
+    },
+    run: async now => {
+      const text = await buildMorningCplReport(now);
+      const delivery = await sendTelegram(text, { mode: 'mono' });
+      if (!delivery.sent) throw new Error(delivery.reason);
+      console.log('[campaign-cpl] morning report delivered');
+    },
+    notifyFailure: async () => {
+      const delivery = await sendTelegram('Your morning campaign CPL report is delayed because fresh data or delivery was unavailable. I will retry in 65 minutes.');
+      if (!delivery.sent) throw new Error(delivery.reason);
+    },
+  });
+  const tick = () => campaignSchedule.tick().catch(error => console.error('[campaign-cpl]', error.message));
+  setInterval(tick, 30_000).unref();
+  setTimeout(tick, 20_000).unref();
+}
+
+router.get('/campaign-cpl', async (_req, res) => {
+  try { res.type('text/plain').send(await buildMorningCplReport(new Date())); }
+  catch (error) { res.status(503).type('text/plain').send(error.message); }
+});
+
+// The existing kill/watch digest remains on demand.
 
 // ── Routes ────────────────────────────────────────────────────────────────────
 // POST /api/digest/run?send=0&sync=0 — trigger now (fire-and-forget)
@@ -912,7 +967,9 @@ router.get('/status', (req, res) => {
     lastRun: _digest.lastRun,
     lastError: _digest.lastError,
     lastDelivery: _digest.lastDelivery,
-    scheduledTimes: [],
+    scheduledTimes: ['06:30'],
+    campaignCplSchedule: campaignSchedule?.status() || null,
+    campaignCplSort: CPL_SORT,
     timezone: DIGEST_TZ,
     windowDaysBack: WINDOW_DAYS_BACK,
     rosterSize: loadRoster()?.entries?.length || 0,

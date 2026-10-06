@@ -11,7 +11,7 @@ import launcherRoutes from './routes/launcher.js';
 import variationsRoutes from './routes/variations.js';
 import hyrosRoutes from './routes/hyros.js';
 import snapshotsRoutes from './routes/snapshots.js';
-import digestRoutes from './routes/digest.js';
+import digestRoutes, { startCampaignCplSchedule } from './routes/digest.js';
 
 dotenv.config();
 
@@ -42,4 +42,5 @@ app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
   startSpendSchedule();
+  startCampaignCplSchedule();
 });
