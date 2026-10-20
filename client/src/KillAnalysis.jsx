@@ -32,7 +32,7 @@ class KillErrorBoundary extends Component {
     if (this.state.err) {
       return (
         <div style={{ padding: 24 }}>
-          <h3 style={{ color: '#dc2626', marginTop: 0 }}>Kill Analysis crashed</h3>
+          <h3 style={{ color: '#fb9292', marginTop: 0 }}>Kill Analysis crashed</h3>
           <pre style={{ background: 'rgba(220,38,38,0.08)', padding: 12, borderRadius: 6, fontSize: 12, overflow: 'auto', whiteSpace: 'pre-wrap' }}>
             {String(this.state.err?.stack || this.state.err)}
           </pre>
@@ -158,10 +158,10 @@ function quadrant(cpm, cpulc) {
   if (cpm == null || cpulc == null) return null;
   const hiCpm = cpm >= 40;
   const hiCpulc = cpulc >= 3;
-  if (!hiCpm && !hiCpulc) return { code: 'LL', label: 'Low CPM · Low CPULC', color: '#16a34a' };
-  if (hiCpm && !hiCpulc)  return { code: 'HL', label: 'High CPM · Low CPULC', color: '#16a34a' };
+  if (!hiCpm && !hiCpulc) return { code: 'LL', label: 'Low CPM · Low CPULC', color: '#82d9a2' };
+  if (hiCpm && !hiCpulc)  return { code: 'HL', label: 'High CPM · Low CPULC', color: '#82d9a2' };
   if (!hiCpm && hiCpulc)  return { code: 'LH', label: 'Low CPM · High CPULC', color: '#f59e0b' };
-  return { code: 'HH', label: 'High CPM · High CPULC', color: '#dc2626' };
+  return { code: 'HH', label: 'High CPM · High CPULC', color: '#fb9292' };
 }
 
 function evaluateKill(r, baseline, prior) {
@@ -437,7 +437,7 @@ function KillAnalysisInner() {
 
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 10, alignItems: 'center' }}>
           <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-            <strong style={{ color: '#16a34a' }}>This week:</strong> {weeks.current.start} → {weeks.current.end}
+            <strong style={{ color: '#82d9a2' }}>This week:</strong> {weeks.current.start} → {weeks.current.end}
             <span style={{ margin: '0 6px', opacity: 0.5 }}>·</span>
             <strong style={{ color: '#3b82f6' }}>Prior:</strong> {weeks.prior.start} → {weeks.prior.end}
           </span>
@@ -451,10 +451,10 @@ function KillAnalysisInner() {
         <div style={{
           padding: '10px 14px', marginBottom: 12, borderRadius: 6,
           background: 'rgba(220,38,38,0.08)', border: '1px solid #dc2626',
-          color: '#991b1b', fontSize: 12, display: 'flex', alignItems: 'center', gap: 10,
+          color: '#fb9292', fontSize: 12, display: 'flex', alignItems: 'center', gap: 10,
         }}>
           <span style={{ flex: 1 }}>{error}</span>
-          <button onClick={() => setError(null)} style={{ background: 'none', border: 'none', color: '#991b1b', cursor: 'pointer', fontSize: 16, padding: 0 }}>×</button>
+          <button onClick={() => setError(null)} style={{ background: 'none', border: 'none', color: '#fb9292', cursor: 'pointer', fontSize: 16, padding: 0 }}>×</button>
         </div>
       )}
 

@@ -582,8 +582,8 @@ export default function SpendSheet() {
         )}
 
         <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-          {syncError && <span style={{ fontSize: 11, color: '#dc2626' }} title={syncError}>Sync error</span>}
-          {pushError && <span style={{ fontSize: 11, color: '#dc2626' }} title={pushError}>Push error</span>}
+          {syncError && <span style={{ fontSize: 11, color: '#fb9292' }} title={syncError}>Sync error</span>}
+          {pushError && <span style={{ fontSize: 11, color: '#fb9292' }} title={pushError}>Push error</span>}
           {pushNote && !pushError && <span style={{ fontSize: 11, color: 'var(--green, #16a34a)' }}>{pushNote}</span>}
           <input
             type="text"
@@ -633,7 +633,7 @@ export default function SpendSheet() {
           <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Loading live budgets…</div>
         )}
         {budgetError && (
-          <div style={{ fontSize: 12, color: '#dc2626', padding: '8px 12px', background: 'rgba(220,38,38,0.06)', border: '1px solid #dc2626', borderRadius: 6 }}>
+          <div style={{ fontSize: 12, color: '#fb9292', padding: '8px 12px', background: 'rgba(220,38,38,0.06)', border: '1px solid #dc2626', borderRadius: 6 }}>
             Fetch failed: {budgetError}
           </div>
         )}
@@ -699,7 +699,7 @@ export default function SpendSheet() {
             <button className="btn btn--sm" onClick={addPacingRow}>Add Row</button>
             {addRowNote && <span role="status" style={{ fontSize: 12, color: 'var(--text-muted)' }}>{addRowNote}</span>}
           </div>
-          {pacingError && <div style={{ fontSize: 12, color: '#dc2626', marginBottom: 8 }}>{pacingError}</div>}
+          {pacingError && <div style={{ fontSize: 12, color: '#fb9292', marginBottom: 8 }}>{pacingError}</div>}
 
           <div style={{ overflowX: 'auto', border: '1px solid var(--border)', borderRadius: 10 }}>
             <table style={{ borderCollapse: 'collapse', width: '100%' }}>
@@ -806,7 +806,7 @@ export default function SpendSheet() {
                         {/* Days Left */}
                         <td style={pTd}>
                           {r.daysLeft == null ? '—' : r.daysLeft === 0
-                            ? <span style={{ color: '#dc2626', fontWeight: 700 }}>0</span>
+                            ? <span style={{ color: '#fb9292', fontWeight: 700 }}>0</span>
                             : r.daysLeft.toFixed(1)}
                         </td>
 

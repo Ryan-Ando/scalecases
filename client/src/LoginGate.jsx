@@ -74,7 +74,7 @@ export default function LoginGate({ children }) {
                   boxSizing: 'border-box',
                 }}
               />
-              {error && <div style={{ fontSize: 12, color: '#dc2626', marginTop: 6 }}>{error}</div>}
+              {error && <div style={{ fontSize: 12, color: '#fb9292', marginTop: 6 }}>{error}</div>}
             </div>
             <button
               type="submit"

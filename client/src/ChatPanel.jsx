@@ -160,7 +160,7 @@ export default function ChatPanel({ context }) {
               }}>
                 <div style={{
                   padding: '8px 12px', borderRadius: m.role === 'user' ? '12px 12px 4px 12px' : '12px 12px 12px 4px',
-                  background: m.role === 'user' ? 'var(--green)' : m.error ? '#fee2e2' : 'var(--bg)',
+                  background: m.role === 'user' ? 'var(--green)' : m.error ? '#3b1616' : 'var(--bg)',
                   color: m.role === 'user' ? '#fff' : m.error ? '#dc2626' : 'var(--text)',
                   fontSize: 13, lineHeight: 1.5, whiteSpace: 'pre-wrap', wordBreak: 'break-word',
                   border: m.role === 'assistant' ? '1px solid var(--border)' : 'none',

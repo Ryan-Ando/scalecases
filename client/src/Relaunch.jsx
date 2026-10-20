@@ -410,7 +410,7 @@ export default function Relaunch() {
         "Last used" shows <strong>Never – 0</strong> or <strong>date – leads it got in that state</strong>
       </div>
 
-      {error && <div style={{ fontSize: 12, color: '#dc2626', padding: '10px 14px', background: 'rgba(220,38,38,0.06)', border: '1px solid #dc2626', borderRadius: 8, marginBottom: 14 }}>{error}</div>}
+      {error && <div style={{ fontSize: 12, color: '#fb9292', padding: '10px 14px', background: 'rgba(220,38,38,0.06)', border: '1px solid #dc2626', borderRadius: 8, marginBottom: 14 }}>{error}</div>}
 
       {!loading && !error && Object.keys(pacing).length === 0 && (
         <div style={{ fontSize: 13, color: 'var(--text-muted)', padding: '14px 16px', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 10 }}>
@@ -435,7 +435,7 @@ export default function Relaunch() {
         <div key={rec.group} style={{ marginBottom: 30 }}>
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, marginBottom: 8, flexWrap: 'wrap' }}>
             <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--text)' }}>{rec.group}</div>
-            <span style={{ fontSize: 13, fontWeight: 700, color: '#dc2626' }}>underspending {fmt(rec.shortfall)}/day</span>
+            <span style={{ fontSize: 13, fontWeight: 700, color: '#fb9292' }}>underspending {fmt(rec.shortfall)}/day</span>
             <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
               needs {fmt(rec.dailyNeeded)}/day · live {fmt(rec.liveBudget)}/day · {fmt(rec.remaining)} left over {rec.daysLeft.toFixed(1)} days
             </span>
@@ -479,8 +479,8 @@ export default function Relaunch() {
                       {/* Last used in this state: "Never – 0" or "09/01 – 12" (date – leads here) */}
                       <td style={{ ...tdL, fontVariantNumeric: 'tabular-nums', verticalAlign: 'top' }} title={c.lastUsedHere ? `Last ran in ${rec.state} on ${new Date(c.lastUsedHere).toLocaleDateString('en-US')} · ${c.hereLeads} leads here` : `Never run in ${rec.state}`}>
                         {c.usedHere
-                          ? <span style={{ color: '#1d4ed8', fontWeight: 600 }}>{c.lastUsedHere ? new Date(c.lastUsedHere).toLocaleDateString('en-US', { month: '2-digit', day: '2-digit' }) : '?'} – {c.hereLeads}</span>
-                          : <span style={{ color: '#15803d', fontWeight: 600 }}>Never – 0</span>}
+                          ? <span style={{ color: '#93bbff', fontWeight: 600 }}>{c.lastUsedHere ? new Date(c.lastUsedHere).toLocaleDateString('en-US', { month: '2-digit', day: '2-digit' }) : '?'} – {c.hereLeads}</span>
+                          : <span style={{ color: '#82d9a2', fontWeight: 600 }}>Never – 0</span>}
                       </td>
                       <td style={{ ...td, fontWeight: 700, verticalAlign: 'top' }}>{c.totalLeads}</td>
                       <td style={{ ...td, verticalAlign: 'top', color: c.totalCpl == null ? 'var(--text-muted)' : c.totalCpl <= 300 ? '#15803d' : c.totalCpl <= 450 ? 'var(--text)' : '#dc2626' }}>

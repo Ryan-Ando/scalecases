@@ -26,8 +26,8 @@ export default function CreativeLibrary({ ads = [], merges = [], deleted = new S
       <label style={{ fontSize: 12 }}><input type="checkbox" checked={library.previews} onChange={enableLocalPreviews} /> Local previews</label>
     </div>
     <p style={{ fontSize: 12, color: 'var(--text-muted)' }}>Automatically checks this computer every minute. Files and previews stay on this computer. New files are grouped using your existing ad combinations.</p>
-    {library.error && <p role="status" style={{ fontSize: 12, color: '#b45309' }}>{library.error}</p>}
-    {library.evidenceError && <p role="status" style={{ fontSize: 12, color: '#b45309' }}>Facebook check: {library.evidenceError}</p>}
+    {library.error && <p role="status" style={{ fontSize: 12, color: '#f2bd65' }}>{library.error}</p>}
+    {library.evidenceError && <p role="status" style={{ fontSize: 12, color: '#f2bd65' }}>Facebook check: {library.evidenceError}</p>}
     {library.connected && !complete && <p role="status">Facebook inventory is incomplete or still loading. New-ad recommendations are withheld until all connected accounts are checked.</p>}
     {library.files.length > 0 && <details>
       <summary style={{ cursor: 'pointer', marginBottom: 12 }}>{fresh.length} {complete ? 'creatives not found in synced Facebook accounts' : 'creatives awaiting confirmation'} — view library</summary>

@@ -45,7 +45,7 @@ export default function App() {
           style={{
             marginLeft: 16, fontSize: 11, padding: '4px 10px',
             background: 'rgba(34,197,94,0.08)', border: '1px solid #16a34a',
-            borderRadius: 6, color: '#15803d', whiteSpace: 'nowrap', fontWeight: 600,
+            borderRadius: 6, color: '#82d9a2', whiteSpace: 'nowrap', fontWeight: 600,
           }}
         >
           ● Meta API · ads_read · system user token (S2S)

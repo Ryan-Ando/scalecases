@@ -1,18 +1,20 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
-  --bg: #f0f2f4;
-  --surface: #ffffff;
-  --green: #3a8f5c;
-  --green-dark: #2d7049;
-  --green-light: #e8f5ee;
-  --border: #e2e6ea;
-  --text: #1a1d23;
-  --text-muted: #6b7280;
+  color-scheme: dark;
+  --green-hover: #276b42;
+  --bg: #10151d;
+  --surface: #19212c;
+  --green: #328552;
+  --green-dark: #82d9a2;
+  --green-light: #18382b;
+  --border: #354152;
+  --text: #e7edf5;
+  --text-muted: #a3afc0;
   --mono: 'Montserrat', sans-serif;
   --sans: 'Montserrat', sans-serif;
   --radius: 8px;
-  --shadow: 0 1px 3px rgba(0,0,0,0.08);
+  --shadow: 0 1px 3px rgba(0,0,0,0.3);
 }
 
 body {
@@ -25,3 +27,7 @@ body {
 }
 
 button { font-family: var(--sans); }
+
+input, select, textarea { color: var(--text); background-color: var(--surface); font-family: var(--sans); }
+input::placeholder, textarea::placeholder { color: var(--text-muted); }
+:focus-visible { outline: 2px solid #82d9a2; outline-offset: 2px; }

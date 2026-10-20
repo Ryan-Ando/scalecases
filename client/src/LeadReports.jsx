@@ -138,7 +138,7 @@ function ReconcilePanel({ reports }) {
                       <tr key={a.action_type}>
                         <td className="rc-debug-type">{a.action_type}</td>
                         <td className="rc-debug-val">{a.value}</td>
-                        <td className="rc-debug-val" style={{ color: '#15803d' }}>{uniq?.value ?? '—'}</td>
+                        <td className="rc-debug-val" style={{ color: '#82d9a2' }}>{uniq?.value ?? '—'}</td>
                       </tr>
                     );
                   })}

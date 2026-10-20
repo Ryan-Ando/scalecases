@@ -195,7 +195,7 @@ export default function CplTracker() {
         <button onClick={() => fetchData()} disabled={loading} className="cpl-sync-btn">
           {loading ? 'Loading…' : '↻ Refresh'}
         </button>
-        {error && <div style={{ marginTop: 8, fontSize: 12, color: '#dc2626' }}>{error}</div>}
+        {error && <div style={{ marginTop: 8, fontSize: 12, color: '#fb9292' }}>{error}</div>}
       </div>
     );
   }
@@ -211,7 +211,7 @@ export default function CplTracker() {
         {cplData.lastSync && (
           <span className="cpl-lastsync">Last refresh: {new Date(cplData.lastSync).toLocaleString()}</span>
         )}
-        {error && <span style={{ fontSize: 12, color: '#dc2626' }}>{error}</span>}
+        {error && <span style={{ fontSize: 12, color: '#fb9292' }}>{error}</span>}
         <div className="cpl-days">
           {[7, 14, 30, 0].map(n => (
             <button key={n} onClick={() => setDays(n)} className={`cpl-day-btn${days === n ? ' active' : ''}`}>
@@ -332,12 +332,12 @@ export default function CplTracker() {
                 key={c} onClick={() => toggle(c)}
                 className="cpl-legend-btn"
                 style={{
-                  borderColor: off ? '#d1d5db' : color,
-                  background:  off ? '#f3f4f6' : 'transparent',
+                  borderColor: off ? '#1f2328' : color,
+                  background:  off ? '#1f2229' : 'transparent',
                   color:       off ? '#9ca3af' : 'var(--text)',
                 }}
               >
-                <span className="cpl-ldot" style={{ background: off ? '#d1d5db' : color }} />
+                <span className="cpl-ldot" style={{ background: off ? '#1f2328' : color }} />
                 <span
                   className="cpl-status-dot"
                   title={cplData.status?.[c] === 'ACTIVE' ? 'Active' : 'Inactive'}

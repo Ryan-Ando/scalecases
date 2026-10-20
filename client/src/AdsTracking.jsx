@@ -591,7 +591,7 @@ function AdDetailModal({ adName, state, allAds, sheetByName, accountLabel, merge
             ) : (
               <button
                 className="btn btn--sm"
-                style={{ color: '#dc2626' }}
+                style={{ color: '#fb9292' }}
                 onClick={() => onUnmerge(adName)}
                 title="Split back into individual rows"
               >
@@ -614,7 +614,7 @@ function AdDetailModal({ adName, state, allAds, sheetByName, accountLabel, merge
                 {mergeGroup.members.map(m => (
                   <span key={m} style={{
                     fontSize: 12,
-                    background: m === adName ? '#d1fae5' : 'var(--surface)',
+                    background: m === adName ? '#163b28' : 'var(--surface)',
                     border: '1px solid var(--border)',
                     borderRadius: 5,
                     padding: '2px 8px',
@@ -773,7 +773,7 @@ function AdDetailModal({ adName, state, allAds, sheetByName, accountLabel, merge
             <div style={{ padding: '16px 0', fontSize: 12, color: 'var(--text-muted)' }}>Loading cases…</div>
           )}
           {ghlError && (
-            <div style={{ padding: '8px 12px', fontSize: 12, color: '#dc2626', background: '#fee2e2', borderRadius: 6, marginTop: 8 }}>{ghlError}</div>
+            <div style={{ padding: '8px 12px', fontSize: 12, color: '#fb9292', background: '#3b1616', borderRadius: 6, marginTop: 8 }}>{ghlError}</div>
           )}
           {cases.length > 0 && (() => {
             const CASE_COLS = [
@@ -2045,7 +2045,7 @@ export default function AdsTracking() {
                       Ad structure: {allAds.length} ads · {okCount}/{accounts.length} accounts loaded
                     </span>
                     {failed.length > 0 && (
-                      <span style={{ fontSize: 11, color: '#dc2626' }}>
+                      <span style={{ fontSize: 11, color: '#fb9292' }}>
                         ({failed.length} failed — rate limited)
                       </span>
                     )}
@@ -2056,7 +2056,7 @@ export default function AdsTracking() {
                   </span>
                 ) : null}
                 {structureSync.error && (
-                  <span style={{ fontSize: 11, color: '#dc2626' }}>Structure sync failed: {structureSync.error}</span>
+                  <span style={{ fontSize: 11, color: '#fb9292' }}>Structure sync failed: {structureSync.error}</span>
                 )}
                 <button
                   className="btn btn--sm"
@@ -2077,7 +2077,7 @@ export default function AdsTracking() {
             <span style={{ fontSize: 11, color: 'var(--green-dark)' }}>{syncNote}</span>
           )}
           {syncError && (
-            <span style={{ fontSize: 11, color: '#dc2626' }}>
+            <span style={{ fontSize: 11, color: '#fb9292' }}>
               Sync failed — {syncError}
             </span>
           )}
@@ -2090,7 +2090,7 @@ export default function AdsTracking() {
         </div>
       )}
       {(rangeError || (leadCutoffEnabled && leadCutoffError)) && (
-        <div role="status" style={{ fontSize: 12, color: '#b45309', marginBottom: 12 }}>
+        <div role="status" style={{ fontSize: 12, color: '#f2bd65', marginBottom: 12 }}>
           {rangeError || leadCutoffError}
         </div>
       )}
@@ -2259,7 +2259,7 @@ export default function AdsTracking() {
           Hide city ads
         </label>
         {loadingCases && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Loading cases…</span>}
-        {casesError && <span style={{ fontSize: 11, color: '#dc2626' }}>{casesError}</span>}
+        {casesError && <span style={{ fontSize: 11, color: '#fb9292' }}>{casesError}</span>}
         {importing && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Importing monthly cases…</span>}
         {!importing && importResult && (
           <span style={{ fontSize: 11, color: 'var(--green-dark)' }}>
@@ -2267,7 +2267,7 @@ export default function AdsTracking() {
           </span>
         )}
         {importError && (
-          <span style={{ fontSize: 11, color: '#dc2626' }} title={importError}>
+          <span style={{ fontSize: 11, color: '#fb9292' }} title={importError}>
             Import failed — {importError.slice(0, 60)}
           </span>
         )}
@@ -2350,7 +2350,7 @@ export default function AdsTracking() {
                   Spend {sortKey === 'spend' && <SortArrow dir={sortDir} />}
                   <div className="col-resize-handle" onMouseDown={e => startColResize('spend', 80, e)} />
                 </th>
-                <th className="tracking-th-state tracking-th-sortable" onClick={() => handleSort('cpl')} style={{ color: '#16a34a' }}>
+                <th className="tracking-th-state tracking-th-sortable" onClick={() => handleSort('cpl')} style={{ color: '#82d9a2' }}>
                   CPL {sortKey === 'cpl' && <SortArrow dir={sortDir} />}
                   <div className="col-resize-handle" onMouseDown={e => startColResize('cpl', 70, e)} />
                 </th>
@@ -2424,10 +2424,10 @@ export default function AdsTracking() {
                         Reuse
                       </button>
                       <div className="col-stat-block">
-                        {colLeads > 0 && <span style={{ color: '#16a34a', fontWeight: 700 }}>{colLeads} leads</span>}
+                        {colLeads > 0 && <span style={{ color: '#82d9a2', fontWeight: 700 }}>{colLeads} leads</span>}
                         {colCases > 0 && <span style={{ color: '#3b82f6', fontWeight: 700 }}>{colCases} cases</span>}
                         {colSpend > 0 && <span style={{ color: '#64748b' }}>${colSpend.toLocaleString('en-US', { maximumFractionDigits: 0 })}</span>}
-                        {colSpend > 0 && colLeads > 0 && <span style={{ color: '#16a34a' }}>CPL ${(colSpend / colLeads).toFixed(0)}</span>}
+                        {colSpend > 0 && colLeads > 0 && <span style={{ color: '#82d9a2' }}>CPL ${(colSpend / colLeads).toFixed(0)}</span>}
                         {colSpend > 0 && colCases > 0 && <span style={{ color: '#3b82f6' }}>CPC ${(colSpend / colCases).toFixed(0)}</span>}
                       </div>
                     </div>
@@ -2499,13 +2499,13 @@ export default function AdsTracking() {
                     <td className="tracking-td-date">{fmtDateNum(firstUsed[adName])}</td>
                     <td className="tracking-td-date">
                       {lastUsedByAd[adName]?.active
-                        ? <span style={{ color: '#16a34a', fontWeight: 700 }}>Active</span>
+                        ? <span style={{ color: '#82d9a2', fontWeight: 700 }}>Active</span>
                         : fmtDateNum(lastUsedByAd[adName]?.last)}
                     </td>
                     <td className="tracking-td-total" style={{ color: '#94a3b8', fontSize: 12 }}>
                       {totalSpend > 0 ? `$${totalSpend.toLocaleString('en-US', { maximumFractionDigits: 0 })}` : '—'}
                     </td>
-                    <td className="tracking-td-total" style={{ color: '#16a34a', fontSize: 12 }}>
+                    <td className="tracking-td-total" style={{ color: '#82d9a2', fontSize: 12 }}>
                       {cpl != null ? `$${cpl.toFixed(0)}` : '—'}
                     </td>
                     <td className="tracking-td-total" style={{ color: '#3b82f6', fontSize: 12 }}>
@@ -2573,7 +2573,7 @@ export default function AdsTracking() {
                     <td className="tracking-td-total tracking-tfoot-label" style={{ color: '#94a3b8' }}>
                       {totSpend > 0 ? `$${totSpend.toLocaleString('en-US', { maximumFractionDigits: 0 })}` : '—'}
                     </td>
-                    <td className="tracking-td-total tracking-tfoot-label" style={{ color: '#16a34a' }}>
+                    <td className="tracking-td-total tracking-tfoot-label" style={{ color: '#82d9a2' }}>
                       {totLeads > 0 ? `$${(totSpend / totLeads).toFixed(0)}` : '—'}
                     </td>
                     <td className="tracking-td-total tracking-tfoot-label" style={{ color: '#3b82f6' }}>
@@ -2667,7 +2667,7 @@ export default function AdsTracking() {
               <button className="btn btn--sm" onClick={fetchCplComparison} disabled={cplLoading} style={{ marginLeft: 'auto' }}>
                 {cplLoading ? 'Loading…' : cplRows.length ? 'Refresh' : 'Load'}
               </button>
-              {cplError && <span style={{ fontSize: 12, color: '#dc2626' }}>{cplError}</span>}
+              {cplError && <span style={{ fontSize: 12, color: '#fb9292' }}>{cplError}</span>}
             </div>
 
             {cplRows.length > 0 && (
