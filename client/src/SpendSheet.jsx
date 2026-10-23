@@ -1,3 +1,4 @@
+import { countLiveAdsets } from './liveAdsets.js';
 import { pacingWindows } from './pacingWindows.js';
 import { useState, useEffect, useMemo, useRef, Fragment } from 'react';
 import { dbGetAll, dbUpsert } from './db.js';
@@ -150,6 +151,7 @@ function monthLabel(ym) {
 
 export default function SpendSheet() {
   const [insights, setInsights]     = useState([]);
+  const [adsetsLoaded, setAdsetsLoaded] = useState(false);
   const [adsets, setAdsets]         = useState([]);
   const [loadingBudget, setLoadingBudget] = useState(false);
   const [budgetError, setBudgetError] = useState('');
@@ -215,7 +217,11 @@ export default function SpendSheet() {
       const res  = await fetch(`${BASE}/api/facebook/adsets?${qs}`);
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || res.statusText);
+      if (res.headers.get('X-FB-Failed-Accounts') || res.headers.get('X-Stale-Minutes')) {
+        setBudgetError('Facebook data is incomplete or stale. Refresh to get live adset counts.');
+      }
       setAdsets(data);
+      setAdsetsLoaded(true);
     } catch (e) {
       console.warn('Adset budget fetch failed:', e.message);
       setBudgetError(e.message);
@@ -372,6 +378,9 @@ export default function SpendSheet() {
     }
     return map;
   }, [adsets]);
+
+  const liveAdsets = countLiveAdsets(adsets, extractGroup);
+  const countsReady = !loadingBudget && !budgetError && adsetsLoaded;
 
   const budgetStates     = useMemo(() => Object.keys(budgetByState).sort(), [budgetByState]);
   const totalDailyBudget = useMemo(() => Object.values(budgetByState).reduce((s, v) => s + v, 0), [budgetByState]);
@@ -716,6 +725,7 @@ export default function SpendSheet() {
                   <th style={pTh}>Daily Needed</th>
                   <th style={pTh}>Live Daily</th>
                   <th style={{ ...pTh, borderLeft: '2px solid var(--border)' }}>Shortfall</th>
+                  <th style={pTh} title="Facebook adsets excluding inactive, deleted, completed and off delivery; counted once per adset, regardless of budget.">Active Adsets</th>
                 </tr>
               </thead>
               <tbody>
@@ -728,7 +738,7 @@ export default function SpendSheet() {
                   return (
                     <Fragment key={brand}>
                       <tr>
-                        <td colSpan={11} style={{ padding: '7px 12px', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text)', background: 'var(--bg)', borderBottom: '1px solid var(--border)' }}>{brand}</td>
+                        <td colSpan={12} style={{ padding: '7px 12px', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text)', background: 'var(--bg)', borderBottom: '1px solid var(--border)' }}>{brand}</td>
                       </tr>
                       {rows.map(r => {
                   const shortfallColor = r.shortfall == null ? 'var(--text-muted)'
@@ -838,12 +848,13 @@ export default function SpendSheet() {
                         <td style={{ ...pTd, fontWeight: 700, color: shortfallColor, borderLeft: '2px solid var(--border)' }}>
                           {r.shortfall == null ? '—' : `${r.shortfall >= 0 ? '+' : ''}${fmt(r.shortfall)}`}
                         </td>
+                        <td style={{ ...pTd, fontWeight: 600 }}>{countsReady ? (liveAdsets[r.st] || 0) : "\u2014"}</td>
                       </tr>
 
                       {/* Expandable monthly budget inputs */}
                       {isExpanded && (
                         <tr>
-                          <td colSpan={11} style={{ padding: '14px 20px', background: 'var(--bg)', borderBottom: '2px solid var(--border)' }}>
+                          <td colSpan={12} style={{ padding: '14px 20px', background: 'var(--bg)', borderBottom: '2px solid var(--border)' }}>
                             {r.months.length === 0 ? (
                               <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
                                 Set start and end dates to define monthly budget periods.
@@ -891,6 +902,7 @@ export default function SpendSheet() {
                         <td style={{ ...pTd, fontWeight: 700, color: subColor, borderLeft: '2px solid var(--border)', background: 'var(--bg)' }}>
                           {subShortfall == null ? '—' : `${subShortfall >= 0 ? '+' : ''}${fmt(subShortfall)}`}
                         </td>
+                        <td style={{ ...pTd, fontWeight: 700, background: "var(--bg)" }}>{countsReady ? rows.reduce((total, row) => total + (liveAdsets[row.st] || 0), 0) : "\u2014"}</td>
                       </tr>
                     </Fragment>
                   );

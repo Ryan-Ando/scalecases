@@ -861,14 +861,14 @@ router.get('/adsets', async (req, res) => {
   const { date_preset, campaign_id, start, end, metadata_only } = req.query;
   const wantMetadataOnly = metadata_only === 'true';
   const cacheKey = wantMetadataOnly
-    ? `adsets:meta:${campaign_id||''}`
+    ? `adsets:meta:v2:${campaign_id||''}`
     : `adsets:${campaign_id||''}:${date_preset||''}:${start||''}:${end||''}`;
   try {
     const cached = req.query.force ? null : cacheGet(cacheKey);
     if (cached) return sendCachedPayload(res, cached);
     const timeRange = start && end ? { since: start, until: end } : null;
 
-    const listParams = { fields: 'id,name,status,effective_status,campaign_id,campaign{name,daily_budget,lifetime_budget},created_time,daily_budget,lifetime_budget,optimization_goal' };
+    const listParams = { fields: 'id,name,status,effective_status,campaign_id,campaign{name,daily_budget,lifetime_budget},created_time,end_time,daily_budget,lifetime_budget,optimization_goal' };
     if (campaign_id) listParams.filtering = JSON.stringify([{ field: 'campaign.id', operator: 'EQUAL', value: campaign_id }]);
 
     // Fast path: budget / status data only — no insights fetch, no per-row extractResults.
@@ -884,6 +884,7 @@ router.get('/adsets', async (req, res) => {
           name: a.name,
           status: a.status,
           effectiveStatus: a.effective_status,
+          endTime: a.end_time || null,
           campaignId: a.campaign_id,
           campaignName: a.campaign?.name || '',
           createdTime: a.created_time,
@@ -1349,7 +1350,7 @@ async function runPrefetch(force = false) {
     // ── 1. Entity lists (ads for the tracking grid, adsets for SpendSheet) ──
     const [adsetList, adList] = await Promise.all([
       fetchFromAllAccounts('adsets', {
-        fields: 'id,name,status,effective_status,campaign_id,campaign{name,daily_budget,lifetime_budget},created_time,daily_budget,lifetime_budget,optimization_goal',
+        fields: 'id,name,status,effective_status,campaign_id,campaign{name,daily_budget,lifetime_budget},created_time,end_time,daily_budget,lifetime_budget,optimization_goal',
       }),
       fetchFromAllAccounts('ads', {
         fields: 'id,name,status,effective_status,adset_id,adset{name,status,effective_status},campaign_id,campaign{name},creative{id,name,thumbnail_url},created_time,updated_time,daily_budget,lifetime_budget',
