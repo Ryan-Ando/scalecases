@@ -1,9 +1,23 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { countLiveAdsets } from '../../client/src/liveAdsets.js';
+import { enabledAdsetIds } from '../adDelivery.js';
+
+test('all-off and empty adsets are excluded; one enabled child qualifies only its parent', () => {
+  const enabled = enabledAdsetIds([
+    {adset_id: 'off', status: 'PAUSED', effective_status: 'PAUSED'},
+    {adset_id: 'mixed', status: 'PAUSED', effective_status: 'PAUSED'},
+    {adset_id: 'mixed', status: 'ACTIVE', effective_status: 'ACTIVE'},
+    {adset_id: 'parent-off', status: 'ACTIVE', effective_status: 'CAMPAIGN_PAUSED'},
+  ]);
+  assert.deepEqual([...enabled], ['mixed']);
+  const rows = ['off', 'mixed', 'empty', 'parent-off'].map(id => ({id, effectiveStatus: 'ACTIVE', campaignName: 'LSS TX', hasEnabledAds: enabled.has(id)}));
+  rows.push({id: 'missing-evidence', effectiveStatus: 'ACTIVE', campaignName: 'LSS TX'});
+  assert.deepEqual(countLiveAdsets(rows, name => name), {'LSS TX': 1});
+});
 
 test('counts distinct qualifying adsets independent of budget, excluding off and finished delivery', () => {
-  const row = (id, effectiveStatus, extra = {}) => ({ id, effectiveStatus, campaignName: 'LSS TX', ...extra });
+  const row = (id, effectiveStatus, extra = {}) => ({ id, effectiveStatus, hasEnabledAds: true, campaignName: 'LSS TX', ...extra });
   const rows = [row('a', 'ACTIVE'), row('a', 'ACTIVE'), row('b', 'IN_PROCESS'), row('c', 'WITH_ISSUES'),
     ...['INACTIVE', 'DELETED', 'ARCHIVED', 'COMPLETED', 'OFF', 'PAUSED', 'CAMPAIGN_PAUSED', 'ADSET_PAUSED'].map(s => row(s, s)),
     row('finished', 'ACTIVE', {endTime: '2026-10-01T00:00:00Z'}), row('whop:synthetic', 'ACTIVE'), row('unknown', ''),

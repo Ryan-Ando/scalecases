@@ -5,6 +5,7 @@ export function countLiveAdsets(adsets, groupForCampaign, now = Date.now()) {
   for (const adset of adsets) {
     if (!adset.id || String(adset.id).startsWith('whop:') || seen.has(adset.id)) continue;
     seen.add(adset.id);
+    if (adset.hasEnabledAds !== true) continue;
     const status = String(adset.effectiveStatus || adset.status || '').toUpperCase();
     if (!status || EXCLUDED.has(status) || EXCLUDED.has(String(adset.status || '').toUpperCase())) continue;
     if (adset.endTime && Date.parse(adset.endTime) <= now) continue;

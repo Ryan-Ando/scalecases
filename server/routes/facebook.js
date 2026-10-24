@@ -1,3 +1,4 @@
+import { enabledAdsetIds } from '../adDelivery.js';
 import { Router } from 'express';
 import fetch from 'node-fetch';
 import fs from 'fs';
@@ -860,8 +861,9 @@ router.get('/campaign-insights', async (req, res) => {
 router.get('/adsets', async (req, res) => {
   const { date_preset, campaign_id, start, end, metadata_only } = req.query;
   const wantMetadataOnly = metadata_only === 'true';
+  const includeAdDelivery = wantMetadataOnly && req.query.include_ad_delivery === 'true';
   const cacheKey = wantMetadataOnly
-    ? `adsets:meta:v2:${campaign_id||''}`
+    ? `adsets:meta:v2:${campaign_id||''}${includeAdDelivery ? ':ad-delivery' : ''}`
     : `adsets:${campaign_id||''}:${date_preset||''}:${start||''}:${end||''}`;
   try {
     const cached = req.query.force ? null : cacheGet(cacheKey);
@@ -877,6 +879,8 @@ router.get('/adsets', async (req, res) => {
       const payload = await dedupInflight(cacheKey, async () => {
       const stampBefore = errStamp();
       const adsets = await fetchFromAllAccounts('adsets', listParams);
+      const childAds = includeAdDelivery ? await fetchFromAllAccounts('ads', { fields: 'id,adset_id,status,effective_status' }) : [];
+      const enabledIds = enabledAdsetIds(childAds);
       const seen = new Set();
       const mapped = adsets.filter(a => { if (seen.has(a.id)) return false; seen.add(a.id); return true; })
         .map(a => ({
@@ -885,6 +889,7 @@ router.get('/adsets', async (req, res) => {
           status: a.status,
           effectiveStatus: a.effective_status,
           endTime: a.end_time || null,
+          ...(includeAdDelivery ? { hasEnabledAds: enabledIds.has(a.id) } : {}),
           campaignId: a.campaign_id,
           campaignName: a.campaign?.name || '',
           createdTime: a.created_time,
@@ -896,7 +901,7 @@ router.get('/adsets', async (req, res) => {
         }));
       // Whop campaigns' real budgets (beta ad_campaigns/ad_groups endpoints)
       mapped.push(...await whopLiveBudgetAdsets());
-      return cachePartialAware(cacheKey, mapped, errStamp() !== stampBefore);
+      return cachePartialAware(cacheKey, mapped, errStamp() !== stampBefore || !!childAds.failedAccounts?.length || !!adsets.failedAccounts?.length);
       });
       return sendCachedPayload(res, payload);
     }

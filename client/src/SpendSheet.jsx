@@ -212,7 +212,7 @@ export default function SpendSheet() {
       // metadata_only skips the insights fetch on the server — we only need budget,
       // status, and campaign name for the Live Daily Budget cards. Full-insights
       // fetch (with actions[] and cost_per_result) was timing out on large accounts.
-      const qs = new URLSearchParams({ metadata_only: 'true' });
+      const qs = new URLSearchParams({ metadata_only: 'true', include_ad_delivery: 'true' });
       if (force) qs.set('force', 'true');
       const res  = await fetch(`${BASE}/api/facebook/adsets?${qs}`);
       const data = await res.json();
@@ -725,7 +725,7 @@ export default function SpendSheet() {
                   <th style={pTh}>Daily Needed</th>
                   <th style={pTh}>Live Daily</th>
                   <th style={{ ...pTh, borderLeft: '2px solid var(--border)' }}>Shortfall</th>
-                  <th style={pTh} title="Facebook adsets excluding inactive, deleted, completed and off delivery; counted once per adset, regardless of budget.">Active Adsets</th>
+                  <th style={pTh} title="Facebook adsets excluding inactive, deleted, completed and off delivery; must contain an enabled ad; counted once per adset, regardless of budget.">Active Adsets</th>
                 </tr>
               </thead>
               <tbody>
