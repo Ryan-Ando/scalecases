@@ -3,6 +3,7 @@ import './App.css';
 import AdsTracking from './AdsTracking.jsx';
 import SpendSheet from './SpendSheet.jsx';
 import Relaunch from './Relaunch.jsx';
+import Disclaimers from './Disclaimers.jsx';
 
 function Logo() {
   return <img src="/logo.png" width="32" height="32" style={{ borderRadius: 8, display: 'block' }} alt="Scale Cases" />;
@@ -10,7 +11,7 @@ function Logo() {
 
 // Only the tabs in active use — Kill Analysis, Angle Matrix, State Variations,
 // CPL Tracker and Lead Reports are hidden (components still exist in the repo)
-const TABS = ['Ads Tracking', 'Spend Sheet', 'Relaunch'];
+const TABS = ['Ads Tracking', 'Spend Sheet', 'Relaunch', 'Disclaimers'];
 
 // Lazy-mount: components mount on first visit and stay mounted (preserves state + ongoing work)
 export default function App() {
@@ -55,6 +56,7 @@ export default function App() {
         {mounted.has('Ads Tracking') && <div style={show('Ads Tracking')}><AdsTracking /></div>}
         {mounted.has('Spend Sheet')  && <div style={show('Spend Sheet')}><SpendSheet /></div>}
         {mounted.has('Relaunch')     && <div style={show('Relaunch')}><Relaunch /></div>}
+        {mounted.has('Disclaimers')  && <div style={show('Disclaimers')}><Disclaimers /></div>}
       </main>
       <footer style={{ textAlign: 'center', padding: '12px 0', fontSize: 11, color: 'var(--text-muted)', borderTop: '1px solid var(--border)' }}>
         <a href="/privacy-policy.html" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--text-muted)', textDecoration: 'underline' }}>
