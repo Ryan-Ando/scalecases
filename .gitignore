@@ -28,3 +28,7 @@ Thumbs.db
 
 # CPL lead storage (server-side, not committed)
 leads.json
+
+# Python
+__pycache__/
+*.pyc
