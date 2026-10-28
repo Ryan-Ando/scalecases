@@ -338,8 +338,8 @@ def run_video(path, text, out_path, opts=None):
         lum = float(np.mean([bl.mean() for bl in bands_l]))
         # mixed light/dark footage under a fresh panel: darken it harder and use white outlined
         # text, otherwise one text colour loses contrast over part of the band
-        cols = np.concatenate([bl.mean(axis=0) for bl in bands_l])
-        mixed = (cols > 150).mean() > 0.1 and (cols < 90).mean() > 0.1
+        px = np.concatenate([bl.ravel() for bl in bands_l])
+        mixed = (px > 150).mean() > 0.15 and (px < 90).mean() > 0.15
         fr_ = -0.45 if (mixed and style == "frost") else frost
         panel_luma = lum * (1 - abs(fr_)) + (255 * fr_ if fr_ > 0 else 0)
         tc, st = ((28, 28, 30), 0) if (style == "frost" and panel_luma > 140 and not mixed) else ((255, 255, 255), max(1, int(H * 0.0012)))
