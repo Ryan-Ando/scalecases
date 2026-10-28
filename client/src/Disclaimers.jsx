@@ -18,7 +18,16 @@ async function w(path, opts = {}) {
   return data;
 }
 
+async function upload(file) {
+  const fd = new FormData(); fd.append('file', file, file.name);
+  const res = await fetch(`${WORKER_URL}/upload`, { method: 'POST', body: fd, targetAddressSpace: 'loopback' });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || res.statusText);
+  return data;
+}
+
 const FLAG_LABELS = {
+  inserted_opening: 'no opening disclaimer found, one was added (first 5s)',
   samples_disagree: 'sampled frames disagreed on method',
   multiple_ranges: 'more than one disclaimer range',
   card_solid: 'solid card fill',
@@ -302,10 +311,27 @@ function Process({ disclaimers, settings, online, onStarted }) {
   const [ov, setOv] = useState(DEFAULT_OV);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
-  // first saved disclaimer is the default for any target that has not chosen one
+  const [drop, setDrop] = useState({ over: false, busy: 0, msg: '' });
+  // first saved disclaimer is the default for any target that has not chosen one; a target
+  // with no folder typed uses the disclaimer's saved destination
   const discFor = t => t.disclaimer_id || disclaimers[0]?.id || '';
+  const parentFor = t => t.parent || disclaimers.find(d => d.id === discFor(t))?.parent || '';
 
   function addFiles(list) { setFiles(f => [...new Set([...f, ...list])]); setBrowse(null); }
+  async function onDrop(e) {
+    e.preventDefault(); setDrop(d => ({ ...d, over: false }));
+    const list = [...(e.dataTransfer?.files || [])].filter(f => /\.(png|jpe?g|webp|mp4|mov|m4v)$/i.test(f.name));
+    if (!list.length) { setDrop(d => ({ ...d, msg: 'No image or video files in that drop.' })); return; }
+    setDrop(d => ({ ...d, busy: list.length, msg: `Copying ${list.length} file${list.length === 1 ? '' : 's'} to the worker…` }));
+    const added = [];
+    for (const f of list) {
+      try { const r = await upload(f); added.push(r.path); }
+      catch (err) { setErr(`${f.name}: ${err.message}`); }
+      setDrop(d => ({ ...d, busy: d.busy - 1 }));
+    }
+    setFiles(x => [...new Set([...x, ...added])]);
+    setDrop(d => ({ ...d, msg: added.length ? `Added ${added.length} dropped file${added.length === 1 ? '' : 's'}.` : '' }));
+  }
   async function loadDiff(parent) {
     setErr(''); setDiffParent(parent);
     try { setDiff(await w(`/diff?parent=${encodeURIComponent(parent)}`)); } catch (e) { setErr(e.message); }
@@ -313,7 +339,7 @@ function Process({ disclaimers, settings, online, onStarted }) {
   async function start() {
     setBusy(true); setErr('');
     try {
-      const t = targets.map(x => ({ parent: x.parent, disclaimer_id: discFor(x) })).filter(x => x.parent && x.disclaimer_id);
+      const t = targets.map(x => ({ parent: parentFor(x), disclaimer_id: discFor(x) })).filter(x => x.parent && x.disclaimer_id);
       if (!files.length || !t.length) throw new Error('Add at least one file and one destination with a disclaimer.');
       await w('/jobs', { method: 'POST', body: { files, targets: t, overrides: toWorkerOverrides(ov, 'video') } });
       setFiles([]); onStarted();
@@ -322,8 +348,11 @@ function Process({ disclaimers, settings, online, onStarted }) {
   const kindHint = files.length ? `${files.filter(f => /\.(mp4|mov|m4v)$/i.test(f)).length} video · ${files.filter(f => /\.(png|jpe?g|webp)$/i.test(f)).length} image` : '';
   return (
     <div className="dz-grid">
-      <section className="dz-panel">
+      <section className={`dz-panel${drop.over ? ' dz-panel--drop' : ''}`}
+               onDragOver={e => { e.preventDefault(); if (!drop.over) setDrop(d => ({ ...d, over: true })); }}
+               onDragLeave={() => setDrop(d => ({ ...d, over: false }))} onDrop={onDrop}>
         <h3>1 · Source files</h3>
+        <div className="dz-dropzone">{drop.busy ? drop.msg : 'Drop image or video ads anywhere on this panel'}{!drop.busy && drop.msg ? ` · ${drop.msg}` : ''}</div>
         <div className="dz-row">
           <button className="btn btn--sm" disabled={!online} onClick={() => setBrowse({ mode: 'files' })}>Add files…</button>
           <button className="btn btn--sm" disabled={!online} onClick={() => setBrowse({ mode: 'diff' })}>Pick a parent folder → show what is not done</button>
@@ -354,14 +383,14 @@ function Process({ disclaimers, settings, online, onStarted }) {
       </section>
       <section className="dz-panel">
         <h3>2 · Destinations</h3>
-        <div className="dz-muted dz-small">Each file is rendered once per destination. Output goes to <code>&lt;folder&gt;\{settings.out_folder}\&lt;mmdd&gt;\</code>. Names ending in a state tag are kept; others get " - &lt;disclaimer name&gt;".</div>
+        <div className="dz-muted dz-small">Each file is rendered once per destination. Choosing a disclaimer fills in its saved destination; you can still change the folder. Output goes to <code>&lt;folder&gt;\{settings.out_folder}\&lt;mmdd&gt;\</code>. Names ending in a state tag are kept; others get " - &lt;disclaimer name&gt;".</div>
         {targets.map((t, i) => (
           <div key={i} className="dz-row dz-target">
-            <input className="settings-input dz-grow" value={t.parent} placeholder="Parent folder, e.g. C:\…\2026 B2C\CA" onChange={e => setTargets(ts => ts.map((x, j) => j === i ? { ...x, parent: e.target.value } : x))} />
-            <button className="btn btn--sm" disabled={!online} onClick={() => setBrowse({ mode: 'folder', idx: i })}>Browse…</button>
-            <select className="settings-select dz-sel" value={discFor(t)} onChange={e => setTargets(ts => ts.map((x, j) => j === i ? { ...x, disclaimer_id: e.target.value } : x))}>
+            <select className="settings-select dz-sel" value={discFor(t)} onChange={e => setTargets(ts => ts.map((x, j) => j === i ? { ...x, disclaimer_id: e.target.value, parent: '' } : x))}>
               <option value="">— disclaimer —</option>{disclaimers.map(d => <option key={d.id} value={d.id}>{d.name} (v{d.version})</option>)}
             </select>
+            <input className="settings-input dz-grow" value={parentFor(t)} placeholder="Destination folder (saved per disclaimer in Library)" onChange={e => setTargets(ts => ts.map((x, j) => j === i ? { ...x, parent: e.target.value } : x))} />
+            <button className="btn btn--sm" disabled={!online} onClick={() => setBrowse({ mode: 'folder', idx: i })}>Browse…</button>
             {targets.length > 1 && <button className="btn btn--sm" onClick={() => setTargets(ts => ts.filter((_, j) => j !== i))}>✕</button>}
           </div>
         ))}
@@ -379,7 +408,7 @@ function Process({ disclaimers, settings, online, onStarted }) {
         {err && <div className="dz-err">{err}</div>}
       </section>
       {browse?.mode === 'files' && <Browser mode="files" initial={settings.recent_parents?.[0] || ''} recents={settings.recent_parents} onPick={addFiles} onClose={() => setBrowse(null)} />}
-      {browse?.mode === 'folder' && <Browser mode="folder" initial={targets[browse.idx].parent || settings.recent_parents?.[0] || ''} recents={settings.recent_parents}
+      {browse?.mode === 'folder' && <Browser mode="folder" initial={parentFor(targets[browse.idx]) || settings.recent_parents?.[0] || ''} recents={settings.recent_parents}
         onPick={p => { setTargets(ts => ts.map((x, j) => j === browse.idx ? { ...x, parent: p } : x)); setBrowse(null); }} onClose={() => setBrowse(null)} />}
       {browse?.mode === 'diff' && <Browser mode="folder" initial={diffParent || settings.recent_parents?.[0] || ''} recents={settings.recent_parents}
         onPick={p => { setBrowse(null); void loadDiff(p); }} onClose={() => setBrowse(null)} />}
@@ -425,14 +454,16 @@ function Review({ jobs, onChanged }) {
 
 // ───────────────────────────── Library ─────────────────────────────
 function Library({ disclaimers, onChanged }) {
-  const [edit, setEdit] = useState(null);   // {id?, name, text}
+  const [edit, setEdit] = useState(null);   // {id?, name, text, parent}
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
+  const [browse, setBrowse] = useState(false);
   async function saveD() {
     setBusy(true); setErr('');
     try {
-      if (edit.id) await w(`/disclaimers/${edit.id}`, { method: 'PUT', body: { name: edit.name, text: edit.text } });
-      else await w('/disclaimers', { method: 'POST', body: { name: edit.name, text: edit.text } });
+      const body = { name: edit.name, text: edit.text, parent: edit.parent || '' };
+      if (edit.id) await w(`/disclaimers/${edit.id}`, { method: 'PUT', body });
+      else await w('/disclaimers', { method: 'POST', body });
       setEdit(null); onChanged();
     } catch (e) { setErr(e.message); } finally { setBusy(false); }
   }
@@ -443,13 +474,14 @@ function Library({ disclaimers, onChanged }) {
   return (
     <div className="dz-grid">
       <section className="dz-panel">
-        <div className="dz-row"><h3 className="dz-grow">Saved disclaimers</h3><button className="btn btn--primary btn--sm" onClick={() => setEdit({ name: '', text: '' })}>+ New</button></div>
+        <div className="dz-row"><h3 className="dz-grow">Saved disclaimers</h3><button className="btn btn--primary btn--sm" onClick={() => setEdit({ name: '', text: '', parent: '' })}>+ New</button></div>
         {!disclaimers.length && <div className="dz-muted">None yet.</div>}
         {disclaimers.map(d => (
           <div key={d.id} className="dz-disc">
             <div className="dz-row"><strong>{d.name}</strong><span className="dz-muted">v{d.version} · updated {fmtTime(d.updated)}</span><span className="dz-grow" />
-              <button className="btn btn--sm" onClick={() => setEdit({ id: d.id, name: d.name, text: d.text })}>Edit</button>
+              <button className="btn btn--sm" onClick={() => setEdit({ id: d.id, name: d.name, text: d.text, parent: d.parent || '' })}>Edit</button>
               <button className="btn btn--sm" onClick={() => del(d)}>Delete</button></div>
+            <div className="dz-small">{d.parent ? <>Destination: <code>{d.parent}</code></> : <span className="dz-muted">No saved destination</span>}</div>
             <div className="dz-disc-text">{d.text}</div>
             {d.versions.length > 1 && <details className="dz-log"><summary>{d.versions.length} versions</summary>
               {d.versions.slice().reverse().map(v => <div key={v.version} className="dz-small"><strong>v{v.version}</strong> · {fmtTime(v.ts)}<div className="dz-disc-text">{v.text}</div></div>)}</details>}
@@ -461,11 +493,15 @@ function Library({ disclaimers, onChanged }) {
           <h3>{edit.id ? 'Edit disclaimer' : 'New disclaimer'}</h3>
           <div className="settings-field"><label className="settings-label">Name <span className="dz-muted">(used as the filename suffix, e.g. "lss co")</span></label>
             <input className="settings-input" value={edit.name} onChange={e => setEdit({ ...edit, name: e.target.value })} /></div>
+          <div className="settings-field"><label className="settings-label">Default destination <span className="dz-muted">(parent folder; the mmdd subfolder is added automatically)</span></label>
+            <div className="dz-row"><input className="settings-input dz-grow" value={edit.parent} placeholder="C:\…\2026 B2C\CO" onChange={e => setEdit({ ...edit, parent: e.target.value })} />
+              <button className="btn btn--sm" onClick={() => setBrowse(true)}>Browse…</button></div></div>
           <div className="settings-field"><label className="settings-label">Text</label>
             <textarea className="settings-input dz-textarea" rows={9} value={edit.text} onChange={e => setEdit({ ...edit, text: e.target.value })} /></div>
           {edit.id && <div className="dz-muted dz-small">Changing the text saves a new version. Outputs made with the old version show as stale in History.</div>}
           {err && <div className="dz-err">{err}</div>}
           <div className="dz-row"><button className="btn btn--primary" disabled={busy || !edit.name.trim() || !edit.text.trim()} onClick={saveD}>{busy ? 'Saving…' : 'Save'}</button><button className="btn" onClick={() => setEdit(null)}>Cancel</button></div>
+          {browse && <Browser mode="folder" initial={edit.parent || ''} recents={[]} onPick={p => { setEdit({ ...edit, parent: p }); setBrowse(false); }} onClose={() => setBrowse(false)} />}
         </section>
       )}
     </div>

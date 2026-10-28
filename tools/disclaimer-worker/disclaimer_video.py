@@ -211,6 +211,8 @@ def run_video(path, text, out_path, opts=None):
     font_path = img.FONT_BOLD if opts.get("bold") else img.FONT_REG
     region_opt = opts.get("region", "auto") or "auto"
     manual = opts.get("ranges") or []
+    insert_opening = opts.get("insert_opening", True)
+    opening_seconds = float(opts.get("opening_seconds", 5) or 5)
     log, flags = [], []
 
     name = os.path.basename(path)
@@ -224,39 +226,25 @@ def run_video(path, text, out_path, opts=None):
         ranges = detect_ranges(path, W, H, regions)
     log.append(f"{W}x{H} {fps:g}fps {nframes} frames; text detected: "
                + (", ".join(f"{r['region']} {r['a']}-{r['b']} ({r['a']/fps:.2f}s-{(r['b']+1)/fps:.2f}s)" for r in ranges) or "none"))
-    if not ranges:
-        raise ValueError("no disclaimer-like text detected at the top or bottom of the frame")
 
     tmp = tempfile.mkdtemp(prefix="vdisc_")
     inputs = ["-i", path]
     stages = []
-    cur = "[0:v]"; vi = 0; nxt = 1
+    state = {"cur": "[0:v]", "vi": 0, "nxt": 1}
     accepted, rejected = [], []
-    for ri, rg in enumerate(ranges):
-        region, a, b = rg["region"], rg["a"], rg["b"]
-        r = analyze_range(path, a, b, W, H, style, frost, region, strict=not manual, band_scale=band_scale)
-        if r is None:
-            rejected.append(dict(region=region, a=a, b=b, reason="could not locate a text band"))
-            flags.append("range_unlocated"); continue
-        if isinstance(r, str):
-            rejected.append(dict(region=region, a=a, b=b, reason=r)); continue
-        method = r["method"]
-        if force == "solid" and method != "solid":
-            method = "solid"; flags.append("forced_method"); r["text_color"], r["stroke"] = r["text_color"], 0
-            log.append(f"range {a}-{b}: method forced to solid (bg {r['bg']})")
-        elif force in ("frost", "soft") and method == "solid":
-            method = "blur"; flags.append("forced_method")
-            panel_luma = r["band_luma"] * (1 - abs(frost)) + (255 * frost if frost > 0 else 0)
-            r["text_color"], r["stroke"] = ((28, 28, 30), 0) if (style == "frost" and panel_luma > 140) else ((255, 255, 255), max(1, int(H * 0.0012)))
-            log.append(f"range {a}-{b}: method forced to {style}")
+
+    def emit(r, region, a, b, method, ri, inserted=False):
+        """Append the filter stages that hide the old text (or frost a fresh panel) and draw
+        the new text on frames a..b. Returns False if the text does not fit."""
         rt = render_text(text, W, H, r, font_path)
         if rt is None:
-            rejected.append(dict(region=region, a=a, b=b, reason="could not fit the text into the band")); continue
+            rejected.append(dict(region=region, a=a, b=b, reason="could not fit the text into the band")); return False
         ov, size, nlines = rt
         y0, y1, x0, x1 = r["y0"], r["y1"], r["x0"], r["x1"]
         enable = f"between(n\\,{a}\\,{b})"
         ov_path = os.path.join(tmp, f"text{ri}.png"); ov.save(ov_path)
-        inputs += ["-i", ov_path]; ov_idx = nxt; nxt += 1
+        inputs.extend(["-i", ov_path]); ov_idx = state["nxt"]; state["nxt"] += 1
+        cur, vi = state["cur"], state["vi"]
         sig = None
         if method == "solid":
             hexbg = "0x%02x%02x%02x" % tuple(r["bg"])
@@ -264,6 +252,7 @@ def run_video(path, text, out_path, opts=None):
             stages.append(f"{cur}drawbox=x={sx0}:y={y0}:w={sx1 - sx0 + 1}:h={y1 - y0 + 1}:color={hexbg}:t=fill:"
                           f"enable='{enable}'[v{vi + 1}]")
         elif style == "frost":
+            fr_ = r.get("frost", frost)          # per-range tint override (inserted panels)
             sig = blur_sigma if blur_sigma is not None else round(H * 0.0016, 1)
             med_r = int(np.clip(H * 0.004, 7, 14))
             bx0 = max(0, x0 - int(W * 0.012)); bx1 = min(W - 1, x1 + int(W * 0.012))
@@ -277,8 +266,8 @@ def run_video(path, text, out_path, opts=None):
             mask = Image.new("L", (W, sh), 0)
             ImageDraw.Draw(mask).rounded_rectangle(box, radius=radius, fill=255)
             mask_path = os.path.join(tmp, f"mask{ri}.png"); mask.save(mask_path)
-            inputs += ["-i", mask_path]; mk_idx = nxt; nxt += 1
-            k = 1 - abs(frost); off = 255 * frost if frost > 0 else 0
+            inputs.extend(["-i", mask_path]); mk_idx = state["nxt"]; state["nxt"] += 1
+            k = 1 - abs(fr_); off = 255 * fr_ if fr_ > 0 else 0
             lut = (f"lutrgb=r='val*{k:.3f}+{off:.1f}':g='val*{k:.3f}+{off:.1f}'"
                    f":b='val*{k:.3f}+{off:.1f}'")
             stages.append(
@@ -296,7 +285,7 @@ def run_video(path, text, out_path, opts=None):
             ImageDraw.Draw(mask).rectangle(rect, fill=255)
             mask = mask.filter(ImageFilter.GaussianBlur(feather))
             mask_path = os.path.join(tmp, f"mask{ri}.png"); mask.save(mask_path)
-            inputs += ["-i", mask_path]; mk_idx = nxt; nxt += 1
+            inputs.extend(["-i", mask_path]); mk_idx = state["nxt"]; state["nxt"] += 1
             stages.append(
                 f"{cur}split[a{ri}][b{ri}];[b{ri}]gblur=sigma={sig}:steps=2[bl{ri}];"
                 f"[bl{ri}][{mk_idx}:v]alphamerge[blm{ri}];"
@@ -304,21 +293,68 @@ def run_video(path, text, out_path, opts=None):
         vi += 1; cur = f"[v{vi}]"
         stages.append(f"{cur}[{ov_idx}:v]overlay=0:0:enable='{enable}'[v{vi + 1}]")
         vi += 1; cur = f"[v{vi}]"
+        state["cur"], state["vi"] = cur, vi
         shown = method if method == "solid" else style
         if len(set(r["methods"])) > 1: flags.append("samples_disagree")
         if r["card"]: flags.append("card_solid")
         if region == "top": flags.append("top_region")
         accepted.append(dict(region=region, a=a, b=b, band=[y0, y1], x=[x0, x1], method=shown,
                              sigma=sig, font_px=size, lines=nlines, samples=r["methods"],
-                             card=r["card"], bg=[int(v) for v in r["bg"]]))
-        log.append(f"range {region} {a}-{b}: band y{y0}-{y1} {shown}"
-                   + (f" sigma={sig:g}" if sig else "") + f" font={size}px lines={nlines}; samples {r['methods']}")
+                             card=r["card"], bg=[int(v) for v in r["bg"]], inserted=inserted))
+        log.append(("inserted " if inserted else "range ") + f"{region} {a}-{b}: band y{y0}-{y1} {shown}"
+                   + (f" sigma={sig:g}" if sig else "") + f" font={size}px lines={nlines}"
+                   + (f"; samples {r['methods']}" if r["methods"] else ""))
+        return True
+
+    for ri, rg in enumerate(ranges):
+        region, a, b = rg["region"], rg["a"], rg["b"]
+        r = analyze_range(path, a, b, W, H, style, frost, region, strict=not manual, band_scale=band_scale)
+        if r is None:
+            rejected.append(dict(region=region, a=a, b=b, reason="could not locate a text band"))
+            flags.append("range_unlocated"); continue
+        if isinstance(r, str):
+            rejected.append(dict(region=region, a=a, b=b, reason=r)); continue
+        method = r["method"]
+        if force == "solid" and method != "solid":
+            method = "solid"; flags.append("forced_method"); r["stroke"] = 0
+            log.append(f"range {a}-{b}: method forced to solid (bg {r['bg']})")
+        elif force in ("frost", "soft") and method == "solid":
+            method = "blur"; flags.append("forced_method")
+            panel_luma = r["band_luma"] * (1 - abs(frost)) + (255 * frost if frost > 0 else 0)
+            r["text_color"], r["stroke"] = ((28, 28, 30), 0) if (style == "frost" and panel_luma > 140) else ((255, 255, 255), max(1, int(H * 0.0012)))
+            log.append(f"range {a}-{b}: method forced to {style}")
+        emit(r, region, a, b, method, ri)
+
+    # No disclaimer on screen during the opening seconds -> add one at the bottom (a fresh
+    # frosted panel over the footage), sized like a typical burned-in disclaimer band.
+    open_frames = int(round(opening_seconds * fps))
+    if insert_opening and not manual and not any(rg["a"] < open_frames for rg in accepted):
+        a, b = 0, min(nframes - 1, open_frames - 1)
+        pad = max(4, int(H * 0.004))
+        y1 = H - 1 - pad; y0 = max(0, y1 - int(H * 0.115 * band_scale))
+        x0 = int(W * 0.02); x1 = W - 1 - int(W * 0.02)
+        samples = sorted(set(int(round(a + (b - a) * t)) for t in (0.1, 0.5, 0.9)))
+        bands_l = [np.array(Image.fromarray(grab_frame(path, n, W, H)).convert("L"))[y0:y1 + 1] for n in samples]
+        lum = float(np.mean([bl.mean() for bl in bands_l]))
+        # mixed light/dark footage under a fresh panel: darken it harder and use white outlined
+        # text, otherwise one text colour loses contrast over part of the band
+        cols = np.concatenate([bl.mean(axis=0) for bl in bands_l])
+        mixed = (cols > 150).mean() > 0.1 and (cols < 90).mean() > 0.1
+        fr_ = -0.45 if (mixed and style == "frost") else frost
+        panel_luma = lum * (1 - abs(fr_)) + (255 * fr_ if fr_ > 0 else 0)
+        tc, st = ((28, 28, 30), 0) if (style == "frost" and panel_luma > 140 and not mixed) else ((255, 255, 255), max(1, int(H * 0.0012)))
+        r = dict(y0=y0, y1=y1, x0=x0, x1=x1, method="blur", bg=(0, 0, 0), text_color=tc, stroke=st, methods=[],
+                 region="bottom", sx0=0, sx1=W - 1, card=False, band_luma=lum, frost=fr_)
+        if emit(r, "bottom", a, b, "blur", len(ranges), inserted=True):
+            flags.append("inserted_opening")
+            log.append(f"no disclaimer visible in the first {opening_seconds:g}s; added one on frames {a}-{b}")
+
     for rj in rejected:
         log.append(f"range {rj['region']} {rj['a']}-{rj['b']}: {rj['reason']}, left untouched")
     if not stages:
         raise ValueError("every detected text range was rejected; nothing to replace")
-    if len(accepted) > 1: flags.append("multiple_ranges")
-    fc = ";".join(stages) + f";{cur}format=yuv420p"
+    if len([x for x in accepted if not x.get("inserted")]) > 1: flags.append("multiple_ranges")
+    fc = ";".join(stages) + f";{state['cur']}format=yuv420p"
     if os.path.abspath(out_path) == os.path.abspath(path):
         raise ValueError("output path equals the source path")
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
@@ -330,7 +366,6 @@ def run_video(path, text, out_path, opts=None):
     return dict(kind="video", W=W, H=H, fps=fps, frames=nframes, ranges=accepted, rejected=rejected,
                 flags=sorted(set(flags)), log=log, out_path=out_path,
                 method=accepted[0]["method"] if accepted else None)
-
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()

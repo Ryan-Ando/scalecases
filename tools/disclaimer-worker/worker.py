@@ -9,7 +9,7 @@ Data:    %LOCALAPPDATA%\\ScaleCasesDisclaimers   (library, settings, history, jo
 """
 import os, sys, json, uuid, time, shutil, threading, subprocess, queue, string
 from datetime import datetime, timezone
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 import uvicorn
@@ -24,9 +24,10 @@ ORIGINS = ["https://scalecases-client.onrender.com", "http://localhost:5173", "h
 DATA = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "ScaleCasesDisclaimers")
 STAGING = os.path.join(DATA, "staging")
 PREVIEWS = os.path.join(DATA, "previews")
+INBOX = os.path.join(DATA, "inbox")          # copies of files dropped onto the tab
 IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp"}
 VIDEO_EXT = {".mp4", ".mov", ".m4v"}
-for d in (DATA, STAGING, PREVIEWS):
+for d in (DATA, STAGING, PREVIEWS, INBOX):
     os.makedirs(d, exist_ok=True)
 
 DEFAULT_SETTINGS = {
@@ -258,7 +259,7 @@ async def add_disclaimer(req: Request):
         raise HTTPException(400, "name and text are required")
     if any(d["name"].lower() == name.lower() for d in state["disclaimers"]):
         raise HTTPException(400, "a disclaimer with that name already exists")
-    d = {"id": uuid.uuid4().hex[:12], "name": name, "text": text, "version": 1,
+    d = {"id": uuid.uuid4().hex[:12], "name": name, "text": text, "version": 1, "parent": (b.get("parent") or "").strip(),
          "versions": [{"version": 1, "text": text, "ts": now()}], "created": now(), "updated": now()}
     with lock:
         state["disclaimers"].append(d); persist("disclaimers")
@@ -271,6 +272,8 @@ async def edit_disclaimer(did: str, req: Request):
     with lock:
         if "name" in b and b["name"].strip():
             d["name"] = b["name"].strip()
+        if "parent" in b:
+            d["parent"] = (b["parent"] or "").strip()
         if "text" in b:
             text = " ".join((b["text"] or "").split())
             if text and text != d["text"]:
@@ -302,6 +305,20 @@ def remember_parent(parent):
     rp = [p for p in state["settings"]["recent_parents"] if p.lower() != parent.lower()]
     state["settings"]["recent_parents"] = [parent] + rp[:9]
     persist("settings")
+
+
+@app.post("/upload")
+async def upload(file: UploadFile = File(...)):
+    """Receive a file dropped onto the tab. Browsers never reveal the original path, so the
+    copy in the inbox becomes the source for rendering, history and regeneration."""
+    name = os.path.basename(file.filename or "")
+    if not name or not kind_of(name):
+        raise HTTPException(400, f"unsupported file type: {name or 'unnamed'}")
+    folder = os.path.join(INBOX, uuid.uuid4().hex[:8]); os.makedirs(folder)
+    dest = os.path.join(folder, name)
+    with open(dest, "wb") as f:
+        shutil.copyfileobj(file.file, f, 1 << 20)
+    return {"path": dest, "name": name, "kind": kind_of(name), "size": os.path.getsize(dest)}
 
 
 # ───────────────────────────── routes: filesystem ─────────────────────────────

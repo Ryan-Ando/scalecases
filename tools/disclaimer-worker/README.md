@@ -30,6 +30,14 @@ settings, output history, recent jobs, staged renders awaiting review, and revie
   Approving moves it to `<destination>\<out folder>\<mmdd>\<name>`. Rejecting deletes it.
 - **Naming**: if the source name already ends with one of the state tags in Settings, the output
   keeps the name. Otherwise ` - <disclaimer name>` is appended before the extension.
+- **Destinations**: each disclaimer can carry a default destination folder; picking the disclaimer
+  fills it in, and it can still be changed per job.
+- **Drag and drop**: files dropped on the Process panel are copied to the worker inbox
+  (`%LOCALAPPDATA%\ScaleCasesDisclaimers\inbox`) because browsers never reveal a dropped file's
+  path. The copy is the source for rendering, history and regeneration; the original is untouched.
+- **Missing opening disclaimer**: if no disclaimer is on screen during the first 5 seconds of a
+  video, a fresh frosted panel with the new text is added there (flag `inserted_opening`). Any
+  disclaimer found later in the video, such as one over the last 5 seconds, is replaced as usual.
 - **Review previews**: before/after crops of the disclaimer band; for video also the last
   disclaimer frame and the first clean frame after it.
 - **Flags** mark outputs worth a closer look: samples disagreed on method, more than one range,
