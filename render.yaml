@@ -80,15 +80,11 @@ services:
       - key: DATA_DIR
         value: /var/data
       - key: CLIENT_URL
-        sync: false  # this niche's client URL, e.g. https://scalecases-term.onrender.com
+        value: https://scalecases-term.onrender.com
       - key: FB_AD_ACCOUNTS
-        sync: false  # the Term Life ad account id(s) only
-      - key: FB_ACCESS_TOKEN
-        sync: false  # same token as the law server
-      - key: FB_WRITE_TOKEN
-        sync: false  # same as the law server (backup app for read failover)
-      - key: APP_PASSWORD
-        sync: false  # same site password as the law server
+        value: "29300658139571561"
+      # FB_ACCESS_TOKEN, FB_WRITE_TOKEN and APP_PASSWORD, same values as the law server
+      - fromGroup: scalecases-shared
 
   - type: web
     name: scalecases-term
@@ -100,7 +96,7 @@ services:
       - key: VITE_NICHE
         value: term
       - key: VITE_API_URL
-        sync: false  # this niche's server URL, e.g. https://scalecases-term-server.onrender.com
+        value: https://scalecases-term-server.onrender.com
 
   # ── Final Expense niche site: Ads Tracking + Spend Sheet for its own ad accounts only ──
   - type: web
@@ -121,15 +117,11 @@ services:
       - key: DATA_DIR
         value: /var/data
       - key: CLIENT_URL
-        sync: false  # this niche's client URL, e.g. https://scalecases-fex.onrender.com
+        value: https://scalecases-fex.onrender.com
       - key: FB_AD_ACCOUNTS
-        sync: false  # the Final Expense ad account id(s) only
-      - key: FB_ACCESS_TOKEN
-        sync: false  # same token as the law server
-      - key: FB_WRITE_TOKEN
-        sync: false  # same as the law server (backup app for read failover)
-      - key: APP_PASSWORD
-        sync: false  # same site password as the law server
+        value: "1463445865879047"
+      # FB_ACCESS_TOKEN, FB_WRITE_TOKEN and APP_PASSWORD, same values as the law server
+      - fromGroup: scalecases-shared
 
   - type: web
     name: scalecases-fex
@@ -141,4 +133,4 @@ services:
       - key: VITE_NICHE
         value: fex
       - key: VITE_API_URL
-        sync: false  # this niche's server URL, e.g. https://scalecases-fex-server.onrender.com
+        value: https://scalecases-fex-server.onrender.com
