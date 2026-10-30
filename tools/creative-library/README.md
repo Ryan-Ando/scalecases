@@ -12,6 +12,15 @@ Install (Node.js required):
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/creative-library/install.ps1 -LibraryRoot "C:\path\2026 B2C"
 ```
 
+macOS (Node via `brew install node`); point it at the Google Drive mirror of the library:
+
+```bash
+bash tools/creative-library/install.sh "$HOME/Library/CloudStorage/GoogleDrive-<account>/My Drive/2026 B2C"
+```
+
+It installs to `~/Library/Application Support/ScaleCasesCreativeLibrary` and registers a launchd
+agent (`com.scalecases.creative-library`) that starts at login. Rerun with a new path to repoint it.
+
 Installation writes only to `%LOCALAPPDATA%\ScaleCasesCreativeLibrary` and a
 `Scale Cases Creative Library.lnk` shortcut in the current user's Startup folder.
 The library directory is read-only. The helper runs hidden, without administrator
