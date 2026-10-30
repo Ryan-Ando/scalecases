@@ -15,7 +15,8 @@ import { registerSyncHooks, raw } from './db.js';
 const BASE = import.meta.env.VITE_API_URL || 'http://localhost:3001';
 const IDB_STORES = ['ghlContacts', 'fbDailyInsights', 'fbAds', 'adDailyInsights', 'campaignTraining', 'campaignKpis', 'killSnapshots', 'meta'];
 export const SETTINGS_KEYS = ['spend_pacing_v2', 'spendSheetColOrder', 'trackingColOrder', 'trackingAccountNames', 'hideCityAds',
-  'reuseThresholdMonths', 'relaunchMinLeads', 'angleMatrix_angles', 'cpl_row_order', 'variations_saved_ads'];
+  'reuseThresholdMonths', 'relaunchMinLeads', 'angleMatrix_angles', 'cpl_row_order', 'variations_saved_ads',
+  'niche_budgets'];
 const ALL_STORES = [...IDB_STORES, 'settings'];
 const PUSH_DELAY = 1500;
 const BATCH_BYTES = 4_000_000;

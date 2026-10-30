@@ -5,6 +5,9 @@ import AdsTracking from './AdsTracking.jsx';
 import SpendSheet from './SpendSheet.jsx';
 import Relaunch from './Relaunch.jsx';
 import Disclaimers from './Disclaimers.jsx';
+import NicheTracking from './NicheTracking.jsx';
+import NicheSpend from './NicheSpend.jsx';
+import { isLaw, NICHE_LABEL } from './niche.js';
 
 // The tabs take no props; memo keeps a tab switch or a sync-badge update from re-rendering every
 // mounted tab (the Ads Tracking grid alone is ~19k cells)
@@ -12,6 +15,8 @@ const AdsTrackingTab = memo(AdsTracking);
 const SpendSheetTab  = memo(SpendSheet);
 const RelaunchTab    = memo(Relaunch);
 const DisclaimersTab = memo(Disclaimers);
+const NicheTrackingTab = memo(NicheTracking);
+const NicheSpendTab    = memo(NicheSpend);
 
 function Logo() {
   return <img src="/logo.png" width="32" height="32" style={{ borderRadius: 8, display: 'block' }} alt="Scale Cases" />;
@@ -19,7 +24,8 @@ function Logo() {
 
 // Only the tabs in active use — Kill Analysis, Angle Matrix, State Variations,
 // CPL Tracker and Lead Reports are hidden (components still exist in the repo)
-const TABS = ['Ads Tracking', 'Spend Sheet', 'Relaunch', 'Disclaimers'];
+// The insurance niche sites (term, fex) are barebones: their own Ads Tracking and Spend Sheet
+const TABS = isLaw ? ['Ads Tracking', 'Spend Sheet', 'Relaunch', 'Disclaimers'] : ['Ads Tracking', 'Spend Sheet'];
 
 // The active tab lives in the URL hash (#spend-sheet) so each browser tab keeps its own
 // page across refreshes; localStorage only supplies a default for a fresh window.
@@ -59,7 +65,7 @@ export default function App() {
   return (
     <div className="app">
       <header className="header">
-        <div className="header-brand"><Logo /> Scale Cases</div>
+        <div className="header-brand"><Logo /> {isLaw ? 'Scale Cases' : `Scale Cases · ${NICHE_LABEL}`}</div>
         <nav className="nav">
           {TABS.map(t => (
             <button key={t} className={`nav-tab${tab === t ? ' nav-tab--active' : ''}`} onClick={() => switchTab(t)}>{t}</button>
@@ -91,8 +97,8 @@ export default function App() {
       </header>
       <main className="content" style={{ padding: 0, boxSizing: 'border-box', minWidth: 0, overflow: 'clip' }}>
         {!ready && <div className="empty" style={{ padding: 60 }}><div className="empty-title">Syncing shared data…</div><div className="empty-desc">Pulling budgets, layouts and ad data from the server.</div></div>}
-        {ready && mounted.has('Ads Tracking') && <div style={show('Ads Tracking')}><AdsTrackingTab /></div>}
-        {ready && mounted.has('Spend Sheet')  && <div style={show('Spend Sheet')}><SpendSheetTab /></div>}
+        {ready && mounted.has('Ads Tracking') && <div style={show('Ads Tracking')}>{isLaw ? <AdsTrackingTab /> : <NicheTrackingTab />}</div>}
+        {ready && mounted.has('Spend Sheet')  && <div style={show('Spend Sheet')}>{isLaw ? <SpendSheetTab /> : <NicheSpendTab />}</div>}
         {ready && mounted.has('Relaunch')     && <div style={show('Relaunch')}><RelaunchTab /></div>}
         {ready && mounted.has('Disclaimers')  && <div style={show('Disclaimers')}><DisclaimersTab /></div>}
       </main>

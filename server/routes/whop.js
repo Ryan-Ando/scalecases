@@ -10,11 +10,12 @@
 // WHOP_COMPANY_ID (biz_xxx). Absent config → everything returns [].
 
 import fetch from 'node-fetch';
+import { isLaw } from '../niche.js';
 
 const WHOP_API = process.env.WHOP_API_BASE || 'https://api.whop.com/api/v1';
 
 export function whopEnabled() {
-  return !!(process.env.WHOP_API_KEY && process.env.WHOP_COMPANY_ID);
+  return isLaw && !!(process.env.WHOP_API_KEY && process.env.WHOP_COMPANY_ID);
 }
 
 async function whopReport(params) {

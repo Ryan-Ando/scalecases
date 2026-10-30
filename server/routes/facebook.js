@@ -1,4 +1,5 @@
 import { enabledAdsetIds } from '../adDelivery.js';
+import { isLaw } from '../niche.js';
 import { Router } from 'express';
 import fetch from 'node-fetch';
 import fs from 'fs';
@@ -19,7 +20,7 @@ const router = Router();
 const FB_API = 'https://graph.facebook.com/v19.0';
 
 // ── Date blacklist — these dates are excluded from all insights except the spend tracker ──
-const BLACKLIST_DATES = new Set(['2026-03-28']);
+const BLACKLIST_DATES = new Set(isLaw ? ['2026-03-28'] : []);   // a law-account data problem
 
 function isoDateOffset(dateStr, days) {
   const d = new Date(dateStr + 'T12:00:00Z');
