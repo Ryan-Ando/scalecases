@@ -1,5 +1,6 @@
 // AdManage launcher for the Relaunch tab: one new ad set per ad, copied from the newest
-// active ad set of the chosen campaign, with that state's AdManage ad copy template.
+// active ad set of the chosen campaign, with that state's AdManage ad copy template. The ads are
+// saved as an AdManage draft; nothing reaches Facebook until the draft is launched in AdManage.
 // Writes go through AdManage's own key (ADMANAGE_API_KEY), not the read-only FB token. The site
 // login (requireLogin in auth.js) guards these routes; because they create live Meta objects they
 // stay off until APP_PASSWORD is set, instead of being open like the rest of an unprotected site.
@@ -135,10 +136,11 @@ async function sourceAdSet(accountId, campaignId) {
   return newest(await list('&status=ACTIVE', true)) || newest(await list('', false));
 }
 
-// POST /api/admanage/launch
-// { accountId, campaignId, templateId, ads: [{ adName, mediaUrl }] }
-router.post('/launch', async (req, res) => {
-  const { accountId, campaignId, templateId, ads } = req.body || {};
+// POST /api/admanage/draft
+// { accountId, campaignId, templateId, title, ads: [{ adName, mediaUrl }] }
+// Drafts can only point at existing ad sets, so the empty ad sets are copied now (they don't spend).
+router.post('/draft', async (req, res) => {
+  const { accountId, campaignId, templateId, title, ads } = req.body || {};
   if (!accountId || !campaignId || !templateId || !Array.isArray(ads) || !ads.length) {
     return res.status(400).json({ error: 'accountId, campaignId, templateId and ads are required' });
   }
@@ -165,9 +167,10 @@ router.post('/launch', async (req, res) => {
       created.push({ adName: ad.adName, adSetId: id });
     }
 
-    const launch = await am('/v1/launch', {
+    const draft = await am('/v1/drafts', {
       method: 'POST',
       body: {
+        title: title || `${ads.length} ads from scalecases`,
         ads: ads.map((ad, i) => ({
           adName: ad.adName,
           adAccountId: accountId,
@@ -187,17 +190,13 @@ router.post('/launch', async (req, res) => {
         })),
       },
     });
-    res.json({ batchId: launch.adBatchId, source: { id: source.adSetId, name: source.name, status: source.status }, adSets: created });
+    const draftId = draft.draftId || draft.data?.id;
+    const draftUrl = draft.draftUrl || `https://admanage.ai/ingestDraft?draftId=${draftId}&businessId=${encodeURIComponent(accountId)}`;
+    res.json({ draftId, draftUrl, source: { id: source.adSetId, name: source.name, status: source.status }, adSets: created });
   } catch (e) {
     // Ad sets already copied stay on Meta (empty, so they don't spend); report them so they can be reused or deleted
     res.status(502).json({ error: e.message, adSets: created });
   }
-});
-
-// GET /api/admanage/batch/:id — launch progress
-router.get('/batch/:id', async (req, res) => {
-  try { res.json(await am(`/v1/batch-status/${encodeURIComponent(req.params.id)}`)); }
-  catch (e) { res.status(502).json({ error: e.message }); }
 });
 
 export default router;

@@ -6,6 +6,7 @@ import { w } from './disclaimerWorker.js';
 
 const BASE = import.meta.env.VITE_API_URL || 'http://localhost:3001';
 const CAMPAIGN_KEY = 'admanageCampaigns';
+const DRAFTS_KEY = 'admanageDrafts';   // group → recent drafts saved from this browser
 
 async function api(path, opts = {}) {
   const res = await fetch(`${BASE}/api/admanage${path}`, opts);
@@ -15,6 +16,9 @@ async function api(path, opts = {}) {
 }
 function savedCampaigns() {
   try { return JSON.parse(localStorage.getItem(CAMPAIGN_KEY) || '{}'); } catch { return {}; }
+}
+function savedDrafts() {
+  try { return JSON.parse(localStorage.getItem(DRAFTS_KEY) || '{}'); } catch { return {}; }
 }
 
 const STATES = new Set('AL AK AZ AR CA CO CT DE FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY DC'.split(' '));
@@ -48,6 +52,7 @@ export default function AdManageLaunch({ brand, state, picked, onUnpick, onPick,
   const [query, setQuery] = useState('');
   const [busy, setBusy] = useState(false);
   const [log, setLog] = useState([]);
+  const [drafts, setDrafts] = useState(() => savedDrafts()[group] || []);
 
   useEffect(() => {
     let live = true;
@@ -136,11 +141,12 @@ export default function AdManageLaunch({ brand, state, picked, onUnpick, onPick,
   }
   const note = line => setLog(l => [...l, line]);
 
-  async function launch() {
+  async function saveDraft() {
     const ads = rows.map(r => ({ pick: r.name, adName: r.file.name, file: r.file }));
     const ok = window.confirm(
-      `Launch ${ads.length} ad${ads.length > 1 ? 's' : ''} LIVE in "${campaign.name}" (${campaign.accountName})?\n\n` +
-      `Each gets its own new ad set copied from the campaign's newest active ad set, with the "${template.name}" copy.\n\n` +
+      `Save ${ads.length} ad${ads.length > 1 ? 's' : ''} as an AdManage draft for "${campaign.name}" (${campaign.accountName})?\n\n` +
+      `Each gets its own new empty ad set (copied from the campaign's newest active ad set) right away, with the "${template.name}" copy. ` +
+      `The ads only go to Facebook when you launch the draft in AdManage.\n\n` +
       rows.map(r => `• ${r.file.name} (${r.stateVersion ? `${state} disclaimer` : 'default disclaimer'})`).join('\n'));
     if (!ok) return;
     setBusy(true); setLog([]);
@@ -153,27 +159,17 @@ export default function AdManageLaunch({ brand, state, picked, onUnpick, onPick,
         });
         a.mediaUrl = up.url;
       }
-      note('Creating ad sets and ads…');
-      const r = await api('/launch', {
+      note('Creating ad sets and the draft…');
+      const title = `${group} — ${ads.length} ad${ads.length > 1 ? 's' : ''} — ${new Date().toLocaleDateString()}`;
+      const r = await api('/draft', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ accountId: campaign.accountId, campaignId, templateId, ads: ads.map(a => ({ adName: a.adName, mediaUrl: a.mediaUrl })) }),
+        body: JSON.stringify({ accountId: campaign.accountId, campaignId, templateId, title, ads: ads.map(a => ({ adName: a.adName, mediaUrl: a.mediaUrl })) }),
       });
-      note(`Copied ad set "${r.source.name}" ${r.adSets.length}× — AdManage batch ${r.batchId} is launching the ads…`);
-      for (let i = 0; i < 40; i++) {
-        await new Promise(ok => setTimeout(ok, 5000));
-        const s = await api(`/batch/${r.batchId}`);
-        // batchSucceeded is false while the batch is still running, so only the summary decides
-        const status = String(s.summaryStatus || s.status || '').toLowerCase();
-        if (status === 'success') { note(`✓ Launched ${ads.length} ad${ads.length > 1 ? 's' : ''} live.`); ads.forEach(a => onUnpick(a.pick)); return; }
-        if (/error|fail|partial/.test(status)) {
-          const failed = (s.ads || []).filter(a => a.status !== 'success');
-          note(`✗ AdManage: ${s.finalMessage || s.message || status}`);
-          failed.forEach(a => note(`   ${a.adName}: ${a.errorMessage || a.status}`));
-          ads.filter(a => !failed.some(f => f.adName === a.adName)).forEach(a => onUnpick(a.pick));
-          return;
-        }
-      }
-      note(`Still running after 3 minutes — check batch ${r.batchId} in AdManage.`);
+      note(`✓ Copied ad set "${r.source.name}" ${r.adSets.length}× and saved draft ${r.draftId}. Review and launch it in AdManage (link below).`);
+      const next = [{ id: r.draftId, url: r.draftUrl, title, campaign: campaign.name, ads: ads.map(a => a.adName), at: Date.now() }, ...drafts].slice(0, 5);
+      setDrafts(next);
+      try { localStorage.setItem(DRAFTS_KEY, JSON.stringify({ ...savedDrafts(), [group]: next })); } catch { /* storage blocked */ }
+      ads.forEach(a => onUnpick(a.pick));
     } catch (e) {
       note(`✗ ${e.message}`);
       if (e.data?.adSets?.length) note(`Empty ad sets already created (no spend): ${e.data.adSets.map(s => s.adName).join(', ')}`);
@@ -186,7 +182,7 @@ export default function AdManageLaunch({ brand, state, picked, onUnpick, onPick,
 
   return (
     <div style={box}>
-      <div style={{ fontWeight: 700, marginBottom: 6 }}>Launch with AdManage — 1 ad per new ad set</div>
+      <div style={{ fontWeight: 700, marginBottom: 6 }}>AdManage draft — 1 ad per new ad set</div>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 16px', marginBottom: 8 }}>
         {liveCampaigns.length === 0 && <span style={{ color: 'var(--text-muted)' }}>No active {group} campaigns in AdManage.</span>}
         {liveCampaigns.map(c => (
@@ -246,14 +242,25 @@ export default function AdManageLaunch({ brand, state, picked, onUnpick, onPick,
       ))}
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 10 }}>
-        <button className="btn btn--sm" onClick={launch} disabled={!ready}>
-          {busy ? 'Launching…' : `Launch ${rows.length || ''} live`}
+        <button className="btn btn--sm" onClick={saveDraft} disabled={!ready}>
+          {busy ? 'Saving…' : `Save ${rows.length || ''} as AdManage draft`}
         </button>
         <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>
           {!campaign ? 'Check a campaign. ' : ''}{!template ? 'No copy template. ' : ''}{!library.connected ? 'Local creative library not connected. ' : ''}{rows.some(r => r.problem) ? 'Fix or remove the ads marked in red. ' : ''}
         </span>
       </div>
       {log.length > 0 && <div style={{ marginTop: 8, lineHeight: 1.5 }}>{log.map((l, i) => <div key={i}>{l}</div>)}</div>}
+      {drafts.length > 0 && (
+        <div style={{ marginTop: 8, lineHeight: 1.6 }}>
+          <div style={{ color: 'var(--text-muted)', fontSize: 11 }}>Drafts saved from here (launch them in AdManage):</div>
+          {drafts.map(d => (
+            <div key={d.id}>
+              <a href={d.url} target="_blank" rel="noreferrer" style={{ fontWeight: 600 }}>Open draft {d.id} in AdManage ↗</a>
+              <span style={{ color: 'var(--text-muted)', fontSize: 11 }}> {d.campaign} · {d.ads.join(', ')} · {new Date(d.at).toLocaleString()}</span>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
