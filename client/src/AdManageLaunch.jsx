@@ -93,10 +93,15 @@ export default function AdManageLaunch({ brand, state, picked, onUnpick, onPick,
       for (let i = 0; i < 40; i++) {
         await new Promise(ok => setTimeout(ok, 5000));
         const s = await api(`/batch/${r.batchId}`);
+        // batchSucceeded is false while the batch is still running, so only the summary decides
         const status = String(s.summaryStatus || s.status || '').toLowerCase();
-        if (s.batchSucceeded || status === 'success') { note(`✓ Launched ${ads.length} ad${ads.length > 1 ? 's' : ''} live.`); ads.forEach(a => onUnpick(a.pick)); return; }
-        if (status === 'error' || status === 'failed' || s.batchSucceeded === false) {
-          note(`✗ AdManage reported a problem: ${s.message || s.error || JSON.stringify(s.failedDetails || '')}`); return;
+        if (status === 'success') { note(`✓ Launched ${ads.length} ad${ads.length > 1 ? 's' : ''} live.`); ads.forEach(a => onUnpick(a.pick)); return; }
+        if (/error|fail|partial/.test(status)) {
+          const failed = (s.ads || []).filter(a => a.status !== 'success');
+          note(`✗ AdManage: ${s.finalMessage || s.message || status}`);
+          failed.forEach(a => note(`   ${a.adName}: ${a.errorMessage || a.status}`));
+          ads.filter(a => !failed.some(f => f.adName === a.adName)).forEach(a => onUnpick(a.pick));
+          return;
         }
       }
       note(`Still running after 3 minutes — check batch ${r.batchId} in AdManage.`);
