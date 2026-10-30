@@ -3,6 +3,31 @@ import { useState, useEffect } from 'react';
 const BASE = import.meta.env.VITE_API_URL || 'http://localhost:3001';
 const TOKEN_KEY = 'sc_auth_token';
 
+function storedToken() {
+  try { return localStorage.getItem(TOKEN_KEY) || ''; } catch { return ''; }
+}
+
+// Every component calls the server with plain fetch; attach the login token to those calls here
+// instead of in each of them. A 401 marked {login: true} means the password changed: sign out.
+const nativeFetch = window.fetch.bind(window);
+window.fetch = (input, init = {}) => {
+  const url = typeof input === 'string' ? input : input?.url || String(input);
+  const token = storedToken();
+  if (!url.startsWith(BASE) || !token) return nativeFetch(input, init);
+  const headers = new Headers(init.headers || (input instanceof Request ? input.headers : undefined));
+  if (!headers.has('Authorization')) headers.set('Authorization', `Bearer ${token}`);
+  return nativeFetch(input, { ...init, headers }).then(res => {
+    if (res.status === 401 && !url.includes('/api/auth/')) {
+      res.clone().json().then(d => {
+        if (!d?.login) return;
+        try { localStorage.removeItem(TOKEN_KEY); } catch { /* storage blocked */ }
+        window.location.reload();
+      }).catch(() => {});
+    }
+    return res;
+  });
+};
+
 export default function LoginGate({ children }) {
   const [status, setStatus]   = useState('checking'); // checking | login | ok
   const [password, setPassword] = useState('');
@@ -10,7 +35,7 @@ export default function LoginGate({ children }) {
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    const token = localStorage.getItem(TOKEN_KEY);
+    const token = storedToken();
     fetch(`${BASE}/api/auth/verify`, {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
     })

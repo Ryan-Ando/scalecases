@@ -1,7 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
-import authRoutes from './routes/auth.js';
+import authRoutes, { requireLogin } from './routes/auth.js';
 import facebookRoutes from './routes/facebook.js';
 import sheetsRoutes, { startSpendSchedule } from './routes/sheets.js';
 import ghlRoutes from './routes/ghl.js';
@@ -27,6 +27,7 @@ app.use(cors({
 app.use(express.json({ limit: '30mb' }));
 app.use(express.urlencoded({ extended: true, limit: '30mb' }));
 
+app.use('/api', requireLogin);
 app.use('/api/auth', authRoutes);
 app.use('/api/facebook', facebookRoutes);
 app.use('/api/sheets', sheetsRoutes);

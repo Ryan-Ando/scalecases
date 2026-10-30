@@ -296,25 +296,24 @@ export default function Relaunch() {
     return { map, statesByAd, activeStatesByAd };
   }, [allAds, memberToCanonical]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Underspending groups from pacing config ─────────────────────────────────
+  // ── Every group: underspenders (from pacing config) first, then the rest ────
   const shortfalls = useMemo(() => {
     const rows = [];
-    for (const [group, cfg] of Object.entries(pacing)) {
-      if (!cfg?.startDate || !cfg?.endDate) continue;
-      const months = monthsBetween(cfg.startDate, cfg.endDate);
+    const groups = new Set([...Object.keys(pacing), ...Object.keys(budgetByGroup)]);
+    for (const group of groups) {
+      const base = { group, brand: group.split(' ')[0], state: group.split(' ').slice(-1)[0], liveBudget: budgetByGroup[group] || 0, paced: false, under: false };
+      const cfg = pacing[group];
+      const months = cfg?.startDate && cfg?.endDate ? monthsBetween(cfg.startDate, cfg.endDate) : [];
       const totalBudget = months.reduce((s, ym) => s + (parseFloat(cfg.monthlyBudgets?.[ym]) || 0), 0);
-      if (!totalBudget) continue;
-      const dl = daysLeft(cfg.endDate, cfg.timezone || 'America/New_York');
-      if (dl === 0) continue; // period over
+      const dl = totalBudget ? daysLeft(cfg.endDate, cfg.timezone || 'America/New_York') : 0;
       const spent = pacingSpend[group];
-      if (spent == null) continue;
+      if (!totalBudget || !dl || spent == null) { rows.push(base); continue; } // no pacing, period over, or no spend data
       const remaining   = Math.max(0, totalBudget - spent);
       const dailyNeeded = remaining / dl;
-      const liveBudget  = budgetByGroup[group] || 0;
-      const shortfall   = dailyNeeded - liveBudget;
-      if (shortfall > 1) rows.push({ group, brand: group.split(' ')[0], state: group.split(' ').slice(-1)[0], shortfall, dailyNeeded, liveBudget, remaining, daysLeft: dl });
+      const shortfall   = dailyNeeded - base.liveBudget;
+      rows.push({ ...base, paced: true, under: shortfall > 1, shortfall, dailyNeeded, remaining, daysLeft: dl });
     }
-    return rows.sort((a, b) => b.shortfall - a.shortfall);
+    return rows.sort((a, b) => Number(b.under) - Number(a.under) || (b.under ? b.shortfall - a.shortfall : a.group.localeCompare(b.group)));
   }, [pacing, pacingSpend, budgetByGroup]);
 
   // ── Recommendations per underspending group ────────────────────────────────
@@ -427,9 +426,9 @@ export default function Relaunch() {
           No pacing config found — set start/end dates and monthly budgets on the Spend Sheet tab first. Underspend is computed from that.
         </div>
       )}
-      {!loading && !error && Object.keys(pacing).length > 0 && shortfalls.length === 0 && (
+      {!loading && !error && Object.keys(pacing).length > 0 && shortfalls.length > 0 && !shortfalls.some(s => s.under) && (
         <div style={{ fontSize: 13, color: 'var(--green-dark, #15803d)', padding: '14px 16px', background: 'var(--green-light, rgba(34,197,94,0.08))', border: '1px solid var(--green, #16a34a)', borderRadius: 10 }}>
-          ✓ Every configured state is pacing at or above its needed daily spend — nothing to fill.
+          ✓ Every configured state is pacing at or above its needed daily spend — all states are listed below.
         </div>
       )}
 
@@ -445,9 +444,15 @@ export default function Relaunch() {
         <div key={rec.group} style={{ marginBottom: 30 }}>
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, marginBottom: 8, flexWrap: 'wrap' }}>
             <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--text)' }}>{rec.group}</div>
-            <span style={{ fontSize: 13, fontWeight: 700, color: '#fb9292' }}>underspending {fmt(rec.shortfall)}/day</span>
+            {rec.under
+              ? <span style={{ fontSize: 13, fontWeight: 700, color: '#fb9292' }}>underspending {fmt(rec.shortfall)}/day</span>
+              : rec.paced
+              ? <span style={{ fontSize: 13, fontWeight: 700, color: '#15803d' }}>on pace</span>
+              : <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-muted)' }}>no pacing set</span>}
             <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-              needs {fmt(rec.dailyNeeded)}/day · live {fmt(rec.liveBudget)}/day · {fmt(rec.remaining)} left over {rec.daysLeft.toFixed(1)} days
+              {rec.paced
+                ? <>needs {fmt(rec.dailyNeeded)}/day · live {fmt(rec.liveBudget)}/day · {fmt(rec.remaining)} left over {rec.daysLeft.toFixed(1)} days</>
+                : <>live {fmt(rec.liveBudget)}/day</>}
             </span>
           </div>
           <AdManageLaunch brand={rec.brand} state={rec.state} groups={localGroups} library={library}

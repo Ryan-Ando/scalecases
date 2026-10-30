@@ -1,8 +1,8 @@
 // AdManage launcher for the Relaunch tab: one new ad set per ad, copied from the newest
 // active ad set of the chosen campaign, with that state's AdManage ad copy template.
 // Writes go through AdManage's own key (ADMANAGE_API_KEY), not the read-only FB token. The site
-// itself has no login, so every route here needs ADMANAGE_LAUNCH_PASSWORD in the X-Launch-Password
-// header: these calls create live Meta objects. Unset password = nobody passes.
+// login (requireLogin in auth.js) guards these routes; because they create live Meta objects they
+// stay off until APP_PASSWORD is set, instead of being open like the rest of an unprotected site.
 
 import { Router } from 'express';
 import fetch from 'node-fetch';
@@ -12,18 +12,9 @@ import { extractState, extractBrand } from './sheets.js';
 const router = Router();
 const API = 'https://api.admanage.ai';
 
-function launchPasswordOk(req) {
-  const expected = process.env.ADMANAGE_LAUNCH_PASSWORD;
-  if (!expected) return false;
-  const a = crypto.createHash('sha256').update(String(req.headers['x-launch-password'] || '')).digest();
-  const b = crypto.createHash('sha256').update(expected).digest();
-  return crypto.timingSafeEqual(a, b);
-}
-
 router.use((req, res, next) => {
   if (!process.env.ADMANAGE_API_KEY) return res.status(503).json({ error: 'ADMANAGE_API_KEY is not set on the server' });
-  if (!process.env.ADMANAGE_LAUNCH_PASSWORD) return res.status(503).json({ error: 'ADMANAGE_LAUNCH_PASSWORD is not set on the server' });
-  if (!launchPasswordOk(req)) return res.status(401).json({ error: 'Wrong or missing launch password', needPassword: true });
+  if (!process.env.APP_PASSWORD) return res.status(503).json({ error: 'Set APP_PASSWORD (the site password) on the server to launch through AdManage' });
   next();
 });
 
@@ -55,8 +46,13 @@ async function am(path, { method = 'GET', body } = {}) {
 }
 
 let cache = { at: 0, accounts: null, campaigns: null, templates: null };
-async function directory(force) {
-  if (!force && cache.accounts && Date.now() - cache.at < 5 * 60_000) return cache;
+let loading = null;   // the Relaunch tab asks for every state at once; share one load
+function directory(force) {
+  if (!force && cache.accounts && Date.now() - cache.at < 5 * 60_000) return Promise.resolve(cache);
+  if (!loading) loading = loadDirectory().finally(() => { loading = null; });
+  return loading;
+}
+async function loadDirectory() {
   const accounts = ((await am('/v1/adaccounts')).data || [])
     .filter(a => ['meta', 'facebook'].includes(a.type) && a.workspaceId);
   const campaigns = [];

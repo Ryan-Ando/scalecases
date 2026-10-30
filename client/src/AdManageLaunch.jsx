@@ -4,15 +4,9 @@ import { creativeKey } from './creativeMatching.js';
 
 const BASE = import.meta.env.VITE_API_URL || 'http://localhost:3001';
 const CAMPAIGN_KEY = 'admanageCampaigns';
-const PASSWORD_KEY = 'admanageLaunchPassword';
-const PASSWORD_EVENT = 'admanage-password';   // tells every state's panel to retry
 
-// The site has no login; these routes create live ads, so they need the launch password
-function launchPassword() {
-  try { return localStorage.getItem(PASSWORD_KEY) || ''; } catch { return ''; }
-}
 async function api(path, opts = {}) {
-  const res = await fetch(`${BASE}/api/admanage${path}`, { ...opts, headers: { 'X-Launch-Password': launchPassword(), ...(opts.headers || {}) } });
+  const res = await fetch(`${BASE}/api/admanage${path}`, opts);
   const data = await res.json().catch(() => ({ error: res.statusText }));
   if (!res.ok) { const e = new Error(data.error || res.statusText); e.data = data; throw e; }
   return data;
@@ -41,30 +35,14 @@ export default function AdManageLaunch({ brand, state, picked, onUnpick, onPick,
   const [query, setQuery] = useState('');
   const [busy, setBusy] = useState(false);
   const [log, setLog] = useState([]);
-  const [needPassword, setNeedPassword] = useState(false);
-  const [password, setPassword] = useState('');
-  const [attempt, setAttempt] = useState(0);
 
-  useEffect(() => {
-    const retry = () => setAttempt(n => n + 1);
-    window.addEventListener(PASSWORD_EVENT, retry);
-    return () => window.removeEventListener(PASSWORD_EVENT, retry);
-  }, []);
   useEffect(() => {
     let live = true;
-    setError(''); setNeedPassword(false);
     api(`/setup?brand=${encodeURIComponent(brand)}&state=${encodeURIComponent(state)}`)
       .then(d => { if (!live) return; setSetup(d); setTemplateId(t => t || d.templates[0]?.id || ''); })
-      .catch(e => { if (!live) return; if (e.data?.needPassword) setNeedPassword(true); else setError(e.message); });
+      .catch(e => live && setError(e.message));
     return () => { live = false; };
-  }, [brand, state, attempt]);
-
-  function savePassword(e) {
-    e.preventDefault();
-    try { localStorage.setItem(PASSWORD_KEY, password); } catch { /* storage blocked */ }
-    setPassword('');
-    window.dispatchEvent(new Event(PASSWORD_EVENT));
-  }
+  }, [brand, state]);
 
   const byKey = useMemo(() => new Map(groups.map(g => [g.key, g])), [groups]);
   const rows = useMemo(() => [...picked].map(name => {
@@ -129,14 +107,6 @@ export default function AdManageLaunch({ brand, state, picked, onUnpick, onPick,
   }
 
   const box = { fontSize: 12, padding: '10px 14px', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 8, marginBottom: 10 };
-  if (needPassword) return (
-    <form style={box} onSubmit={savePassword}>
-      {launchPassword() ? 'Wrong launch password. ' : ''}Enter the AdManage launch password to launch {group} ads from this browser:{' '}
-      <input type="password" value={password} onChange={e => setPassword(e.target.value)} autoComplete="current-password"
-        style={{ fontSize: 12, padding: '3px 6px', border: '1px solid var(--border)', borderRadius: 4, background: 'var(--bg)', color: 'var(--text)' }} />{' '}
-      <button className="btn btn--sm" type="submit" disabled={!password}>Save</button>
-    </form>
-  );
   if (error) return <div style={{ ...box, color: '#fb9292' }}>AdManage: {error}</div>;
   if (!setup) return <div style={{ ...box, color: 'var(--text-muted)' }}>Loading AdManage campaigns for {group}…</div>;
 
