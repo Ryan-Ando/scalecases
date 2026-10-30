@@ -14,12 +14,16 @@ function Logo() {
 // CPL Tracker and Lead Reports are hidden (components still exist in the repo)
 const TABS = ['Ads Tracking', 'Spend Sheet', 'Relaunch', 'Disclaimers'];
 
+// The active tab lives in the URL hash (#spend-sheet) so each browser tab keeps its own
+// page across refreshes; localStorage only supplies a default for a fresh window.
+const slugOf = t => t.toLowerCase().replace(/\s+/g, '-');
+const tabFromHash = () => TABS.find(t => slugOf(t) === window.location.hash.replace(/^#/, '')) || null;
+
 // Lazy-mount: components mount on first visit and stay mounted (preserves state + ongoing work)
 export default function App() {
-  // Reopen on whatever tab was last active (falls back to Ads Tracking)
   const initialTab = (() => {
     const saved = localStorage.getItem('activeTab');
-    return TABS.includes(saved) ? saved : 'Ads Tracking';
+    return tabFromHash() || (TABS.includes(saved) ? saved : 'Ads Tracking');
   })();
   const [tab, setTab] = useState(initialTab);
   const [mounted, setMounted] = useState(new Set([initialTab]));
@@ -28,11 +32,20 @@ export default function App() {
   const sync = useSyncStatus();
   useEffect(() => { let live = true; initialSync().finally(() => { if (live) setReady(true); }); return () => { live = false; }; }, []);
 
-  function switchTab(t) {
+  function switchTab(t, pushHistory = true) {
     setMounted(m => new Set([...m, t]));
     setTab(t);
     localStorage.setItem('activeTab', t);
+    if (pushHistory && window.location.hash !== `#${slugOf(t)}`) window.history.pushState(null, '', `#${slugOf(t)}`);
   }
+  // Make sure the URL carries the tab from the first paint, and follow back/forward navigation
+  useEffect(() => {
+    if (!window.location.hash) window.history.replaceState(null, '', `#${slugOf(initialTab)}`);
+    const onHash = () => { const t = tabFromHash(); if (t) switchTab(t, false); };
+    window.addEventListener('popstate', onHash);
+    return () => window.removeEventListener('popstate', onHash);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const show = t => ({ display: tab === t ? 'block' : 'none' });
 
