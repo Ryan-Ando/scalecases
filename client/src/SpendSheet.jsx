@@ -2,6 +2,7 @@ import { countLiveAdsets } from './liveAdsets.js';
 import { pacingWindows } from './pacingWindows.js';
 import { useState, useEffect, useMemo, useRef, Fragment } from 'react';
 import { dbGetAll, dbUpsert } from './db.js';
+import { lsSet } from './sync.js';
 
 const BASE = import.meta.env.VITE_API_URL || 'http://localhost:3001';
 
@@ -98,7 +99,7 @@ function loadPacing() {
       next[newKey] = v;
     }
     if (changed) {
-      try { localStorage.setItem(PACING_KEY, JSON.stringify(next)); } catch {}
+      try { lsSet(PACING_KEY, JSON.stringify(next)); } catch {}
     }
     return next;
   } catch { return {}; }
@@ -239,7 +240,7 @@ export default function SpendSheet() {
   function updatePacing(st, field, value) {
     setPacing(prev => {
       const next = { ...prev, [st]: { ...prev[st], [field]: value } };
-      localStorage.setItem(PACING_KEY, JSON.stringify(next));
+      lsSet(PACING_KEY, JSON.stringify(next));
       return next;
     });
   }
@@ -263,7 +264,7 @@ export default function SpendSheet() {
           monthlyBudgets: { ...(prev[st]?.monthlyBudgets || {}), [ym]: value },
         },
       };
-      localStorage.setItem(PACING_KEY, JSON.stringify(next));
+      lsSet(PACING_KEY, JSON.stringify(next));
       return next;
     });
   }
@@ -283,7 +284,7 @@ export default function SpendSheet() {
       for (const s of pacingStates) {
         next[s] = { ...next[s], startDate: startDate || '', endDate: endDate || '' };
       }
-      localStorage.setItem(PACING_KEY, JSON.stringify(next));
+      lsSet(PACING_KEY, JSON.stringify(next));
       return next;
     });
   }
@@ -533,7 +534,7 @@ export default function SpendSheet() {
     next.splice(from, 1);
     next.splice(to, 0, dragSrc.current);
     setColOrder(next);
-    localStorage.setItem('spendSheetColOrder', JSON.stringify(next));
+    lsSet('spendSheetColOrder', JSON.stringify(next));
     dragSrc.current = null;
   }
   function resetOrder() {

@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
 import { dbGetAll } from './db.js';
+import { lsSet } from './sync.js';
 
 const NO_ANGLE = '(no angle)';
 
@@ -58,14 +59,14 @@ export default function AngleMatrix() {
     if (!val || angles.some(a => a.toLowerCase() === val.toLowerCase())) { setInput(''); return; }
     const next = [...angles, val];
     setAngles(next);
-    localStorage.setItem('angleMatrix_angles', JSON.stringify(next));
+    lsSet('angleMatrix_angles', JSON.stringify(next));
     setInput('');
   }
 
   function removeAngle(a) {
     const next = angles.filter(x => x !== a);
     setAngles(next);
-    localStorage.setItem('angleMatrix_angles', JSON.stringify(next));
+    lsSet('angleMatrix_angles', JSON.stringify(next));
   }
 
   // Deduplicate ads by adsetId — keep unique adsets only (multiple ads per adset share the same name/leads)

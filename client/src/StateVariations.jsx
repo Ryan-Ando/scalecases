@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { extractStateFromCampaign, STATE_NAMES } from './launcherStates.js';
+import { lsSet } from './sync.js';
 
 const BASE = import.meta.env.VITE_API_URL || 'http://localhost:3001';
 
@@ -8,7 +9,7 @@ function loadSaved() {
   try { return JSON.parse(localStorage.getItem(SAVED_KEY) || '[]'); } catch { return []; }
 }
 function persistSaved(list) {
-  try { localStorage.setItem(SAVED_KEY, JSON.stringify(list)); } catch { /* quota */ }
+  try { lsSet(SAVED_KEY, JSON.stringify(list)); } catch { /* quota */ }
 }
 
 const DEFAULT_PROMPT = `Your main job is not to create new images but to alter existing ones. Primarily to change the U.S. State in the image to another as specified.

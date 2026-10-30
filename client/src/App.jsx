@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import './App.css';
+import { initialSync, useSyncStatus } from './sync.js';
 import AdsTracking from './AdsTracking.jsx';
 import SpendSheet from './SpendSheet.jsx';
 import Relaunch from './Relaunch.jsx';
@@ -22,6 +23,10 @@ export default function App() {
   })();
   const [tab, setTab] = useState(initialTab);
   const [mounted, setMounted] = useState(new Set([initialTab]));
+  // Pull shared state from the server before any tab mounts (tabs read local storage at mount)
+  const [ready, setReady] = useState(false);
+  const sync = useSyncStatus();
+  useEffect(() => { let live = true; initialSync().finally(() => { if (live) setReady(true); }); return () => { live = false; }; }, []);
 
   function switchTab(t) {
     setMounted(m => new Set([...m, t]));
@@ -42,6 +47,18 @@ export default function App() {
         </nav>
         {/* Server-to-server integration indicator — makes the auth model explicit for Meta reviewers */}
         <span
+          className={`sync-badge sync-badge--${sync.state}`}
+          title={sync.error || (sync.lastSync ? `Shared data last synced ${new Date(sync.lastSync).toLocaleTimeString()}` : 'Shared data sync')}
+          onClick={() => { if (sync.updates) window.location.reload(); }}
+          style={{ cursor: sync.updates ? 'pointer' : 'default' }}
+        >
+          {sync.updates ? '↻ New data from another device · click to reload'
+            : sync.state === 'syncing' ? '● Syncing shared data…'
+            : sync.state === 'offline' ? '● Sync offline (changes kept locally)'
+            : sync.pending ? `● Saving ${sync.pending} change${sync.pending === 1 ? '' : 's'}…`
+            : sync.persistent ? '● Shared across devices' : '● Shared (server disk not persistent!)'}
+        </span>
+        <span
           title="Meta Marketing API · ads_read · authenticated via System User Token stored encrypted server-side. No end-user Facebook Login is used."
           style={{
             marginLeft: 16, fontSize: 11, padding: '4px 10px',
@@ -53,10 +70,11 @@ export default function App() {
         </span>
       </header>
       <main className="content" style={{ padding: 0, boxSizing: 'border-box', minWidth: 0, overflow: 'clip' }}>
-        {mounted.has('Ads Tracking') && <div style={show('Ads Tracking')}><AdsTracking /></div>}
-        {mounted.has('Spend Sheet')  && <div style={show('Spend Sheet')}><SpendSheet /></div>}
-        {mounted.has('Relaunch')     && <div style={show('Relaunch')}><Relaunch /></div>}
-        {mounted.has('Disclaimers')  && <div style={show('Disclaimers')}><Disclaimers /></div>}
+        {!ready && <div className="empty" style={{ padding: 60 }}><div className="empty-title">Syncing shared data…</div><div className="empty-desc">Pulling budgets, layouts and ad data from the server.</div></div>}
+        {ready && mounted.has('Ads Tracking') && <div style={show('Ads Tracking')}><AdsTracking /></div>}
+        {ready && mounted.has('Spend Sheet')  && <div style={show('Spend Sheet')}><SpendSheet /></div>}
+        {ready && mounted.has('Relaunch')     && <div style={show('Relaunch')}><Relaunch /></div>}
+        {ready && mounted.has('Disclaimers')  && <div style={show('Disclaimers')}><Disclaimers /></div>}
       </main>
       <footer style={{ textAlign: 'center', padding: '12px 0', fontSize: 11, color: 'var(--text-muted)', borderTop: '1px solid var(--border)' }}>
         <a href="/privacy-policy.html" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--text-muted)', textDecoration: 'underline' }}>

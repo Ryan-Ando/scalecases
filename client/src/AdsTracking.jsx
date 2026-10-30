@@ -6,6 +6,7 @@ import {
 } from 'recharts';
 import { dbGetAll, dbUpsert, dbGetMeta, dbSetMeta, dbClearAll, dbDelete, dbClearStore } from './db.js';
 import ChatPanel from './ChatPanel.jsx';
+import { lsSet } from './sync.js';
 
 const BASE = import.meta.env.VITE_API_URL || 'http://localhost:3001';
 
@@ -1885,7 +1886,7 @@ export default function AdsTracking() {
     const [moved] = next.splice(dragColRef.current, 1);
     next.splice(i, 0, moved);
     setColOrder(next);
-    localStorage.setItem('trackingColOrder', JSON.stringify(next));
+    lsSet('trackingColOrder', JSON.stringify(next));
     dragColRef.current = null; setDragOverCol(null);
   }
 
@@ -1934,7 +1935,7 @@ export default function AdsTracking() {
   function saveAccountName(state, name) {
     const next = { ...accountNames, [state]: name.trim() || state };
     setAccountNames(next);
-    localStorage.setItem('trackingAccountNames', JSON.stringify(next));
+    lsSet('trackingAccountNames', JSON.stringify(next));
     setEditingState(null);
   }
 
@@ -2253,7 +2254,7 @@ export default function AdsTracking() {
           <input
             type="checkbox"
             checked={hideCityAds}
-            onChange={e => { setHideCityAds(e.target.checked); localStorage.setItem('hideCityAds', e.target.checked ? '1' : '0'); }}
+            onChange={e => { setHideCityAds(e.target.checked); lsSet('hideCityAds', e.target.checked ? '1' : '0'); }}
             style={{ accentColor: 'var(--green)', width: 13, height: 13 }}
           />
           Hide city ads
@@ -2287,7 +2288,7 @@ export default function AdsTracking() {
               onChange={e => {
                 const v = parseInt(e.target.value, 10);
                 setReuseMonths(v);
-                localStorage.setItem('reuseThresholdMonths', String(v));
+                lsSet('reuseThresholdMonths', String(v));
               }}
             >
               <option value={2}>2+ months</option>

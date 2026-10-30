@@ -5,6 +5,11 @@ const DB_NAME = 'scalecases_v1';
 const DB_VERSION = 6; // v6 adds killSnapshots store
 let _db = null;
 
+// Sync hooks (registered by sync.js). Public writers call them after a successful local
+// write; the `raw` accessors below bypass them so remote changes can be applied silently.
+let hooks = { upsert() {}, setMeta() {}, del() {}, clear() {} };
+export function registerSyncHooks(h) { hooks = { ...hooks, ...h }; }
+
 async function openDB() {
   if (_db) return _db;
   return new Promise((resolve, reject) => {
@@ -60,7 +65,7 @@ export async function dbGetAll(storeName) {
   });
 }
 
-export async function dbUpsert(storeName, records) {
+async function putAll(storeName, records) {
   if (!records.length) return;
   const db = await openDB();
   return new Promise((resolve, reject) => {
@@ -70,6 +75,11 @@ export async function dbUpsert(storeName, records) {
     tx.oncomplete = resolve;
     tx.onerror = () => reject(tx.error);
   });
+}
+
+export async function dbUpsert(storeName, records) {
+  await putAll(storeName, records);
+  if (records.length) hooks.upsert(storeName, records);
 }
 
 export async function dbGetMeta(key) {
@@ -82,7 +92,7 @@ export async function dbGetMeta(key) {
   });
 }
 
-export async function dbSetMeta(key, value) {
+async function putMeta(key, value) {
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction('meta', 'readwrite');
@@ -92,7 +102,23 @@ export async function dbSetMeta(key, value) {
   });
 }
 
-export async function dbDelete(storeName, id) {
+export async function dbSetMeta(key, value) {
+  await putMeta(key, value);
+  hooks.setMeta(key, value);
+}
+
+async function getAllMeta() {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('meta', 'readonly');
+    const store = tx.objectStore('meta');
+    const keysReq = store.getAllKeys(); const valsReq = store.getAll();
+    tx.oncomplete = () => resolve(keysReq.result.map((k, i) => [k, valsReq.result[i]]));
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+async function delOne(storeName, id) {
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(storeName, 'readwrite');
@@ -102,7 +128,12 @@ export async function dbDelete(storeName, id) {
   });
 }
 
-export async function dbClearStore(storeName) {
+export async function dbDelete(storeName, id) {
+  await delOne(storeName, id);
+  hooks.del(storeName, id);
+}
+
+async function clearOne(storeName) {
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(storeName, 'readwrite');
@@ -111,6 +142,14 @@ export async function dbClearStore(storeName) {
     tx.onerror = () => reject(tx.error);
   });
 }
+
+export async function dbClearStore(storeName) {
+  await clearOne(storeName);
+  hooks.clear(storeName);
+}
+
+// Hook-free accessors used by sync.js to apply changes that came from the server.
+export const raw = { getAll: dbGetAll, getAllMeta, upsert: putAll, setMeta: putMeta, del: delOne, clearStore: clearOne };
 
 // Clears sync data but preserves fbAds (ad structure) and sheet import.
 // fbAds is kept because it maps adset IDs → ad names → campaign states, which
@@ -129,7 +168,7 @@ export async function dbClearAll(clearImport = false) {
       if (clearImport) stores.push('sheetImport');
       const tx = db.transaction(stores, 'readwrite');
       for (const s of stores) tx.objectStore(s).clear();
-      tx.oncomplete = () => { db.close(); resolve(); };
+      tx.oncomplete = () => { db.close(); for (const s of stores) hooks.clear(s); resolve(); };
       tx.onerror = () => reject(tx.error);
     };
     req.onerror = e => reject(e.target.error);

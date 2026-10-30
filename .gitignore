@@ -32,3 +32,6 @@ leads.json
 # Python
 __pycache__/
 *.pyc
+
+# Server data dir (local dev; on Render DATA_DIR is a persistent disk)
+server/data/

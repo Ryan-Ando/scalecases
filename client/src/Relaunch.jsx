@@ -3,6 +3,7 @@ import { useCreativeLibrary } from './useCreativeLibrary.js';
 import { groupLibrary, prependUntested } from './creativeMatching.js';
 import { useState, useEffect, useMemo } from 'react';
 import { dbGetAll, dbGetMeta } from './db.js';
+import { lsSet } from './sync.js';
 
 const BASE = import.meta.env.VITE_API_URL || 'http://localhost:3001';
 
@@ -391,14 +392,14 @@ export default function Relaunch() {
           <label style={{ fontSize: 12, color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 5 }}>
             Dormant ≥
             <input type="number" min="1" value={reuseMonths}
-              onChange={e => { const v = Math.max(1, parseInt(e.target.value, 10) || 2); setReuseMonths(v); localStorage.setItem('reuseThresholdMonths', String(v)); }}
+              onChange={e => { const v = Math.max(1, parseInt(e.target.value, 10) || 2); setReuseMonths(v); lsSet('reuseThresholdMonths', String(v)); }}
               style={{ width: 44, fontSize: 12, padding: '3px 6px', border: '1px solid var(--border)', borderRadius: 4, background: 'var(--bg)', color: 'var(--text)' }} />
             mo
           </label>
           <label style={{ fontSize: 12, color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 5 }}>
             Min leads
             <input type="number" min="1" value={minLeads}
-              onChange={e => { const v = Math.max(1, parseInt(e.target.value, 10) || 3); setMinLeads(v); localStorage.setItem('relaunchMinLeads', String(v)); }}
+              onChange={e => { const v = Math.max(1, parseInt(e.target.value, 10) || 3); setMinLeads(v); lsSet('relaunchMinLeads', String(v)); }}
               style={{ width: 44, fontSize: 12, padding: '3px 6px', border: '1px solid var(--border)', borderRadius: 4, background: 'var(--bg)', color: 'var(--text)' }} />
           </label>
           <button className="btn btn--sm" onClick={load} disabled={loading}>{loading ? 'Loading…' : '↺ Refresh'}</button>

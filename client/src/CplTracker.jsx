@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useCallback, useRef, Fragment } from 'react';
+import { lsSet } from './sync.js';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid,
   Tooltip, ReferenceLine, ResponsiveContainer,
@@ -21,7 +22,7 @@ function loadOrder() {
   try { return JSON.parse(localStorage.getItem(LS_ORDER) || 'null'); } catch { return null; }
 }
 function saveOrder(arr) {
-  try { localStorage.setItem(LS_ORDER, JSON.stringify(arr)); } catch {}
+  try { lsSet(LS_ORDER, JSON.stringify(arr)); } catch {}
 }
 
 // Merge saved order with current campaigns: keep saved order, append new, drop removed

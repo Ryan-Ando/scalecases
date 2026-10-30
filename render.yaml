@@ -6,9 +6,17 @@ services:
     rootDir: server
     buildCommand: npm install
     startCommand: npm start
+    # Persistent disk: shared browser state, leads ledger, FB cache, snapshots and pacing
+    # all live under DATA_DIR and would otherwise be wiped on every deploy.
+    disk:
+      name: data
+      mountPath: /var/data
+      sizeGB: 1
     envVars:
       - key: NODE_ENV
         value: production
+      - key: DATA_DIR
+        value: /var/data
       - key: CLIENT_URL
         sync: false  # Set this to your frontend Render URL after first deploy
       - key: FB_ACCESS_TOKEN

@@ -23,6 +23,16 @@ Tabs stay mounted; the active tab persists in localStorage.
   anything sensitive or exposing a new service beyond loopback.
 - Spend-sheet push and the digest are manual-only (no schedules).
 
+## Shared browser state (server/routes/state.js + client/src/sync.js)
+Budgets/pacing, column layouts, merge groups, deleted ads, KPI settings and the accumulated
+FB / GHL / sheet data in IndexedDB are mirrored to the server's record-sync store
+(`DATA_DIR/state/<store>.json`, per-record `_rev`, tombstones, store `epoch` for clears) so every
+device shows the same thing. `initialSync()` runs before tabs mount; local writes go through
+db.js hooks / `lsSet` and are pushed in batches; a 60 s poll applies other devices' changes and
+shows a reload badge. Work on one device at a time; last write wins per record.
+**DATA_DIR must be a Render persistent disk** (render.yaml mounts `/var/data`), or all of this plus
+leads.json, fb-cache and snapshots vanish on each deploy.
+
 ## Disclaimers tab + local worker (tools/disclaimer-worker)
 Replaces burned-in disclaimers on image/video ads. The browser talks to a FastAPI worker on
 `127.0.0.1:43128` on the user's own machine (origin allowlist: Render client + Vite dev). Render
