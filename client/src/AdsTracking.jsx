@@ -1726,6 +1726,12 @@ export default function AdsTracking() {
     return map;
   }, [allAds, memberToCanonical]);
 
+  // Ad names with ad-level daily data synced (the ✓ badge), computed once instead of per row
+  const dailySyncedNames = useMemo(() => {
+    const ids = new Set(allAdDailyInsights.map(r => r.ad_id));
+    return new Set(allAds.filter(a => ids.has(a.id)).map(a => a.name?.trim()));
+  }, [allAdDailyInsights, allAds]);
+
   // Most recent activity per ad across all states
   const lastUsedByAd = useMemo(() => {
     const map = {};
@@ -2469,10 +2475,7 @@ export default function AdsTracking() {
                         {mergeGroup && (
                           <span className="tracking-merge-badge">{mergeGroup.members.length} ads</span>
                         )}
-                        {allAdDailyInsights.some(r => {
-                          const effectiveNames = mergeGroup ? mergeGroup.members : [adName];
-                          return effectiveNames.some(n => allAds.find(a => a.name?.trim() === n && a.id === r.ad_id));
-                        }) && (
+                        {(mergeGroup ? mergeGroup.members : [adName]).some(n => dailySyncedNames.has(n)) && (
                           <span className="tracking-synced-badge" title="Ad-level daily data synced">✓</span>
                         )}
                         {!selecting && (
@@ -2521,10 +2524,9 @@ export default function AdsTracking() {
                     {orderedStates.map(state => {
                       const leads    = row[state]     || 0;
                       const cases    = caseRow[state] || 0;
-                      const everUsed = allAds.some(a => {
-                        const canonical = memberToCanonical[(a.name || '').trim()] || (a.name || '').trim();
-                        return canonical === adName && extractState(a.campaignName) === state;
-                      });
+                      // lastUsedGrid has a cell for every (canonical ad, state) any ad ran in; scanning
+                      // allAds here instead cost ~19k cells × 8k ads per render
+                      const everUsed = !!lastUsedGrid[adName]?.[state];
                       const status  = cellStatus[adName]?.[state];
                       const cellBg  = status === 'solo' ? 'rgba(34,197,94,0.12)' : status === 'shared' ? 'rgba(59,130,246,0.12)' : undefined;
                       const lu          = lastUsedGrid[adName]?.[state];

@@ -1,10 +1,17 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, memo } from 'react';
 import './App.css';
 import { initialSync, useSyncStatus } from './sync.js';
 import AdsTracking from './AdsTracking.jsx';
 import SpendSheet from './SpendSheet.jsx';
 import Relaunch from './Relaunch.jsx';
 import Disclaimers from './Disclaimers.jsx';
+
+// The tabs take no props; memo keeps a tab switch or a sync-badge update from re-rendering every
+// mounted tab (the Ads Tracking grid alone is ~19k cells)
+const AdsTrackingTab = memo(AdsTracking);
+const SpendSheetTab  = memo(SpendSheet);
+const RelaunchTab    = memo(Relaunch);
+const DisclaimersTab = memo(Disclaimers);
 
 function Logo() {
   return <img src="/logo.png" width="32" height="32" style={{ borderRadius: 8, display: 'block' }} alt="Scale Cases" />;
@@ -84,10 +91,10 @@ export default function App() {
       </header>
       <main className="content" style={{ padding: 0, boxSizing: 'border-box', minWidth: 0, overflow: 'clip' }}>
         {!ready && <div className="empty" style={{ padding: 60 }}><div className="empty-title">Syncing shared data…</div><div className="empty-desc">Pulling budgets, layouts and ad data from the server.</div></div>}
-        {ready && mounted.has('Ads Tracking') && <div style={show('Ads Tracking')}><AdsTracking /></div>}
-        {ready && mounted.has('Spend Sheet')  && <div style={show('Spend Sheet')}><SpendSheet /></div>}
-        {ready && mounted.has('Relaunch')     && <div style={show('Relaunch')}><Relaunch /></div>}
-        {ready && mounted.has('Disclaimers')  && <div style={show('Disclaimers')}><Disclaimers /></div>}
+        {ready && mounted.has('Ads Tracking') && <div style={show('Ads Tracking')}><AdsTrackingTab /></div>}
+        {ready && mounted.has('Spend Sheet')  && <div style={show('Spend Sheet')}><SpendSheetTab /></div>}
+        {ready && mounted.has('Relaunch')     && <div style={show('Relaunch')}><RelaunchTab /></div>}
+        {ready && mounted.has('Disclaimers')  && <div style={show('Disclaimers')}><DisclaimersTab /></div>}
       </main>
       <footer style={{ textAlign: 'center', padding: '12px 0', fontSize: 11, color: 'var(--text-muted)', borderTop: '1px solid var(--border)' }}>
         <a href="/privacy-policy.html" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--text-muted)', textDecoration: 'underline' }}>

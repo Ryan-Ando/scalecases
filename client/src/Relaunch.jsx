@@ -336,10 +336,16 @@ export default function Relaunch() {
     const dormantCutoff = Date.now() - reuseMonths * 30 * 24 * 3600 * 1000;
     // All canonical ad names with any evidence for a given brand
     const adsByBrand = new Map();
-    for (const key of windowAgg.keys()) {
-      const [brand, name] = key.split('|');
+    // Per-state rows of each brand|ad, indexed once: scanning all of windowAgg for every
+    // state × ad froze the tab for seconds once every state was listed
+    const statesOf = new Map();
+    for (const [key, v] of windowAgg) {
+      const [brand, name, st] = key.split('|');
       if (!adsByBrand.has(brand)) adsByBrand.set(brand, new Set());
       adsByBrand.get(brand).add(name);
+      const k = `${brand}|${name}`;
+      if (!statesOf.has(k)) statesOf.set(k, []);
+      statesOf.get(k).push([st, v]);
     }
 
     return shortfalls.map(sf => {
@@ -353,11 +359,9 @@ export default function Relaunch() {
         // (brand-scoped). Both are shown so the ranking is auditable at a glance.
         let totalLeads = 0, totalSpend = 0, totalCases = 0;
         const proven = [];
-        for (const [key, v] of windowAgg) {
-          const [b, n, st] = key.split('|');
-          if (b !== sf.brand || n !== name) continue;
+        for (const [st, v] of statesOf.get(`${sf.brand}|${name}`) || []) {
           totalLeads += v.leads; totalSpend += v.spend;
-          totalCases += caseAgg.get(`${n}|${st}`) || 0;
+          totalCases += caseAgg.get(`${name}|${st}`) || 0;
           if (st !== sf.state && v.leads > 0) proven.push({ st, leads: v.leads });
         }
         const here = windowAgg.get(`${sf.brand}|${name}|${sf.state}`) || { leads: 0, spend: 0 };
