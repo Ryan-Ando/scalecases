@@ -1,13 +1,20 @@
 """Scale Cases local disclaimer worker.
 
-Runs on this PC only (127.0.0.1:43128) and does the heavy lifting for the Disclaimers tab:
+Runs on this machine only (127.0.0.1:43128) and does the heavy lifting for the Disclaimers tab:
 disclaimer library, folder browsing, date sorting, rendering jobs (image + video), review
 previews, approve/reject into the chosen destination, and output history.
 
-Start:   python worker.py            (or the Startup shortcut created by install.ps1)
-Data:    %LOCALAPPDATA%\\ScaleCasesDisclaimers   (library, settings, history, jobs, staging)
+Start:   python worker.py            (Windows: install.ps1 startup shortcut; macOS: install.sh launchd agent)
+
+Data:    everything the tab shows (library, settings, history, jobs, staged renders, previews,
+         drag-and-drop inbox) lives in the SHARED folder  <My Drive>/ScaleCases/Disclaimers
+         so it syncs through Google Drive and the PC and the Mac see the same thing.
+         The only machine-local file is local.json (this machine's library root) in
+         %LOCALAPPDATA%\\ScaleCasesDisclaimers (Windows) / ~/Library/Application Support/ScaleCasesDisclaimers (macOS).
+         Until Drive is available the worker falls back to that local folder and moves the data
+         into the shared folder the first time it appears.
 """
-import os, sys, json, uuid, time, shutil, threading, subprocess, queue, string
+import os, sys, json, uuid, time, shutil, threading, subprocess, queue, string, platform
 from datetime import datetime, timezone
 from fastapi import FastAPI, HTTPException, Request, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,28 +25,28 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import disclaimer_image as dimg
 import disclaimer_video as dvid
 
-VERSION = 2
-PORT = 43128
+VERSION = 3
+PORT = int(os.environ.get("SC_DISCLAIMER_PORT") or 43128)
 ORIGINS = ["https://scalecases-client.onrender.com", "http://localhost:5173", "http://127.0.0.1:5173"]
 IS_WIN = sys.platform.startswith("win")
 IS_MAC = sys.platform == "darwin"
-_default_data = (os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "ScaleCasesDisclaimers") if IS_WIN
-                 else os.path.expanduser("~/Library/Application Support/ScaleCasesDisclaimers") if IS_MAC
-                 else os.path.expanduser("~/.scalecases-disclaimers"))
-DATA = os.environ.get("SC_DISCLAIMER_DATA") or _default_data
-STAGING = os.path.join(DATA, "staging")
-PREVIEWS = os.path.join(DATA, "previews")
-INBOX = os.path.join(DATA, "inbox")          # copies of files dropped onto the tab
+MACHINE = os.environ.get("SC_DISCLAIMER_MACHINE") or platform.node() or ("pc" if IS_WIN else "mac")
+_default_local = (os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "ScaleCasesDisclaimers") if IS_WIN
+                  else os.path.expanduser("~/Library/Application Support/ScaleCasesDisclaimers") if IS_MAC
+                  else os.path.expanduser("~/.scalecases-disclaimers"))
+LOCAL = os.environ.get("SC_DISCLAIMER_DATA") or _default_local      # machine-local: local.json + fallback data
+SHARED_REL = os.path.join("ScaleCases", "Disclaimers")                # inside the library root (Google Drive "My Drive")
+os.makedirs(LOCAL, exist_ok=True)
 IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp"}
 VIDEO_EXT = {".mp4", ".mov", ".m4v"}
-for d in (DATA, STAGING, PREVIEWS, INBOX):
-    os.makedirs(d, exist_ok=True)
 
-DEFAULT_SETTINGS = {
+DEFAULT_SETTINGS = {                 # shared (synced) settings
     "tags": ["LSS CA", "CA LSS", "LSS CO", "CO LSS", "C-L"],
     "out_folder": "new disclaimer",
     "recent_parents": [],
-    "library_root": "",      # local path of the synced ad library (Google Drive "My Drive"); "{root}" in paths expands to it
+}
+DEFAULT_LOCAL = {                    # machine-local settings
+    "library_root": "",      # this machine's path to the synced ad library (Google Drive "My Drive"); "{root}" in paths expands to it
 }
 
 
@@ -59,26 +66,43 @@ def guess_library_root():
     return ""
 
 
+def library_root():
+    return state["local"].get("library_root") or ""
+
+
 def resolve_path(p):
-    """Expand the {root} placeholder with this machine's library root and normalise separators."""
+    """Expand the {root} (library root) and {data} (shared data folder) placeholders with this
+    machine's paths and normalise separators."""
     p = (p or "").strip()
     if not p:
         return ""
-    root = state["settings"].get("library_root") or ""
-    if p.startswith("{root}"):
-        rest = p[len("{root}"):].replace("\\", "/").lstrip("/")
-        p = os.path.join(root, *rest.split("/")) if rest else root
+    for key, base in (("{root}", library_root()), ("{data}", DATA)):
+        if p.startswith(key):
+            rest = p[len(key):].replace("\\", "/").lstrip("/")
+            p = os.path.join(base, *rest.split("/")) if rest else base
+            break
     return os.path.abspath(p) if p else ""
 
 
+def _under(p, base):
+    if not p or not base:
+        return False
+    p = os.path.normcase(os.path.abspath(p)); b = os.path.normcase(os.path.abspath(base)).rstrip("\\/")
+    return p == b or p.startswith(b + os.sep)
+
+
 def portable_path(p):
-    """Store paths under the library root as {root}/... so they work on both machines."""
+    """Store paths under the library root as {root}/... and under the shared data folder as
+    {data}/... so the same record works on both machines."""
     p = (p or "").strip()
-    root = state["settings"].get("library_root") or ""
-    if p and root and os.path.normcase(os.path.abspath(p)).startswith(os.path.normcase(os.path.abspath(root)).rstrip("\\/")):
-        rest = os.path.abspath(p)[len(os.path.abspath(root)):].replace("\\", "/").lstrip("/")
-        return "{root}/" + rest if rest else "{root}"
+    if not p or p.startswith("{root}") or p.startswith("{data}"):
+        return p
+    for key, base in (("{data}", DATA), ("{root}", library_root())):
+        if _under(p, base):
+            rest = os.path.abspath(p)[len(os.path.abspath(base).rstrip("\\/")):].replace("\\", "/").lstrip("/")
+            return f"{key}/{rest}" if rest else key
     return p
+
 
 lock = threading.RLock()
 
@@ -87,43 +111,160 @@ def now():
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def load(name, default):
-    p = os.path.join(DATA, name)
-    if not os.path.exists(p):
+FILES = {"disclaimers": "disclaimers.json", "settings": "settings.json", "history": "history.json", "jobs": "jobs.json"}
+DATA = STAGING = PREVIEWS = INBOX = None
+_seen = {}          # file name -> (mtime_ns, size) of the copy we last read or wrote
+state = {"local": {**DEFAULT_LOCAL}, "disclaimers": [], "settings": {**DEFAULT_SETTINGS}, "history": [], "jobs": []}
+
+
+def _stat(p):
+    try:
+        st = os.stat(p); return (st.st_mtime_ns, st.st_size)
+    except OSError:
+        return None
+
+
+def _read_json(p, default):
+    try:
+        with open(p, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
         return default
-    with open(p, encoding="utf-8") as f:
-        return json.load(f)
 
 
-def save(name, data):
-    p = os.path.join(DATA, name); tmp = p + ".tmp"
+def _write_json(p, data):
+    tmp = p + f".{MACHINE}.tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=1)
     os.replace(tmp, p)
 
 
-state = {
-    "disclaimers": load("disclaimers.json", []),
-    "settings": {**DEFAULT_SETTINGS, **load("settings.json", {})},
-    "history": load("history.json", []),
-    "jobs": load("jobs.json", []),
-}
-# anything that was mid-flight when the worker last stopped is stale
+def save_local():
+    _write_json(os.path.join(LOCAL, "local.json"), state["local"])
+
+
+def load(name):
+    p = os.path.join(DATA, FILES[name])
+    default = {} if name == "settings" else []
+    data = _read_json(p, default) if os.path.exists(p) else default
+    before = json.dumps(data, sort_keys=True)
+    if name == "settings":
+        data = {**DEFAULT_SETTINGS, **{k: v for k, v in data.items() if k in DEFAULT_SETTINGS}}
+        data["recent_parents"] = [portable_path(x) for x in data.get("recent_parents") or []]
+    if name == "jobs":
+        data = [normalize_job(j) for j in data]
+    state[name] = data; _seen[name] = _stat(p)
+    if os.path.exists(p) and json.dumps(data, sort_keys=True) != before:
+        save(name)        # older absolute paths were made portable; write them back so the other machine can use them
+
+
+def save(name):
+    p = os.path.join(DATA, FILES[name])
+    _write_json(p, state[name]); _seen[name] = _stat(p)
+
+
+def normalize_job(j):
+    """Older jobs stored absolute machine paths; make them portable so the other machine can show,
+    approve and re-render them."""
+    for it in j.get("items", []):
+        for k in ("src", "parent", "out_path", "staging"):
+            if it.get(k): it[k] = portable_path(it[k])
+        it.setdefault("machine", MACHINE)
+    return j
+
+
+def shared_dir():
+    """The shared data folder inside the library root, if the library root exists on this machine."""
+    root = library_root()
+    return os.path.join(root, SHARED_REL) if root and os.path.isdir(root) else ""
+
+
+def choose_data_dir():
+    """Shared folder when Drive is available, else the local folder. Switching to the shared
+    folder for the first time moves this machine's existing data into it."""
+    global DATA, STAGING, PREVIEWS, INBOX
+    want = shared_dir() or LOCAL
+    if want == DATA:
+        return False
+    if want != LOCAL:
+        try:
+            os.makedirs(want, exist_ok=True)
+        except OSError:
+            want = LOCAL
+            if want == DATA: return False
+    old = DATA
+    DATA = want; STAGING = os.path.join(DATA, "staging"); PREVIEWS = os.path.join(DATA, "previews"); INBOX = os.path.join(DATA, "inbox")
+    for d in (STAGING, PREVIEWS, INBOX):
+        os.makedirs(d, exist_ok=True)
+    if DATA != LOCAL and not os.path.exists(os.path.join(DATA, FILES["disclaimers"])) and os.path.exists(os.path.join(LOCAL, FILES["disclaimers"])):
+        migrate_local_into_shared()
+    for n in FILES:
+        load(n)
+    if old is not None:
+        print(f"data folder is now {DATA}", file=sys.stderr)
+    return True
+
+
+def migrate_local_into_shared():
+    """First switch to Drive on a machine that already has a local library: copy it across.
+    Paths in the copied records are made portable by normalize_job / portable_path on load."""
+    for n, fn in FILES.items():
+        src = os.path.join(LOCAL, fn)
+        if os.path.exists(src):
+            shutil.copy2(src, os.path.join(DATA, fn))
+    for sub in ("staging", "previews", "inbox"):
+        src = os.path.join(LOCAL, sub)
+        if os.path.isdir(src):
+            shutil.copytree(src, os.path.join(DATA, sub), dirs_exist_ok=True)
+    # staging/inbox paths in copied jobs pointed at the local folder; rewrite them to the shared one
+    jobs = _read_json(os.path.join(DATA, FILES["jobs"]), [])
+    for j in jobs:
+        for it in j.get("items", []):
+            for k in ("src", "staging"):
+                v = it.get(k) or ""
+                if v and _under(v, LOCAL):
+                    it[k] = "{data}/" + os.path.abspath(v)[len(os.path.abspath(LOCAL).rstrip("\\/")):].replace("\\", "/").lstrip("/")
+    _write_json(os.path.join(DATA, FILES["jobs"]), jobs)
+    print(f"moved local disclaimer data into the shared folder {DATA}", file=sys.stderr)
+
+
+def refresh():
+    """Pick up changes the other machine synced through Drive: re-read any data file whose
+    mtime/size differs from the copy we last read or wrote. Cheap (four stats), called per request."""
+    with lock:
+        if choose_data_dir():
+            return
+        for n, fn in FILES.items():
+            p = os.path.join(DATA, fn)
+            st = _stat(p)
+            if st != _seen.get(n):
+                load(n)
+
+
+state["local"] = {**DEFAULT_LOCAL, **_read_json(os.path.join(LOCAL, "local.json"), {})}
+# settings.json used to hold library_root; carry it over once
+_old_settings = _read_json(os.path.join(LOCAL, "settings.json"), {})
+if not state["local"].get("library_root") and _old_settings.get("library_root"):
+    state["local"]["library_root"] = _old_settings["library_root"]
+if not state["local"].get("library_root") or not os.path.isdir(state["local"]["library_root"]):
+    g = guess_library_root()
+    if g: state["local"]["library_root"] = g
+save_local()
+choose_data_dir()
+# anything THIS machine was rendering when the worker last stopped is stale; the other machine's items are left alone
+_stale = False
 for j in state["jobs"]:
     for it in j["items"]:
-        if it["status"] in ("queued", "running"):
-            it["status"] = "error"; it["error"] = "worker restarted before this item finished"
-save("jobs.json", state["jobs"])
-if not state["settings"].get("library_root"):
-    state["settings"]["library_root"] = guess_library_root()
-    save("settings.json", state["settings"])
+        if it["status"] in ("queued", "running") and it.get("machine", MACHINE) == MACHINE:
+            it["status"] = "error"; it["error"] = "worker restarted before this item finished"; _stale = True
+if _stale:
+    save("jobs")
 
 
 def persist(*names):
     with lock:
         for n in names:
-            save({"disclaimers": "disclaimers.json", "settings": "settings.json",
-                  "history": "history.json", "jobs": "jobs.json"}[n], state[n])
+            save(n)
 
 
 app = FastAPI(title="Scale Cases disclaimer worker")
@@ -133,6 +274,8 @@ app.add_middleware(CORSMiddleware, allow_origins=ORIGINS, allow_methods=["*"], a
 @app.middleware("http")
 async def private_network(request: Request, call_next):
     # Chrome's Private Network Access preflight needs this header on loopback services
+    if request.method != "OPTIONS":
+        refresh()          # pick up anything the other machine synced through Drive
     resp = await call_next(request)
     resp.headers["Access-Control-Allow-Private-Network"] = "true"
     resp.headers["Cache-Control"] = "no-store"
@@ -245,26 +388,42 @@ def make_previews(item):
 work_q = queue.Queue()
 
 
-def run_item(job, item):
-    item["status"] = "running"; item["started"] = now(); item["error"] = None
-    persist("jobs")
+def current_item(jid, idx):
+    """Re-find the item in the latest state (a Drive sync may have replaced the dicts)."""
+    refresh()
+    job = next((j for j in state["jobs"] if j["id"] == jid), None)
+    return (job, job["items"][idx]) if job and idx < len(job["items"]) else (None, None)
+
+
+def update_item(jid, idx, **fields):
+    with lock:
+        job, item = current_item(jid, idx)
+        if item is None:
+            return None
+        item.update(fields); persist("jobs")
+        return item
+
+
+def run_item(jid, idx, item):
+    update_item(jid, idx, status="running", started=now(), error=None, machine=MACHINE)
+    fields = {}
     try:
         if not ffmpeg_ok() and item["kind"] == "video":
             raise RuntimeError("ffmpeg/ffprobe not found on PATH")
+        src = resolve_path(item["src"])
+        if not os.path.isfile(src):
+            raise RuntimeError("source file is not on this machine yet (Drive still syncing?)")
         ext = os.path.splitext(item["out_name"])[1]
-        item["staging"] = os.path.join(STAGING, f"{job['id']}_{item['idx']}{ext}")
+        staging = os.path.join(STAGING, f"{jid}_{idx}{ext}")
         fn = dimg.run_image if item["kind"] == "image" else dvid.run_video
-        res = fn(item["src"], item["text"], item["staging"], item.get("overrides") or {})
-        item["result"] = res
-        item["flags"] = list(res.get("flags", []))
-        item["log"] = list(res.get("log", []))
-        make_previews(item)
-        item["status"] = "review"
+        res = fn(src, item["text"], staging, item.get("overrides") or {})
+        work = {**item, "src": src, "staging": staging, "result": res}
+        make_previews(work)
+        fields = {"staging": portable_path(staging), "result": res, "flags": list(res.get("flags", [])),
+                  "log": list(res.get("log", [])), "previews": work["previews"], "status": "review"}
     except Exception as e:
-        item["status"] = "error"; item["error"] = str(e)
-        item["log"] = (item.get("log") or []) + [f"ERROR {e}"]
-    item["finished"] = now()
-    persist("jobs")
+        fields = {"status": "error", "error": str(e), "log": (item.get("log") or []) + [f"ERROR {e}"]}
+    update_item(jid, idx, finished=now(), **fields)
 
 
 def runner():
@@ -272,10 +431,10 @@ def runner():
         jid, idx = work_q.get()
         try:
             with lock:
-                job = next((j for j in state["jobs"] if j["id"] == jid), None)
-                item = job["items"][idx] if job else None
+                job, item = current_item(jid, idx)
+                item = dict(item) if item else None
             if item and item["status"] == "queued":
-                run_item(job, item)
+                run_item(jid, idx, item)
         except Exception as e:
             print("runner error", e, file=sys.stderr)
         finally:
@@ -289,8 +448,9 @@ threading.Thread(target=runner, daemon=True).start()
 
 @app.get("/health")
 def health():
-    root = state["settings"].get("library_root") or ""
-    return {"version": VERSION, "ok": True, "ffmpeg": ffmpeg_ok(), "data": DATA, "platform": sys.platform, "sep": os.sep,
+    root = library_root()
+    return {"version": VERSION, "ok": True, "ffmpeg": ffmpeg_ok(), "data": DATA, "shared": DATA != LOCAL, "local": LOCAL,
+            "machine": MACHINE, "platform": sys.platform, "sep": os.sep,
             "library_root": root, "library_root_ok": bool(root) and os.path.isdir(root), "library_root_guess": guess_library_root(),
             "queued": sum(1 for j in state["jobs"] for i in j["items"] if i["status"] in ("queued", "running"))}
 
@@ -298,7 +458,7 @@ def health():
 @app.get("/state")
 def get_state():
     discs = [{**d, "parent_resolved": resolve_path(d.get("parent"))} for d in state["disclaimers"]]
-    return {"disclaimers": discs, "settings": state["settings"], "sep": os.sep, "platform": sys.platform}
+    return {"disclaimers": discs, "settings": {**state["settings"], **state["local"]}, "sep": os.sep, "platform": sys.platform}
 
 
 @app.get("/export")
@@ -377,13 +537,17 @@ def delete_disclaimer(did: str):
 async def put_settings(req: Request):
     b = await req.json()
     with lock:
-        for k in ("tags", "out_folder", "recent_parents", "library_root"):
+        for k in ("tags", "out_folder", "recent_parents"):
             if k in b: state["settings"][k] = b[k]
         persist("settings")
-    return state["settings"]
+        if "library_root" in b:
+            state["local"]["library_root"] = (b["library_root"] or "").strip() or guess_library_root()
+            save_local(); choose_data_dir()
+    return {**state["settings"], **state["local"]}
 
 
 def remember_parent(parent):
+    parent = portable_path(parent)
     rp = [p for p in state["settings"]["recent_parents"] if p.lower() != parent.lower()]
     state["settings"]["recent_parents"] = [parent] + rp[:9]
     persist("settings")
@@ -400,7 +564,7 @@ async def upload(file: UploadFile = File(...)):
     dest = os.path.join(folder, name)
     with open(dest, "wb") as f:
         shutil.copyfileobj(file.file, f, 1 << 20)
-    return {"path": dest, "name": name, "kind": kind_of(name), "size": os.path.getsize(dest)}
+    return {"path": portable_path(dest), "name": name, "kind": kind_of(name), "size": os.path.getsize(dest)}
 
 
 # ───────────────────────────── routes: filesystem ─────────────────────────────
@@ -412,7 +576,7 @@ def fs(path: str = ""):
             roots = [f"{c}:\\" for c in string.ascii_uppercase if os.path.exists(f"{c}:\\")]
         else:
             roots = [os.path.expanduser("~")] + sorted(os.path.join("/Volumes", v) for v in (os.listdir("/Volumes") if os.path.isdir("/Volumes") else [])) + ["/"]
-        lr = state["settings"].get("library_root")
+        lr = library_root()
         if lr and os.path.isdir(lr): roots.insert(0, lr)
         return {"path": "", "parent": None, "dirs": roots, "files": [], "sep": os.sep}
     path = resolve_path(path)
@@ -508,11 +672,11 @@ def build_item(job_id, idx, src, parent, disc, overrides, out_name=None):
     out_name = out_name or output_name(name, disc["name"], tags)
     code = date_code(name) or "unsorted"
     out_path = os.path.join(parent, state["settings"]["out_folder"], code, out_name)
-    return {"job_id": job_id, "idx": idx, "src": src, "name": name, "kind": kind_of(src), "parent": parent,
+    return {"job_id": job_id, "idx": idx, "src": portable_path(src), "name": name, "kind": kind_of(src), "parent": portable_path(parent),
             "disclaimer_id": disc["id"], "disclaimer_name": disc["name"], "version": disc["version"],
-            "text": disc["text"], "out_name": out_name, "out_path": out_path, "staging": None,
+            "text": disc["text"], "out_name": out_name, "out_path": portable_path(out_path), "staging": None,
             "status": "queued", "result": None, "log": [], "previews": [], "flags": [],
-            "overrides": overrides or {}, "error": None, "created": now()}
+            "overrides": overrides or {}, "error": None, "created": now(), "machine": MACHINE}
 
 
 @app.post("/jobs")
@@ -559,8 +723,9 @@ def delete_job(jid: str):
     job = find_job(jid)
     with lock:
         for it in job["items"]:
-            if it.get("staging") and os.path.exists(it["staging"]):
-                try: os.remove(it["staging"])
+            stg = resolve_path(it.get("staging"))
+            if stg and os.path.exists(stg):
+                try: os.remove(stg)
                 except OSError: pass
         shutil.rmtree(os.path.join(PREVIEWS, jid), ignore_errors=True)
         state["jobs"].remove(job); persist("jobs")
@@ -572,19 +737,20 @@ def approve(jid: str, idx: int):
     job = find_job(jid); item = job["items"][idx]
     if item["status"] != "review":
         raise HTTPException(400, f"item is {item['status']}, not awaiting review")
-    if not item.get("staging") or not os.path.exists(item["staging"]):
-        raise HTTPException(400, "staged output is missing; re-render it")
-    if os.path.abspath(item["out_path"]) == os.path.abspath(item["src"]):
+    staging = resolve_path(item.get("staging")); out_path = resolve_path(item["out_path"]); src = resolve_path(item["src"])
+    if not staging or not os.path.exists(staging):
+        raise HTTPException(400, "staged output is missing on this machine (Drive still syncing?); wait or re-render it")
+    if os.path.abspath(out_path) == os.path.abspath(src):
         raise HTTPException(400, "output would overwrite the source")
-    os.makedirs(os.path.dirname(item["out_path"]), exist_ok=True)
-    shutil.move(item["staging"], item["out_path"])
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    shutil.move(staging, out_path)
     item["staging"] = None; item["status"] = "approved"; item["approved"] = now()
-    rec = {"id": uuid.uuid4().hex[:10], "job_id": jid, "idx": idx, "out_path": portable_path(item["out_path"]), "src": portable_path(item["src"]),
+    rec = {"id": uuid.uuid4().hex[:10], "job_id": jid, "idx": idx, "out_path": portable_path(out_path), "src": portable_path(src),
            "name": item["out_name"], "parent": portable_path(item["parent"]), "disclaimer_id": item["disclaimer_id"],
            "disclaimer_name": item["disclaimer_name"], "version": item["version"], "kind": item["kind"],
-           "method": (item["result"] or {}).get("method"), "flags": item["flags"], "overrides": item["overrides"], "ts": now()}
+           "method": (item["result"] or {}).get("method"), "flags": item["flags"], "overrides": item["overrides"], "ts": now(), "machine": MACHINE}
     with lock:
-        state["history"] = [h for h in state["history"] if resolve_path(h["out_path"]).lower() != item["out_path"].lower()]
+        state["history"] = [h for h in state["history"] if resolve_path(h["out_path"]).lower() != out_path.lower()]
         state["history"].insert(0, rec); persist("history", "jobs")
     return item
 
@@ -592,8 +758,9 @@ def approve(jid: str, idx: int):
 @app.post("/jobs/{jid}/items/{idx}/reject")
 def reject(jid: str, idx: int):
     job = find_job(jid); item = job["items"][idx]
-    if item.get("staging") and os.path.exists(item["staging"]):
-        try: os.remove(item["staging"])
+    stg = resolve_path(item.get("staging"))
+    if stg and os.path.exists(stg):
+        try: os.remove(stg)
         except OSError: pass
     item["staging"] = None; item["status"] = "rejected"
     persist("jobs")
@@ -605,14 +772,16 @@ async def rerender(jid: str, idx: int, req: Request):
     b = await req.json(); job = find_job(jid); item = job["items"][idx]
     if item["status"] in ("queued", "running"):
         raise HTTPException(400, "item is still running")
-    if item.get("staging") and os.path.exists(item["staging"]):
-        try: os.remove(item["staging"])
+    stg = resolve_path(item.get("staging"))
+    if stg and os.path.exists(stg):
+        try: os.remove(stg)
         except OSError: pass
     item["overrides"] = b.get("overrides") or {}
     disc = next((d for d in state["disclaimers"] if d["id"] == item["disclaimer_id"]), None)
     if disc:
         item["text"] = disc["text"]; item["version"] = disc["version"]
     item["status"] = "queued"; item["result"] = None; item["previews"] = []; item["flags"] = []; item["log"] = []; item["error"] = None
+    item["machine"] = MACHINE
     persist("jobs")
     work_q.put((jid, idx))
     return item
@@ -671,5 +840,5 @@ def delete_history(hid: str):
 
 
 if __name__ == "__main__":
-    print(f"Scale Cases disclaimer worker on http://127.0.0.1:{PORT}  (data: {DATA})")
+    print(f"Scale Cases disclaimer worker on http://127.0.0.1:{PORT}  (data: {DATA}{'' if DATA != LOCAL else ' — local only, Drive folder not found'})")
     uvicorn.run(app, host="127.0.0.1", port=PORT, log_level="warning")

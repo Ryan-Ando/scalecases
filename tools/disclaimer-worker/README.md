@@ -26,21 +26,38 @@ Requires Python 3.11+ with `numpy`, `pillow`, `fastapi`, `uvicorn` and `ffmpeg` 
 PATH. Text is set in Segoe UI on Windows and in the bundled Selawik (`fonts/`, an open-licensed
 font with Segoe UI's metrics) everywhere else, so outputs from either machine look the same.
 
-Data lives in `%LOCALAPPDATA%\ScaleCasesDisclaimers` (Windows) or
-`~/Library/Application Support/ScaleCasesDisclaimers` (macOS); override with the
-`SC_DISCLAIMER_DATA` environment variable. It holds the disclaimer library with versions,
-settings, output history, recent jobs, the drag-and-drop inbox, staged renders awaiting review,
-and review previews.
+Everything the tab shows — the disclaimer library with versions, settings, output history,
+jobs, the drag-and-drop inbox, staged renders awaiting review and review previews — lives in
+the **shared folder `My Drive/ScaleCases/Disclaimers`**, so it syncs through Google Drive and
+both machines see the same thing. The only machine-local file is `local.json` (this machine's
+library root) in `%LOCALAPPDATA%\ScaleCasesDisclaimers` (Windows) or
+`~/Library/Application Support/ScaleCasesDisclaimers` (macOS); override that folder with the
+`SC_DISCLAIMER_DATA` environment variable. When Drive is not available the worker falls back to
+that local folder and moves the data into the shared folder the first time it appears.
 
 ## Working from two machines
 
 The ad library is the Google Drive folder `My Drive/2026 B2C`, mirrored by Google Drive for
 desktop on each machine (Windows: `G:\My Drive\…`; macOS:
 `~/Library/CloudStorage/GoogleDrive-<account>/My Drive/…`). In Settings, set **Library root**
-to that machine's `My Drive` path (the worker guesses it). Destinations and history entries
-under the root are stored as `{root}/…`, so a library exported from one machine imports on the
-other with working destinations. Use **Export library** / **Import library** in Settings to
-carry the disclaimers and tags across; job history stays per machine.
+to that machine's `My Drive` path (the worker guesses it). Paths under the root are stored as
+`{root}/…` and paths inside the shared data folder as `{data}/…`, so every record works on
+both machines.
+
+How the sync behaves:
+- Each worker re-reads a data file whenever Drive has changed it (checked on every request),
+  so a disclaimer added on the PC shows up on the Mac on the next refresh, and a job rendered
+  on one machine can be reviewed, approved, rejected or re-rendered on the other.
+- Items remember which machine rendered them; a worker restart only marks its own in-flight
+  items as stale.
+- Approving on the other machine needs the staged render to have synced; until then the tab
+  says so and you can wait or re-render locally.
+- Work on one machine at a time. Both workers may run, but editing the library on both at the
+  same moment can leave a Drive "conflict" copy of a JSON file in the shared folder.
+- **Export library** / **Import library** in Settings remain as a backup / restore.
+
+Testing knobs: `SC_DISCLAIMER_PORT` and `SC_DISCLAIMER_MACHINE` let two workers run on one
+machine against the same shared folder.
 
 ## What it does
 

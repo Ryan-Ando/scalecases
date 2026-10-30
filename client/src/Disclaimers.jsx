@@ -285,7 +285,7 @@ export default function Disclaimers() {
           <div className="tab-desc">Replace burned-in disclaimers on image and video ads. Renders locally, reviewed before anything is written.</div>
         </div>
         <div className={`dz-worker ${online ? 'dz-worker--on' : 'dz-worker--off'}`}>
-          <span className="s-dot" /> {online ? `Worker online${health?.ffmpeg ? '' : ' · ffmpeg missing'}${active ? ' · rendering' : ''}${health && !health.library_root_ok ? ' · library root not set' : ''}` : 'Worker offline'}
+          <span className="s-dot" /> {online ? `Worker online${health?.ffmpeg ? '' : ' · ffmpeg missing'}${active ? ' · rendering' : ''}${health && !health.library_root_ok ? ' · library root not set' : health?.shared ? ' · synced via Drive' : health ? ' · not synced (Drive folder not found)' : ''}` : 'Worker offline'}
           {!online && <div className="dz-muted dz-small">Start it on this PC: <code>{START_CMD}</code> then <button className="dz-link" onClick={() => void refreshState()}>retry</button></div>}
         </div>
       </div>
@@ -611,6 +611,10 @@ function SettingsPane({ settings, health, onChanged }) {
   }
   return (
     <div className="dz-panel">
+      <div className={health?.shared ? 'dz-muted dz-small' : 'dz-err'} style={{ marginBottom: 12 }}>
+        {health?.shared ? <>Synced through Google Drive: the library, settings, history and review queue live in <code>{health.data}</code> and follow you between the PC and the Mac. Work on one machine at a time and give Drive a moment to catch up before switching.</>
+          : <>Not synced: the Google Drive folder was not found on this machine, so this worker is using its local data folder. Install Google Drive for desktop (mirror mode) or set the library root below; the local data moves into Drive automatically.</>}
+      </div>
       <div className="settings-field"><label className="settings-label">Library root <span className="dz-muted">(this machine's path to the synced Google Drive "My Drive"; saved destinations use <code>{'{root}'}</code> so the library works on both the PC and the Mac)</span></label>
         <div className="dz-row"><input className="settings-input dz-grow" value={root} onChange={e => setRoot(e.target.value)} placeholder={health?.library_root_guess || 'G:\\My Drive'} />
           <button className="btn btn--sm" onClick={() => setBrowse(true)}>Browse…</button>
@@ -626,9 +630,9 @@ function SettingsPane({ settings, health, onChanged }) {
         <button className="btn btn--sm" onClick={exportLib}>Export library (JSON)</button>
         <button className="btn btn--sm" onClick={() => fileRef.current?.click()}>Import library…</button>
         <input ref={fileRef} type="file" accept="application/json" style={{ display: 'none' }} onChange={importLib} />
-        <span className="dz-muted dz-small">Move your saved disclaimers and tags to the other machine. History stays per machine.</span>
+        <span className="dz-muted dz-small">Backup / restore of the disclaimers and tags. Not needed for day-to-day use now that everything syncs through Drive.</span>
       </div>
-      <div className="dz-muted dz-small" style={{ marginTop: 16 }}>Worker: <code>{WORKER_URL}</code> · {health?.platform || ''} · data: <code>{health?.data || ''}</code> · recent destinations: {(settings.recent_parents || []).join(' · ') || 'none yet'}</div>
+      <div className="dz-muted dz-small" style={{ marginTop: 16 }}>Worker: <code>{WORKER_URL}</code> · {health?.machine || ''} ({health?.platform || ''}) · data: <code>{health?.data || ''}</code> · recent destinations: {(settings.recent_parents || []).join(' · ') || 'none yet'}</div>
       {browse && <Browser mode="folder" initial={root || ''} recents={[]} onPick={p => { setRoot(p); setBrowse(false); }} onClose={() => setBrowse(false)} />}
     </div>
   );

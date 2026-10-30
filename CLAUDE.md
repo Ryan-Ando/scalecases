@@ -28,8 +28,12 @@ Replaces burned-in disclaimers on image/video ads. The browser talks to a FastAP
 `127.0.0.1:43128` on the user's own machine (origin allowlist: Render client + Vite dev). Render
 plays no part; the ads live on the user's disk and rendering needs ffmpeg.
 - Start: `python tools/disclaimer-worker/worker.py` (Windows: `install.ps1`; macOS: `install.sh`
-  registers a launchd agent). Data dir: `%LOCALAPPDATA%\ScaleCasesDisclaimers` on Windows,
+  registers a launchd agent). All worker data (library, settings, history, jobs, staging,
+  previews, inbox) lives in the SHARED Drive folder `My Drive/ScaleCases/Disclaimers` and syncs
+  between the PC and the Mac; workers re-read files Drive changed on every request. Only
+  `local.json` (library root) is per machine: `%LOCALAPPDATA%\ScaleCasesDisclaimers` on Windows,
   `~/Library/Application Support/ScaleCasesDisclaimers` on macOS (override with `SC_DISCLAIMER_DATA`).
+  Paths are stored as `{root}/…` (library) or `{data}/…` (shared data folder).
 - Ad library: Google Drive, folder `My Drive/2026 B2C` (per-state folders `CA`, `CO`; outputs go to
   `<state>/new disclaimer/<mmdd>/`). Windows path `G:\My Drive\2026 B2C`; macOS
   `~/Library/CloudStorage/GoogleDrive-<account>/My Drive/2026 B2C`. In the worker this is the
