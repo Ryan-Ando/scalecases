@@ -13,6 +13,7 @@ import hyrosRoutes from './routes/hyros.js';
 import snapshotsRoutes from './routes/snapshots.js';
 import digestRoutes, { startCampaignCplSchedule } from './routes/digest.js';
 import stateRoutes from './routes/state.js';
+import admanageRoutes from './routes/admanage.js';
 
 dotenv.config();
 
@@ -38,6 +39,7 @@ app.use('/api/hyros', hyrosRoutes);
 app.use('/api/snapshots', snapshotsRoutes);
 app.use('/api/digest', digestRoutes);
 app.use('/api/state', stateRoutes);
+app.use('/api/admanage', admanageRoutes);
 
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 

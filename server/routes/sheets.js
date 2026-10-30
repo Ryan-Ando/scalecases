@@ -17,7 +17,7 @@ const US_STATES = new Set([
   'VA','WA','WV','WI','WY','DC',
 ]);
 
-function extractState(campaignName) {
+export function extractState(campaignName) {
   if (!campaignName) return null;
   const tokens = campaignName.trim().split(/[-–—\s_/|]+/);
   for (let i = tokens.length - 1; i >= 0; i--) {
@@ -28,7 +28,7 @@ function extractState(campaignName) {
 }
 
 // Explicit brand tokens (Halo, Bulktide) win over the LSS default.
-function extractBrand(campaignName) {
+export function extractBrand(campaignName) {
   if (!campaignName) return 'LSS';
   const tokens = campaignName.split(/[-–—\s_/|]+/).map(t => t.toUpperCase());
   if (tokens.includes('HALO'))     return 'Halo';

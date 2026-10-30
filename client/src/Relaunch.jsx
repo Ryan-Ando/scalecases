@@ -1,4 +1,5 @@
 import CreativeLibrary, { CreativePreview } from './CreativeLibrary.jsx';
+import AdManageLaunch from './AdManageLaunch.jsx';
 import { useCreativeLibrary } from './useCreativeLibrary.js';
 import { groupLibrary, prependUntested } from './creativeMatching.js';
 import { useState, useEffect, useMemo } from 'react';
@@ -117,6 +118,14 @@ export default function Relaunch() {
   const [loadedAt, setLoadedAt] = useState(null);
   const [reuseMonths, setReuseMonths] = useState(() => parseInt(localStorage.getItem('reuseThresholdMonths'), 10) || 2);
   const [minLeads, setMinLeads]       = useState(() => parseInt(localStorage.getItem('relaunchMinLeads'), 10) || 3);
+  const [picked, setPicked]           = useState({}); // '<brand> <state>' → Set of ad names to launch
+  function togglePick(group, name, on) {
+    setPicked(p => {
+      const next = new Set(p[group] || []);
+      if (on ?? !next.has(name)) next.add(name); else next.delete(name);
+      return { ...p, [group]: next };
+    });
+  }
 
   const localGroups = useMemo(() => groupLibrary(library.files,
     [...allAds, ...windowAds, ...(library.evidence?.inventory.ads || [])], mergeGroups, deletedAds),
@@ -441,6 +450,9 @@ export default function Relaunch() {
               needs {fmt(rec.dailyNeeded)}/day · live {fmt(rec.liveBudget)}/day · {fmt(rec.remaining)} left over {rec.daysLeft.toFixed(1)} days
             </span>
           </div>
+          <AdManageLaunch brand={rec.brand} state={rec.state} groups={localGroups} library={library}
+            picked={picked[rec.group] || new Set()}
+            onPick={name => togglePick(rec.group, name, true)} onUnpick={name => togglePick(rec.group, name, false)} />
           {rec.candidates.length === 0 ? (
             <div style={{ fontSize: 12, color: 'var(--text-muted)', padding: '10px 14px', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 8 }}>
               No candidates clear the bar (≥{minLeads} leads{rec.brand !== 'LSS' ? `, ${rec.brand} campaigns only` : ''}). Try lowering min leads or the dormancy threshold.
@@ -450,6 +462,7 @@ export default function Relaunch() {
               <table style={{ borderCollapse: 'collapse', width: '100%' }}>
                 <thead>
                   <tr>
+                    <th style={{ ...th, width: 30 }} title="Check to launch with AdManage">Use</th>
                     <th style={{ ...th, width: 30 }}>#</th>
                     <th style={thL}>Ad</th>
                     <th style={thL} title="When this ad last ran in this state, and how many leads it got here. 'Never – 0' = never run in this state.">Last used ({rec.state})</th>
@@ -471,6 +484,9 @@ export default function Relaunch() {
                       : <>Ran in {rec.state} until {c.lastUsedHere ? new Date(c.lastUsedHere).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '?'} — {c.hereLeads} leads here{c.hereCpl != null ? <> @ {fmt(c.hereCpl)}</> : null}. {c.totalLeads} leads total across all states{c.totalCpl != null ? <> @ {fmt(c.totalCpl)}</> : null}.{c.cases ? ` ${c.cases} case${c.cases !== 1 ? 's' : ''}.` : ''}</>;
                     return (
                     <tr key={c.name} style={{ background: i % 2 ? 'var(--bg)' : 'transparent' }}>
+                      <td style={{ ...td, textAlign: 'center', verticalAlign: 'top' }}>
+                        <input type="checkbox" checked={!!picked[rec.group]?.has(c.name)} onChange={() => togglePick(rec.group, c.name)} />
+                      </td>
                       <td style={{ ...td, color: 'var(--text-muted)', verticalAlign: 'top' }}>{i + 1}</td>
                       <td style={{ ...tdL, fontWeight: 600, color: 'var(--text)', minWidth: 200, verticalAlign: 'top' }}>{c.name}{c.library && <div style={{ fontSize: 11, fontWeight: 400, marginTop: 6 }}>
                         <CreativePreview file={c.library.files.find(f => f.state === rec.state) || c.library.files[0]} enabled={library.previews && library.connected} />

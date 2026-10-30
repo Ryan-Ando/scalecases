@@ -10,6 +10,14 @@ function makeToken(password) {
   return Buffer.from(`scalecases:${password}`).toString('base64');
 }
 
+// For routes that act on ad accounts: the request must carry the login token.
+// Unlike the login gate this fails closed — with no APP_PASSWORD set nobody passes.
+export function hasAppToken(req) {
+  const expected = process.env.APP_PASSWORD;
+  if (!expected) return false;
+  return (req.headers.authorization || '').replace('Bearer ', '') === makeToken(expected);
+}
+
 // POST /api/auth/login  { password }
 router.post('/login', (req, res) => {
   const expected = process.env.APP_PASSWORD;
