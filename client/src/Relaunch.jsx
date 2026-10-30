@@ -296,12 +296,26 @@ export default function Relaunch() {
     return { map, statesByAd, activeStatesByAd };
   }, [allAds, memberToCanonical]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Every group: underspenders (from pacing config) first, then the rest ────
+  // Active ads per '<brand> <state>' (Meta's effective status: the ad, its ad set and campaign are on)
+  const activeAdsByGroup = useMemo(() => {
+    const counts = {};
+    for (const a of allAds) {
+      const st = extractState(a.campaignName);
+      if (!st || (a.effectiveStatus || a.status) !== 'ACTIVE') continue;
+      const g = `${extractBrand(a.campaignName)} ${st}`;
+      counts[g] = (counts[g] || 0) + 1;
+    }
+    return counts;
+  }, [allAds]);
+
+  // ── Every group: underspenders (biggest gap first), then the rest by active ads,
+  // fewest first, with groups that have none at the bottom ──────────────────
   const shortfalls = useMemo(() => {
     const rows = [];
     const groups = new Set([...Object.keys(pacing), ...Object.keys(budgetByGroup)]);
+    const order = r => r.activeAds || Infinity;
     for (const group of groups) {
-      const base = { group, brand: group.split(' ')[0], state: group.split(' ').slice(-1)[0], liveBudget: budgetByGroup[group] || 0, paced: false, under: false };
+      const base = { group, brand: group.split(' ')[0], state: group.split(' ').slice(-1)[0], liveBudget: budgetByGroup[group] || 0, paced: false, under: false, activeAds: activeAdsByGroup[group] || 0 };
       const cfg = pacing[group];
       const months = cfg?.startDate && cfg?.endDate ? monthsBetween(cfg.startDate, cfg.endDate) : [];
       const totalBudget = months.reduce((s, ym) => s + (parseFloat(cfg.monthlyBudgets?.[ym]) || 0), 0);
@@ -313,8 +327,9 @@ export default function Relaunch() {
       const shortfall   = dailyNeeded - base.liveBudget;
       rows.push({ ...base, paced: true, under: shortfall > 1, shortfall, dailyNeeded, remaining, daysLeft: dl });
     }
-    return rows.sort((a, b) => Number(b.under) - Number(a.under) || (b.under ? b.shortfall - a.shortfall : a.group.localeCompare(b.group)));
-  }, [pacing, pacingSpend, budgetByGroup]);
+    return rows.sort((a, b) => Number(b.under) - Number(a.under) ||
+      (b.under ? b.shortfall - a.shortfall : order(a) - order(b) || a.group.localeCompare(b.group)));
+  }, [pacing, pacingSpend, budgetByGroup, activeAdsByGroup]);
 
   // ── Recommendations per underspending group ────────────────────────────────
   const recommendations = useMemo(() => {
@@ -450,6 +465,7 @@ export default function Relaunch() {
               ? <span style={{ fontSize: 13, fontWeight: 700, color: '#15803d' }}>on pace</span>
               : <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-muted)' }}>no pacing set</span>}
             <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+              {rec.activeAds} active ad{rec.activeAds === 1 ? '' : 's'} ·{' '}
               {rec.paced
                 ? <>needs {fmt(rec.dailyNeeded)}/day · live {fmt(rec.liveBudget)}/day · {fmt(rec.remaining)} left over {rec.daysLeft.toFixed(1)} days</>
                 : <>live {fmt(rec.liveBudget)}/day</>}

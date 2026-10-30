@@ -121,7 +121,9 @@ export default function AdManageLaunch({ brand, state, picked, onUnpick, onPick,
     if (done.length) setMade(m => Object.fromEntries(Object.entries(m).filter(([n]) => !done.includes(n))));
   }, [rows]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const campaign = setup?.campaigns.find(c => c.campaignId === campaignId);
+  // Campaigns that are off aren't offered
+  const liveCampaigns = (setup?.campaigns || []).filter(c => c.status === 'ACTIVE');
+  const campaign = liveCampaigns.find(c => c.campaignId === campaignId);
   const template = setup?.templates.find(t => t.id === templateId);
   const ready = campaign && template && rows.length && rows.every(r => !r.problem) && library.connected && !busy;
   const matches = query.trim().length < 2 ? [] : groups
@@ -186,12 +188,12 @@ export default function AdManageLaunch({ brand, state, picked, onUnpick, onPick,
     <div style={box}>
       <div style={{ fontWeight: 700, marginBottom: 6 }}>Launch with AdManage — 1 ad per new ad set</div>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 16px', marginBottom: 8 }}>
-        {setup.campaigns.length === 0 && <span style={{ color: 'var(--text-muted)' }}>No {group} campaigns found in AdManage.</span>}
-        {setup.campaigns.map(c => (
+        {liveCampaigns.length === 0 && <span style={{ color: 'var(--text-muted)' }}>No active {group} campaigns in AdManage.</span>}
+        {liveCampaigns.map(c => (
           <label key={c.campaignId} style={{ display: 'flex', alignItems: 'center', gap: 5, cursor: 'pointer' }}>
             <input type="checkbox" checked={c.campaignId === campaignId} onChange={() => chooseCampaign(c.campaignId)} />
             <span style={{ fontWeight: c.campaignId === campaignId ? 700 : 400 }}>{c.name}</span>
-            <span style={{ color: c.status === 'ACTIVE' ? '#15803d' : 'var(--text-muted)', fontSize: 11 }}>{c.status.toLowerCase()} · {c.accountName}</span>
+            <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>{c.accountName}</span>
           </label>
         ))}
       </div>
