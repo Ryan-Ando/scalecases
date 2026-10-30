@@ -6,22 +6,41 @@ browser talks to the worker directly and the worker reads and writes the folders
 
 ## Run
 
+Windows:
+
 ```powershell
 python tools/disclaimer-worker/worker.py
-```
-
-or install it to start hidden at sign-in:
-
-```powershell
+# or install it to start hidden at sign-in:
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/disclaimer-worker/install.ps1
 ```
 
-Requires Python 3.11+ with `numpy`, `pillow`, `fastapi`, `uvicorn` (installed by `install.ps1`)
-and `ffmpeg` + `ffprobe` on PATH (`winget install Gyan.FFmpeg`). Segoe UI fonts are used
-(`C:\Windows\Fonts\segoeui.ttf` and `segoeuib.ttf`).
+macOS (Python 3 and Homebrew ffmpeg required: `brew install python ffmpeg`):
 
-Data lives in `%LOCALAPPDATA%\ScaleCasesDisclaimers`: the disclaimer library with versions,
-settings, output history, recent jobs, staged renders awaiting review, and review previews.
+```bash
+bash tools/disclaimer-worker/install.sh     # installs deps, registers a launchd agent, starts it
+# or run it in a terminal:
+python3 tools/disclaimer-worker/worker.py
+```
+
+Requires Python 3.11+ with `numpy`, `pillow`, `fastapi`, `uvicorn` and `ffmpeg` + `ffprobe` on
+PATH. Text is set in Segoe UI on Windows and in the bundled Selawik (`fonts/`, an open-licensed
+font with Segoe UI's metrics) everywhere else, so outputs from either machine look the same.
+
+Data lives in `%LOCALAPPDATA%\ScaleCasesDisclaimers` (Windows) or
+`~/Library/Application Support/ScaleCasesDisclaimers` (macOS); override with the
+`SC_DISCLAIMER_DATA` environment variable. It holds the disclaimer library with versions,
+settings, output history, recent jobs, the drag-and-drop inbox, staged renders awaiting review,
+and review previews.
+
+## Working from two machines
+
+The ad library is the Google Drive folder `My Drive/2026 B2C`, mirrored by Google Drive for
+desktop on each machine (Windows: `G:\My Drive\…`; macOS:
+`~/Library/CloudStorage/GoogleDrive-<account>/My Drive/…`). In Settings, set **Library root**
+to that machine's `My Drive` path (the worker guesses it). Destinations and history entries
+under the root are stored as `{root}/…`, so a library exported from one machine imports on the
+other with working destinations. Use **Export library** / **Import library** in Settings to
+carry the disclaimers and tags across; job history stays per machine.
 
 ## What it does
 

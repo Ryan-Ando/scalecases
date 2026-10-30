@@ -57,7 +57,8 @@ function Browser({ mode, initial, recents, onPick, onClose }) {
   useEffect(() => { const id = setTimeout(() => void load(initial || ''), 0); return () => clearTimeout(id); }, [initial, load]);
   const pickFiles = mode === 'files';
   function toggle(name) { setSel(s => { const n = new Set(s); n.has(name) ? n.delete(name) : n.add(name); return n; }); }
-  function join(dir) { return path ? (path.endsWith('\\') ? path + dir : path + '\\' + dir) : dir; }
+  const sep = data?.sep || '\\';
+  function join(dir) { return path ? (path.endsWith(sep) ? path + dir : path + sep + dir) : dir; }
   return (
     <div className="dz-overlay" onClick={onClose}>
       <div className="dz-modal" onClick={e => e.stopPropagation()}>
@@ -284,7 +285,7 @@ export default function Disclaimers() {
           <div className="tab-desc">Replace burned-in disclaimers on image and video ads. Renders locally, reviewed before anything is written.</div>
         </div>
         <div className={`dz-worker ${online ? 'dz-worker--on' : 'dz-worker--off'}`}>
-          <span className="s-dot" /> {online ? `Worker online${health?.ffmpeg ? '' : ' · ffmpeg missing'}${active ? ' · rendering' : ''}` : 'Worker offline'}
+          <span className="s-dot" /> {online ? `Worker online${health?.ffmpeg ? '' : ' · ffmpeg missing'}${active ? ' · rendering' : ''}${health && !health.library_root_ok ? ' · library root not set' : ''}` : 'Worker offline'}
           {!online && <div className="dz-muted dz-small">Start it on this PC: <code>{START_CMD}</code> then <button className="dz-link" onClick={() => void refreshState()}>retry</button></div>}
         </div>
       </div>
@@ -295,7 +296,7 @@ export default function Disclaimers() {
       {sub === 'library' && <Library disclaimers={disclaimers} onChanged={refreshState} />}
       {sub === 'history' && <History disclaimers={disclaimers} onStarted={() => { void refreshJobs(); go('review'); }} />}
       {sub === 'tools' && <Tools settings={settings} />}
-      {sub === 'settings' && <SettingsPane key={`${(settings.tags || []).join('|')}|${settings.out_folder}`} settings={settings} onChanged={refreshState} />}
+      {sub === 'settings' && <SettingsPane key={`${(settings.tags || []).join('|')}|${settings.out_folder}|${settings.library_root}`} settings={settings} health={health} onChanged={refreshState} />}
     </div>
   );
 }
@@ -481,7 +482,7 @@ function Library({ disclaimers, onChanged }) {
             <div className="dz-row"><strong>{d.name}</strong><span className="dz-muted">v{d.version} · updated {fmtTime(d.updated)}</span><span className="dz-grow" />
               <button className="btn btn--sm" onClick={() => setEdit({ id: d.id, name: d.name, text: d.text, parent: d.parent || '' })}>Edit</button>
               <button className="btn btn--sm" onClick={() => del(d)}>Delete</button></div>
-            <div className="dz-small">{d.parent ? <>Destination: <code>{d.parent}</code></> : <span className="dz-muted">No saved destination</span>}</div>
+            <div className="dz-small">{d.parent ? <>Destination: <code>{d.parent}</code>{d.parent_resolved && d.parent_resolved !== d.parent ? <span className="dz-muted"> → {d.parent_resolved}</span> : null}</> : <span className="dz-muted">No saved destination</span>}</div>
             <div className="dz-disc-text">{d.text}</div>
             {d.versions.length > 1 && <details className="dz-log"><summary>{d.versions.length} versions</summary>
               {d.versions.slice().reverse().map(v => <div key={v.version} className="dz-small"><strong>v{v.version}</strong> · {fmtTime(v.ts)}<div className="dz-disc-text">{v.text}</div></div>)}</details>}
@@ -493,7 +494,7 @@ function Library({ disclaimers, onChanged }) {
           <h3>{edit.id ? 'Edit disclaimer' : 'New disclaimer'}</h3>
           <div className="settings-field"><label className="settings-label">Name <span className="dz-muted">(used as the filename suffix, e.g. "lss co")</span></label>
             <input className="settings-input" value={edit.name} onChange={e => setEdit({ ...edit, name: e.target.value })} /></div>
-          <div className="settings-field"><label className="settings-label">Default destination <span className="dz-muted">(parent folder; the mmdd subfolder is added automatically)</span></label>
+          <div className="settings-field"><label className="settings-label">Default destination <span className="dz-muted">(parent folder; the mmdd subfolder is added automatically. Paths inside the library root are saved as <code>{'{root}'}/…</code> so they work on both machines)</span></label>
             <div className="dz-row"><input className="settings-input dz-grow" value={edit.parent} placeholder="C:\…\2026 B2C\CO" onChange={e => setEdit({ ...edit, parent: e.target.value })} />
               <button className="btn btn--sm" onClick={() => setBrowse(true)}>Browse…</button></div></div>
           <div className="settings-field"><label className="settings-label">Text</label>
@@ -585,22 +586,50 @@ function Tools({ settings }) {
 }
 
 // ───────────────────────────── Settings ─────────────────────────────
-function SettingsPane({ settings, onChanged }) {
+function SettingsPane({ settings, health, onChanged }) {
   const [tags, setTags] = useState((settings.tags || []).join('\n'));
   const [out, setOut] = useState(settings.out_folder || 'new disclaimer');
+  const [root, setRoot] = useState(settings.library_root || '');
+  const [browse, setBrowse] = useState(false);
   const [msg, setMsg] = useState('');
+  const fileRef = useRef();
   async function save() {
-    try { await w('/settings', { method: 'PUT', body: { tags: tags.split('\n').map(t => t.trim()).filter(Boolean), out_folder: out.trim() || 'new disclaimer' } }); setMsg('Saved.'); onChanged(); }
+    try { await w('/settings', { method: 'PUT', body: { tags: tags.split('\n').map(t => t.trim()).filter(Boolean), out_folder: out.trim() || 'new disclaimer', library_root: root.trim() } }); setMsg('Saved.'); onChanged(); }
     catch (e) { setMsg(e.message); }
+  }
+  async function exportLib() {
+    const data = await w('/export');
+    const blob = new Blob([JSON.stringify(data, null, 1)], { type: 'application/json' });
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `disclaimers-${new Date().toISOString().slice(0, 10)}.json`; a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  }
+  async function importLib(e) {
+    const f = e.target.files?.[0]; if (!f) return;
+    try { const r = await w('/import', { method: 'POST', body: JSON.parse(await f.text()) }); setMsg(`Imported: ${r.added} added, ${r.updated} updated.`); onChanged(); }
+    catch (err) { setMsg(`Import failed: ${err.message}`); }
+    e.target.value = '';
   }
   return (
     <div className="dz-panel">
+      <div className="settings-field"><label className="settings-label">Library root <span className="dz-muted">(this machine's path to the synced Google Drive "My Drive"; saved destinations use <code>{'{root}'}</code> so the library works on both the PC and the Mac)</span></label>
+        <div className="dz-row"><input className="settings-input dz-grow" value={root} onChange={e => setRoot(e.target.value)} placeholder={health?.library_root_guess || 'G:\\My Drive'} />
+          <button className="btn btn--sm" onClick={() => setBrowse(true)}>Browse…</button>
+          {health?.library_root_guess && health.library_root_guess !== root && <button className="btn btn--sm" onClick={() => setRoot(health.library_root_guess)}>Use detected: {health.library_root_guess}</button>}</div>
+        {root && health && !health.library_root_ok && root === health.library_root && <div className="dz-err">That folder does not exist on this machine.</div>}
+      </div>
       <div className="settings-field"><label className="settings-label">State tags <span className="dz-muted">(one per line; a filename ending in one of these keeps its name, otherwise " - &lt;disclaimer name&gt;" is appended)</span></label>
         <textarea className="settings-input dz-textarea" rows={6} value={tags} onChange={e => setTags(e.target.value)} /></div>
       <div className="settings-field"><label className="settings-label">Output folder name inside each destination</label>
         <input className="settings-input" value={out} onChange={e => setOut(e.target.value)} /></div>
       <div className="dz-row"><button className="btn btn--primary" onClick={save}>Save settings</button><span className="dz-muted">{msg}</span></div>
-      <div className="dz-muted dz-small" style={{ marginTop: 16 }}>Worker: <code>{WORKER_URL}</code> · recent destinations: {(settings.recent_parents || []).join(' · ') || 'none yet'}</div>
+      <div className="dz-row" style={{ marginTop: 10 }}>
+        <button className="btn btn--sm" onClick={exportLib}>Export library (JSON)</button>
+        <button className="btn btn--sm" onClick={() => fileRef.current?.click()}>Import library…</button>
+        <input ref={fileRef} type="file" accept="application/json" style={{ display: 'none' }} onChange={importLib} />
+        <span className="dz-muted dz-small">Move your saved disclaimers and tags to the other machine. History stays per machine.</span>
+      </div>
+      <div className="dz-muted dz-small" style={{ marginTop: 16 }}>Worker: <code>{WORKER_URL}</code> · {health?.platform || ''} · data: <code>{health?.data || ''}</code> · recent destinations: {(settings.recent_parents || []).join(' · ') || 'none yet'}</div>
+      {browse && <Browser mode="folder" initial={root || ''} recents={[]} onPick={p => { setRoot(p); setBrowse(false); }} onClose={() => setBrowse(false)} />}
     </div>
   );
 }

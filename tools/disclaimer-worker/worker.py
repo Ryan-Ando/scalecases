@@ -18,10 +18,15 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import disclaimer_image as dimg
 import disclaimer_video as dvid
 
-VERSION = 1
+VERSION = 2
 PORT = 43128
 ORIGINS = ["https://scalecases-client.onrender.com", "http://localhost:5173", "http://127.0.0.1:5173"]
-DATA = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "ScaleCasesDisclaimers")
+IS_WIN = sys.platform.startswith("win")
+IS_MAC = sys.platform == "darwin"
+_default_data = (os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "ScaleCasesDisclaimers") if IS_WIN
+                 else os.path.expanduser("~/Library/Application Support/ScaleCasesDisclaimers") if IS_MAC
+                 else os.path.expanduser("~/.scalecases-disclaimers"))
+DATA = os.environ.get("SC_DISCLAIMER_DATA") or _default_data
 STAGING = os.path.join(DATA, "staging")
 PREVIEWS = os.path.join(DATA, "previews")
 INBOX = os.path.join(DATA, "inbox")          # copies of files dropped onto the tab
@@ -34,7 +39,46 @@ DEFAULT_SETTINGS = {
     "tags": ["LSS CA", "CA LSS", "LSS CO", "CO LSS", "C-L"],
     "out_folder": "new disclaimer",
     "recent_parents": [],
+    "library_root": "",      # local path of the synced ad library (Google Drive "My Drive"); "{root}" in paths expands to it
 }
+
+
+def guess_library_root():
+    """Best guess for the Google Drive mirror folder on this machine."""
+    cands = []
+    if IS_WIN:
+        cands += [f"{c}:\\My Drive" for c in string.ascii_uppercase]
+        cands += [os.path.join(os.path.expanduser("~"), "Google Drive", "My Drive"), os.path.join(os.path.expanduser("~"), "My Drive")]
+    else:
+        import glob
+        cands += sorted(glob.glob(os.path.expanduser("~/Library/CloudStorage/GoogleDrive-*/My Drive")))
+        cands += [os.path.expanduser("~/Google Drive/My Drive"), os.path.expanduser("~/Google Drive")]
+    for c in cands:
+        if os.path.isdir(c):
+            return c
+    return ""
+
+
+def resolve_path(p):
+    """Expand the {root} placeholder with this machine's library root and normalise separators."""
+    p = (p or "").strip()
+    if not p:
+        return ""
+    root = state["settings"].get("library_root") or ""
+    if p.startswith("{root}"):
+        rest = p[len("{root}"):].replace("\\", "/").lstrip("/")
+        p = os.path.join(root, *rest.split("/")) if rest else root
+    return os.path.abspath(p) if p else ""
+
+
+def portable_path(p):
+    """Store paths under the library root as {root}/... so they work on both machines."""
+    p = (p or "").strip()
+    root = state["settings"].get("library_root") or ""
+    if p and root and os.path.normcase(os.path.abspath(p)).startswith(os.path.normcase(os.path.abspath(root)).rstrip("\\/")):
+        rest = os.path.abspath(p)[len(os.path.abspath(root)):].replace("\\", "/").lstrip("/")
+        return "{root}/" + rest if rest else "{root}"
+    return p
 
 lock = threading.RLock()
 
@@ -70,6 +114,9 @@ for j in state["jobs"]:
         if it["status"] in ("queued", "running"):
             it["status"] = "error"; it["error"] = "worker restarted before this item finished"
 save("jobs.json", state["jobs"])
+if not state["settings"].get("library_root"):
+    state["settings"]["library_root"] = guess_library_root()
+    save("settings.json", state["settings"])
 
 
 def persist(*names):
@@ -242,13 +289,48 @@ threading.Thread(target=runner, daemon=True).start()
 
 @app.get("/health")
 def health():
-    return {"version": VERSION, "ok": True, "ffmpeg": ffmpeg_ok(), "data": DATA,
+    root = state["settings"].get("library_root") or ""
+    return {"version": VERSION, "ok": True, "ffmpeg": ffmpeg_ok(), "data": DATA, "platform": sys.platform, "sep": os.sep,
+            "library_root": root, "library_root_ok": bool(root) and os.path.isdir(root), "library_root_guess": guess_library_root(),
             "queued": sum(1 for j in state["jobs"] for i in j["items"] if i["status"] in ("queued", "running"))}
 
 
 @app.get("/state")
 def get_state():
-    return {"disclaimers": state["disclaimers"], "settings": state["settings"]}
+    discs = [{**d, "parent_resolved": resolve_path(d.get("parent"))} for d in state["disclaimers"]]
+    return {"disclaimers": discs, "settings": state["settings"], "sep": os.sep, "platform": sys.platform}
+
+
+@app.get("/export")
+def export_library():
+    return {"version": VERSION, "exported": now(), "disclaimers": state["disclaimers"],
+            "settings": {"tags": state["settings"]["tags"], "out_folder": state["settings"]["out_folder"]}}
+
+
+@app.post("/import")
+async def import_library(req: Request):
+    """Merge an exported library: new names are added, existing names get the imported text
+    (a new version if it differs) and the imported destination."""
+    b = await req.json()
+    added = updated = 0
+    with lock:
+        for d in b.get("disclaimers") or []:
+            name = (d.get("name") or "").strip(); text = " ".join((d.get("text") or "").split())
+            if not name or not text: continue
+            cur = next((x for x in state["disclaimers"] if x["name"].lower() == name.lower()), None)
+            if cur:
+                if text != cur["text"]:
+                    cur["version"] += 1; cur["text"] = text; cur["versions"].append({"version": cur["version"], "text": text, "ts": now()})
+                if d.get("parent"): cur["parent"] = d["parent"]
+                cur["updated"] = now(); updated += 1
+            else:
+                state["disclaimers"].append({"id": uuid.uuid4().hex[:12], "name": name, "text": text, "version": 1, "parent": d.get("parent") or "",
+                                             "versions": [{"version": 1, "text": text, "ts": now()}], "created": now(), "updated": now()}); added += 1
+        s = b.get("settings") or {}
+        if s.get("tags"): state["settings"]["tags"] = sorted(set(state["settings"]["tags"]) | set(s["tags"]))
+        if s.get("out_folder"): state["settings"]["out_folder"] = s["out_folder"]
+        persist("disclaimers", "settings")
+    return {"added": added, "updated": updated}
 
 
 @app.post("/disclaimers")
@@ -259,7 +341,7 @@ async def add_disclaimer(req: Request):
         raise HTTPException(400, "name and text are required")
     if any(d["name"].lower() == name.lower() for d in state["disclaimers"]):
         raise HTTPException(400, "a disclaimer with that name already exists")
-    d = {"id": uuid.uuid4().hex[:12], "name": name, "text": text, "version": 1, "parent": (b.get("parent") or "").strip(),
+    d = {"id": uuid.uuid4().hex[:12], "name": name, "text": text, "version": 1, "parent": portable_path(b.get("parent")),
          "versions": [{"version": 1, "text": text, "ts": now()}], "created": now(), "updated": now()}
     with lock:
         state["disclaimers"].append(d); persist("disclaimers")
@@ -273,7 +355,7 @@ async def edit_disclaimer(did: str, req: Request):
         if "name" in b and b["name"].strip():
             d["name"] = b["name"].strip()
         if "parent" in b:
-            d["parent"] = (b["parent"] or "").strip()
+            d["parent"] = portable_path(b["parent"])
         if "text" in b:
             text = " ".join((b["text"] or "").split())
             if text and text != d["text"]:
@@ -295,7 +377,7 @@ def delete_disclaimer(did: str):
 async def put_settings(req: Request):
     b = await req.json()
     with lock:
-        for k in ("tags", "out_folder", "recent_parents"):
+        for k in ("tags", "out_folder", "recent_parents", "library_root"):
             if k in b: state["settings"][k] = b[k]
         persist("settings")
     return state["settings"]
@@ -326,9 +408,14 @@ async def upload(file: UploadFile = File(...)):
 @app.get("/fs")
 def fs(path: str = ""):
     if not path:
-        drives = [f"{c}:\\" for c in string.ascii_uppercase if os.path.exists(f"{c}:\\")]
-        return {"path": "", "parent": None, "dirs": drives, "files": []}
-    path = os.path.abspath(path)
+        if IS_WIN:
+            roots = [f"{c}:\\" for c in string.ascii_uppercase if os.path.exists(f"{c}:\\")]
+        else:
+            roots = [os.path.expanduser("~")] + sorted(os.path.join("/Volumes", v) for v in (os.listdir("/Volumes") if os.path.isdir("/Volumes") else [])) + ["/"]
+        lr = state["settings"].get("library_root")
+        if lr and os.path.isdir(lr): roots.insert(0, lr)
+        return {"path": "", "parent": None, "dirs": roots, "files": [], "sep": os.sep}
+    path = resolve_path(path)
     if not os.path.isdir(path):
         raise HTTPException(404, "folder not found")
     dirs, files = [], []
@@ -343,13 +430,13 @@ def fs(path: str = ""):
     except PermissionError:
         raise HTTPException(403, "no access to that folder")
     parent = os.path.dirname(path.rstrip("\\/"))
-    if parent == path or len(path) <= 3: parent = ""
-    return {"path": path, "parent": parent, "dirs": dirs, "files": files}
+    if parent == path or (IS_WIN and len(path) <= 3) or path == "/": parent = ""
+    return {"path": path, "parent": parent, "dirs": dirs, "files": files, "sep": os.sep}
 
 
 @app.get("/diff")
 def diff(parent: str):
-    parent = os.path.abspath(parent)
+    parent = resolve_path(parent)
     if not os.path.isdir(parent):
         raise HTTPException(404, "folder not found")
     out_folder = state["settings"]["out_folder"]
@@ -378,7 +465,7 @@ def diff(parent: str):
 @app.post("/sort")
 async def sort_by_date(req: Request):
     b = await req.json()
-    parent = os.path.abspath(b.get("parent") or ""); apply = bool(b.get("apply"))
+    parent = resolve_path(b.get("parent") or ""); apply = bool(b.get("apply"))
     if not os.path.isdir(parent):
         raise HTTPException(404, "folder not found")
     out_folder = state["settings"]["out_folder"].lower()
@@ -431,8 +518,8 @@ def build_item(job_id, idx, src, parent, disc, overrides, out_name=None):
 @app.post("/jobs")
 async def create_job(req: Request):
     b = await req.json()
-    files = [os.path.abspath(f) for f in b.get("files") or []]
-    targets = b.get("targets") or []
+    files = [resolve_path(f) for f in b.get("files") or []]
+    targets = [{**t, "parent": resolve_path(t.get("parent"))} for t in (b.get("targets") or [])]
     overrides = b.get("overrides") or {}
     if not files or not targets:
         raise HTTPException(400, "files and targets are required")
@@ -447,8 +534,8 @@ async def create_job(req: Request):
     for t in targets:
         disc = find_disclaimer(t["disclaimer_id"])
         for f in files:
-            items.append(build_item(jid, len(items), f, os.path.abspath(t["parent"]), disc, overrides))
-        remember_parent(os.path.abspath(t["parent"]))
+            items.append(build_item(jid, len(items), f, t["parent"], disc, overrides))
+        remember_parent(t["parent"])
     job = {"id": jid, "created": now(), "items": items}
     with lock:
         state["jobs"].insert(0, job); state["jobs"] = state["jobs"][:60]; persist("jobs")
@@ -492,12 +579,12 @@ def approve(jid: str, idx: int):
     os.makedirs(os.path.dirname(item["out_path"]), exist_ok=True)
     shutil.move(item["staging"], item["out_path"])
     item["staging"] = None; item["status"] = "approved"; item["approved"] = now()
-    rec = {"id": uuid.uuid4().hex[:10], "job_id": jid, "idx": idx, "out_path": item["out_path"], "src": item["src"],
-           "name": item["out_name"], "parent": item["parent"], "disclaimer_id": item["disclaimer_id"],
+    rec = {"id": uuid.uuid4().hex[:10], "job_id": jid, "idx": idx, "out_path": portable_path(item["out_path"]), "src": portable_path(item["src"]),
+           "name": item["out_name"], "parent": portable_path(item["parent"]), "disclaimer_id": item["disclaimer_id"],
            "disclaimer_name": item["disclaimer_name"], "version": item["version"], "kind": item["kind"],
            "method": (item["result"] or {}).get("method"), "flags": item["flags"], "overrides": item["overrides"], "ts": now()}
     with lock:
-        state["history"] = [h for h in state["history"] if h["out_path"].lower() != item["out_path"].lower()]
+        state["history"] = [h for h in state["history"] if resolve_path(h["out_path"]).lower() != item["out_path"].lower()]
         state["history"].insert(0, rec); persist("history", "jobs")
     return item
 
@@ -549,8 +636,8 @@ def history(disclaimer_id: str = ""):
         if disclaimer_id and h["disclaimer_id"] != disclaimer_id: continue
         d = cur.get(h["disclaimer_id"])
         out.append({**h, "current_version": d["version"] if d else None,
-                    "stale": bool(d and h["version"] < d["version"]), "exists": os.path.exists(h["out_path"]),
-                    "src_exists": os.path.exists(h["src"])})
+                    "stale": bool(d and h["version"] < d["version"]), "exists": os.path.exists(resolve_path(h["out_path"])),
+                    "src_exists": os.path.exists(resolve_path(h["src"]))})
     return out
 
 
@@ -563,8 +650,9 @@ async def regenerate(req: Request):
     jid = uuid.uuid4().hex[:10]; items = []
     for h in recs:
         disc = next((d for d in state["disclaimers"] if d["id"] == h["disclaimer_id"]), None)
-        if not disc or not os.path.isfile(h["src"]): continue
-        items.append(build_item(jid, len(items), h["src"], h["parent"], disc, h.get("overrides") or {}, out_name=h["name"]))
+        src = resolve_path(h["src"]); parent = resolve_path(h["parent"])
+        if not disc or not os.path.isfile(src) or not os.path.isdir(parent): continue
+        items.append(build_item(jid, len(items), src, parent, disc, h.get("overrides") or {}, out_name=h["name"]))
     if not items:
         raise HTTPException(400, "none of the selected outputs can be regenerated (source or disclaimer missing)")
     job = {"id": jid, "created": now(), "items": items, "regenerate": True}

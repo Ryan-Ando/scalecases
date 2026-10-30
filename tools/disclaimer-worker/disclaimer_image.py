@@ -13,8 +13,19 @@ import argparse, os, sys
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
-FONT_REG = r"C:\Windows\Fonts\segoeui.ttf"
-FONT_BOLD = r"C:\Windows\Fonts\segoeuib.ttf"
+_HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def _first_font(*candidates):
+    """Segoe UI on Windows; the bundled open-licensed Selawik (a Segoe UI metric match) elsewhere."""
+    for c in candidates:
+        if os.path.exists(c):
+            return c
+    return candidates[-1]
+
+
+FONT_REG = _first_font(r"C:\Windows\Fonts\segoeui.ttf", os.path.join(_HERE, "fonts", "selawk.ttf"))
+FONT_BOLD = _first_font(r"C:\Windows\Fonts\segoeuib.ttf", os.path.join(_HERE, "fonts", "selawkb.ttf"))
 FONT_PATH = FONT_REG
 FROST_WHITE = 0.45   # how much the blurred panel is lightened toward white (0 = plain blur)
 
