@@ -1660,22 +1660,23 @@ export default function AdsTracking() {
   }, [allAds]);
 
   // Cell status per adName × state: 'solo' (green) | 'shared' (blue) | 'off' (none)
+  // One pass over the active ads (filtering all ads per ad × state took ~3 s per recompute)
   const cellStatus = useMemo(() => {
+    const live = {};   // canonical ad → state → 'solo' | 'shared'
+    for (const a of allAds) {
+      if ((a.effectiveStatus || a.status) !== 'ACTIVE') continue;
+      const raw = (a.name || '').trim();
+      const canonical = memberToCanonical[raw] || raw;
+      const st = extractState(a.campaignName);
+      if (!canonical || !st) continue;
+      const row = live[canonical] || (live[canonical] = {});
+      if ((adsetSizes[a.adsetId] || 1) === 1) row[st] = 'solo';
+      else if (!row[st]) row[st] = 'shared';
+    }
     const map = {};
     for (const adName of adNames) {
       map[adName] = {};
-      for (const st of states) {
-        const instances = allAds.filter(a => {
-          const canonical = memberToCanonical[(a.name || '').trim()] || (a.name || '').trim();
-          return canonical === adName && extractState(a.campaignName) === st;
-        });
-        const active = instances.filter(a =>
-          (a.effectiveStatus || a.status) === 'ACTIVE'
-        );
-        if (!active.length) { map[adName][st] = 'off'; continue; }
-        const hasSolo = active.some(a => (adsetSizes[a.adsetId] || 1) === 1);
-        map[adName][st] = hasSolo ? 'solo' : 'shared';
-      }
+      for (const st of states) map[adName][st] = live[adName]?.[st] || 'off';
     }
     return map;
   }, [adNames, states, allAds, memberToCanonical, adsetSizes]);
