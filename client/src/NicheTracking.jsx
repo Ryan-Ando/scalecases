@@ -50,6 +50,8 @@ export default function NicheTracking() {
         if (!live) return;
         setAds(data);
         setStale(parseInt(r.headers.get('X-Stale-Minutes'), 10) || 0);
+        const failed = r.headers.get('X-FB-Failed-Accounts');
+        if (failed) setError(`couldn't read ad account ${failed.replace(/act_/g, '')} (the token's system user may not have access to it in Business Manager)`);
       })
       .catch(e => live && setError(e.message))
       .finally(() => live && setLoading(false));

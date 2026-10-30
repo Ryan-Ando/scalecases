@@ -18,6 +18,8 @@ async function getJson(path) {
   const r = await fetch(`${BASE}${path}`);
   const data = await r.json().catch(() => null);
   if (!r.ok || !data) throw new Error(data?.error || r.statusText);
+  const failed = r.headers.get('X-FB-Failed-Accounts');
+  if (failed) throw new Error(`couldn't read ad account ${failed.replace(/act_/g, '')} (the token's system user may not have access to it in Business Manager)`);
   return data;
 }
 
