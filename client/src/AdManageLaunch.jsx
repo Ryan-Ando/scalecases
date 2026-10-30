@@ -15,10 +15,21 @@ function savedCampaigns() {
   try { return JSON.parse(localStorage.getItem(CAMPAIGN_KEY) || '{}'); } catch { return {}; }
 }
 
-// State versions first (prefer the disclaimer tool's "new disclaimer" output), then the rest.
+const STATES = new Set('AL AK AZ AR CA CO CT DE FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY DC'.split(' '));
+// The state a file was made for: its state folder, or a "LSS CO" / "CA LSS" tag in the name.
+// null = the default version, which carries the default disclaimer.
+function fileState(f) {
+  if (f.state) return f.state;
+  const m = f.name.match(/\bLSS[ _-]*([A-Za-z]{2})\b/i) || f.name.match(/\b([A-Za-z]{2})[ _-]+LSS\b/i);
+  const st = m?.[1].toUpperCase();
+  return STATES.has(st) ? st : null;
+}
+
+// Only this state's own versions (the disclaimer tool's "new disclaimer" output first), then the
+// default versions. Another state's version is never offered: it carries that state's disclaimer.
 function rankFiles(files, state) {
-  return [...files].sort((a, b) =>
-    Number(b.state === state) - Number(a.state === state) ||
+  return files.filter(f => [state, null].includes(fileState(f))).sort((a, b) =>
+    Number(fileState(b) === state) - Number(fileState(a) === state) ||
     Number(/\/new disclaimer\//i.test(b.relativePath)) - Number(/\/new disclaimer\//i.test(a.relativePath)) ||
     b.relativePath.localeCompare(a.relativePath));
 }
@@ -45,16 +56,22 @@ export default function AdManageLaunch({ brand, state, picked, onUnpick, onPick,
   }, [brand, state]);
 
   const byKey = useMemo(() => new Map(groups.map(g => [g.key, g])), [groups]);
+  // States with their own disclaimer have state versions in the library; the rest use the default
+  const ownDisclaimer = useMemo(() => groups.some(g => g.files.some(f => fileState(f) === state)), [groups, state]);
   const rows = useMemo(() => [...picked].map(name => {
     const g = byKey.get(creativeKey(name));
     const files = g ? rankFiles(g.files, state) : [];
     const file = files.find(f => f.id === fileChoice[name]) || files[0] || null;
-    return { name, files, file, stateVersion: file?.state === state };
-  }), [picked, byKey, state, fileChoice]);
+    const stateVersion = !!file && fileState(file) === state;
+    // A state with its own disclaimer can't run the default version
+    const problem = !g ? 'no local file found' : !file ? `only other states' versions exist — no default or ${state} version`
+      : ownDisclaimer && !stateVersion ? `no ${state} version yet — make one in the Disclaimers tab` : '';
+    return { name, files, file, stateVersion, problem };
+  }), [picked, byKey, state, fileChoice, ownDisclaimer]);
 
   const campaign = setup?.campaigns.find(c => c.campaignId === campaignId);
   const template = setup?.templates.find(t => t.id === templateId);
-  const ready = campaign && template && rows.length && rows.every(r => r.file) && library.connected && !busy;
+  const ready = campaign && template && rows.length && rows.every(r => !r.problem) && library.connected && !busy;
   const matches = query.trim().length < 2 ? [] : groups
     .filter(g => g.name.toLowerCase().includes(query.trim().toLowerCase()) && !picked.has(g.name)).slice(0, 8);
 
@@ -67,12 +84,10 @@ export default function AdManageLaunch({ brand, state, picked, onUnpick, onPick,
 
   async function launch() {
     const ads = rows.map(r => ({ pick: r.name, adName: r.file.name, file: r.file }));
-    const missing = rows.filter(r => !r.stateVersion).map(r => r.name);
     const ok = window.confirm(
       `Launch ${ads.length} ad${ads.length > 1 ? 's' : ''} LIVE in "${campaign.name}" (${campaign.accountName})?\n\n` +
       `Each gets its own new ad set copied from the campaign's newest active ad set, with the "${template.name}" copy.\n\n` +
-      ads.map(a => `• ${a.adName}`).join('\n') +
-      (missing.length ? `\n\nNot a ${state} version (check the disclaimer): ${missing.join(', ')}` : ''));
+      rows.map(r => `• ${r.file.name} (${r.stateVersion ? `${state} disclaimer` : 'default disclaimer'})`).join('\n'));
     if (!ok) return;
     setBusy(true); setLog([]);
     try {
@@ -144,12 +159,12 @@ export default function AdManageLaunch({ brand, state, picked, onUnpick, onPick,
         <div key={r.name} style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 4 }}>
           <button className="btn btn--sm" onClick={() => onUnpick(r.name)} disabled={busy} title="Remove">✕</button>
           <span style={{ fontWeight: 600 }}>{r.name}</span>
-          {r.files.length === 0
-            ? <span style={{ color: '#fb9292' }}>no local file found{library.connected ? '' : ' (connect the local creative library)'}</span>
-            : <select value={r.file.id} onChange={e => setFileChoice(m => ({ ...m, [r.name]: e.target.value }))} disabled={busy}>
-                {r.files.map(f => <option key={f.id} value={f.id}>{f.relativePath}</option>)}
-              </select>}
-          {r.file && !r.stateVersion && <span style={{ color: '#d97706' }}>not a {state} version</span>}
+          {r.file && <select value={r.file.id} onChange={e => setFileChoice(m => ({ ...m, [r.name]: e.target.value }))} disabled={busy}>
+            {r.files.map(f => <option key={f.id} value={f.id}>{f.relativePath}{fileState(f) ? '' : ' (default)'}</option>)}
+          </select>}
+          {r.problem
+            ? <span style={{ color: '#fb9292' }}>{r.problem}{r.problem === 'no local file found' && !library.connected ? ' (connect the local creative library)' : ''}</span>
+            : <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>{r.stateVersion ? `${state} disclaimer` : 'default disclaimer'}</span>}
         </div>
       ))}
       <input value={query} onChange={e => setQuery(e.target.value)} placeholder="Add another creative by name…" disabled={busy}
@@ -163,7 +178,7 @@ export default function AdManageLaunch({ brand, state, picked, onUnpick, onPick,
           {busy ? 'Launching…' : `Launch ${rows.length || ''} live`}
         </button>
         <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>
-          {!campaign ? 'Check a campaign. ' : ''}{!template ? 'No copy template. ' : ''}{!library.connected ? 'Local creative library not connected. ' : ''}
+          {!campaign ? 'Check a campaign. ' : ''}{!template ? 'No copy template. ' : ''}{!library.connected ? 'Local creative library not connected. ' : ''}{rows.some(r => r.problem) ? 'Fix or remove the ads marked in red. ' : ''}
         </span>
       </div>
       {log.length > 0 && <div style={{ marginTop: 8, lineHeight: 1.5 }}>{log.map((l, i) => <div key={i}>{l}</div>)}</div>}
