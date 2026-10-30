@@ -1,22 +1,9 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import './disclaimers.css';
+import { w, WORKER_URL } from './disclaimerWorker.js';
 
-// Local worker (tools/disclaimer-worker). Loopback only; see README there.
-export const WORKER_URL = 'http://127.0.0.1:43128';
 const START_CMD = 'python tools/disclaimer-worker/worker.py';
 
-async function w(path, opts = {}) {
-  const res = await fetch(`${WORKER_URL}${path}`, {
-    ...opts,
-    headers: { 'Content-Type': 'application/json', ...(opts.headers || {}) },
-    body: opts.body && typeof opts.body !== 'string' ? JSON.stringify(opts.body) : opts.body,
-    signal: opts.signal || AbortSignal.timeout(opts.timeout || 15000),
-    targetAddressSpace: 'loopback',
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.detail || data.error || res.statusText);
-  return data;
-}
 
 async function upload(file) {
   const fd = new FormData(); fd.append('file', file, file.name);
@@ -163,7 +150,7 @@ function Overrides({ kind, value, onChange }) {
 }
 
 // ───────────────────────────── review card ─────────────────────────────
-function ItemCard({ job, item, onChanged }) {
+export function ItemCard({ job, item, onChanged }) {
   const [ovOpen, setOvOpen] = useState(false);
   const [ov, setOv] = useState({ ...DEFAULT_OV, ...(item.overrides?.ranges ? { ranges: item.overrides.ranges.map(r => `${r.region} ${r.a}-${r.b}`).join('\n') } : {}), ...pickUi(item.overrides) });
   const [busy, setBusy] = useState('');

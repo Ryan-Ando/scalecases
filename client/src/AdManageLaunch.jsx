@@ -1,6 +1,8 @@
-import { useState, useEffect, useMemo } from 'react';
-import { LOCAL_LIBRARY_URL } from './useCreativeLibrary.js';
+import { useState, useEffect, useMemo, useCallback } from 'react';
+import { LOCAL_LIBRARY_URL, refreshLibrary } from './useCreativeLibrary.js';
 import { creativeKey } from './creativeMatching.js';
+import { ItemCard } from './Disclaimers.jsx';
+import { w } from './disclaimerWorker.js';
 
 const BASE = import.meta.env.VITE_API_URL || 'http://localhost:3001';
 const CAMPAIGN_KEY = 'admanageCampaigns';
@@ -63,11 +65,61 @@ export default function AdManageLaunch({ brand, state, picked, onUnpick, onPick,
     const files = g ? rankFiles(g.files, state) : [];
     const file = files.find(f => f.id === fileChoice[name]) || files[0] || null;
     const stateVersion = !!file && fileState(file) === state;
-    // A state with its own disclaimer can't run the default version
+    // A state with its own disclaimer can't run the default version; the default is what gets converted
+    const needsVersion = !!file && ownDisclaimer && !stateVersion;
     const problem = !g ? 'no local file found' : !file ? `only other states' versions exist — no default or ${state} version`
-      : ownDisclaimer && !stateVersion ? `no ${state} version yet — make one in the Disclaimers tab` : '';
-    return { name, files, file, stateVersion, problem };
+      : needsVersion ? `no ${state} version yet` : '';
+    return { name, files, file, stateVersion, needsVersion, problem };
   }), [picked, byKey, state, fileChoice, ownDisclaimer]);
+
+  // ── State versions through the local disclaimer worker (same render → review → approve flow
+  // as the Disclaimers tab; nothing is written to the library until approved) ──
+  const [made, setMade] = useState({});        // ad name → { jobId, idx }
+  const [workerJobs, setWorkerJobs] = useState({}); // jobId → job
+  const [makeErr, setMakeErr] = useState('');
+  const [making, setMaking] = useState(false);
+  const missing = rows.filter(r => r.needsVersion && !made[r.name]);
+
+  async function makeVersions(list) {
+    setMaking(true); setMakeErr('');
+    try {
+      const { disclaimers } = await w('/state');
+      const disc = disclaimers.filter(d => (d.parent || '').split(/[\\/]/).filter(Boolean).pop()?.toUpperCase() === state);
+      if (!disc.length) throw new Error(`No ${state} disclaimer saved in the Disclaimers tab library (its destination folder must end in /${state})`);
+      if (disc.length > 1) throw new Error(`More than one ${state} disclaimer in the library (${disc.map(d => d.name).join(', ')}) — use the Disclaimers tab to pick one`);
+      // The library folder that holds the state folders, e.g. {root}/2026 B2C
+      const base = disc[0].parent.replace(/[\\/]+[^\\/]+[\\/]*$/, '');
+      const job = await w('/jobs', { method: 'POST', timeout: 60000,
+        body: { files: list.map(r => `${base}/${r.file.relativePath}`), targets: [{ parent: disc[0].parent, disclaimer_id: disc[0].id }] } });
+      setWorkerJobs(j => ({ ...j, [job.id]: job }));
+      setMade(m => ({ ...m, ...Object.fromEntries(list.map((r, idx) => [r.name, { jobId: job.id, idx }])) }));
+    } catch (e) {
+      setMakeErr(/fetch|network|load failed/i.test(e.message) ? 'The disclaimer worker is not running on this computer' : e.message);
+    } finally { setMaking(false); }
+  }
+
+  const trackedJobs = [...new Set(Object.values(made).map(m => m.jobId))];
+  const refreshJobs = useCallback(async () => {
+    const fresh = await Promise.all(trackedJobs.map(id => w(`/jobs/${id}`).catch(() => null)));
+    setWorkerJobs(j => ({ ...j, ...Object.fromEntries(fresh.filter(Boolean).map(x => [x.id, x])) }));
+  }, [trackedJobs.join()]); // eslint-disable-line react-hooks/exhaustive-deps
+  const itemFor = name => { const m = made[name]; return m && workerJobs[m.jobId]?.items[m.idx]; };
+  const rendering = Object.keys(made).some(n => ['queued', 'running'].includes(itemFor(n)?.status));
+  const approved = Object.keys(made).filter(n => itemFor(n)?.status === 'approved');
+  useEffect(() => {   // follow renders until they reach review
+    if (!rendering) return;
+    const t = setInterval(() => void refreshJobs(), 3000);
+    return () => clearInterval(t);
+  }, [rendering, refreshJobs]);
+  useEffect(() => {   // approved files reach the creative helper on its next scan (once a minute)
+    if (!approved.length) return;
+    const t = setInterval(() => void refreshLibrary(), 20000);
+    return () => clearInterval(t);
+  }, [approved.length]);
+  useEffect(() => {   // once the library has the state version, the row is fixed: stop tracking it
+    const done = Object.keys(made).filter(n => rows.find(r => r.name === n)?.stateVersion);
+    if (done.length) setMade(m => Object.fromEntries(Object.entries(m).filter(([n]) => !done.includes(n))));
+  }, [rows]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const campaign = setup?.campaigns.find(c => c.campaignId === campaignId);
   const template = setup?.templates.find(t => t.id === templateId);
@@ -155,18 +207,36 @@ export default function AdManageLaunch({ brand, state, picked, onUnpick, onPick,
       </div>
 
       {rows.length === 0 && <div style={{ color: 'var(--text-muted)', marginBottom: 6 }}>Check ads in the table below, or add any creative:</div>}
-      {rows.map(r => (
-        <div key={r.name} style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 4 }}>
-          <button className="btn btn--sm" onClick={() => onUnpick(r.name)} disabled={busy} title="Remove">✕</button>
-          <span style={{ fontWeight: 600 }}>{r.name}</span>
-          {r.file && <select value={r.file.id} onChange={e => setFileChoice(m => ({ ...m, [r.name]: e.target.value }))} disabled={busy}>
-            {r.files.map(f => <option key={f.id} value={f.id}>{f.relativePath}{fileState(f) ? '' : ' (default)'}</option>)}
-          </select>}
-          {r.problem
-            ? <span style={{ color: '#fb9292' }}>{r.problem}{r.problem === 'no local file found' && !library.connected ? ' (connect the local creative library)' : ''}</span>
-            : <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>{r.stateVersion ? `${state} disclaimer` : 'default disclaimer'}</span>}
-        </div>
-      ))}
+      {missing.length > 1 && (
+        <button className="btn btn--sm" style={{ marginBottom: 6 }} disabled={making || busy} onClick={() => void makeVersions(missing)}>
+          {making ? 'Starting…' : `Make all ${missing.length} missing ${state} versions`}
+        </button>
+      )}
+      {makeErr && <div style={{ color: '#fb9292', marginBottom: 6 }}>{makeErr}</div>}
+      {rows.map(r => {
+        const item = itemFor(r.name);
+        return (
+          <div key={r.name} style={{ marginBottom: 4 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <button className="btn btn--sm" onClick={() => onUnpick(r.name)} disabled={busy} title="Remove">✕</button>
+              <span style={{ fontWeight: 600 }}>{r.name}</span>
+              {r.file && <select value={r.file.id} onChange={e => setFileChoice(m => ({ ...m, [r.name]: e.target.value }))} disabled={busy}>
+                {r.files.map(f => <option key={f.id} value={f.id}>{f.relativePath}{fileState(f) ? '' : ' (default)'}</option>)}
+              </select>}
+              {r.problem
+                ? <span style={{ color: '#fb9292' }}>{r.problem}{r.problem === 'no local file found' && !library.connected ? ' (connect the local creative library)' : ''}</span>
+                : <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>{r.stateVersion ? `${state} disclaimer` : 'default disclaimer'}</span>}
+              {r.needsVersion && !made[r.name] && (
+                <button className="btn btn--sm" disabled={making || busy} onClick={() => void makeVersions([r])}>Make {state} version</button>
+              )}
+              {item?.status === 'approved' && <span style={{ color: '#15803d', fontSize: 11 }}>approved — appears here within ~2 minutes</span>}
+            </div>
+            {item && item.status !== 'approved' && (
+              <div style={{ marginTop: 6 }}><ItemCard job={workerJobs[made[r.name].jobId]} item={item} onChanged={() => void refreshJobs()} /></div>
+            )}
+          </div>
+        );
+      })}
       <input value={query} onChange={e => setQuery(e.target.value)} placeholder="Add another creative by name…" disabled={busy}
         style={{ fontSize: 12, padding: '3px 6px', width: 260, marginTop: 4, border: '1px solid var(--border)', borderRadius: 4, background: 'var(--bg)', color: 'var(--text)' }} />
       {matches.map(g => (
