@@ -196,8 +196,8 @@ def choose_data_dir():
     DATA = want; STAGING = os.path.join(DATA, "staging"); PREVIEWS = os.path.join(DATA, "previews"); INBOX = os.path.join(DATA, "inbox")
     for d in (STAGING, PREVIEWS, INBOX):
         os.makedirs(d, exist_ok=True)
-    if DATA != LOCAL and not os.path.exists(os.path.join(DATA, FILES["disclaimers"])) and os.path.exists(os.path.join(LOCAL, FILES["disclaimers"])):
-        migrate_local_into_shared()
+    if DATA != LOCAL and _read_json(os.path.join(LOCAL, FILES["disclaimers"]), []) and not _read_json(os.path.join(DATA, FILES["disclaimers"]), []):
+        migrate_local_into_shared()      # this machine has a library and the shared folder has none yet
     for n in FILES:
         load(n)
     if old is not None:
@@ -209,9 +209,9 @@ def migrate_local_into_shared():
     """First switch to Drive on a machine that already has a local library: copy it across.
     Paths in the copied records are made portable by normalize_job / portable_path on load."""
     for n, fn in FILES.items():
-        src = os.path.join(LOCAL, fn)
-        if os.path.exists(src):
-            shutil.copy2(src, os.path.join(DATA, fn))
+        src = os.path.join(LOCAL, fn); dst = os.path.join(DATA, fn)
+        if os.path.exists(src) and (n == "disclaimers" or not os.path.exists(dst)):
+            shutil.copy2(src, dst)       # never clobber a file the other machine already wrote
     for sub in ("staging", "previews", "inbox"):
         src = os.path.join(LOCAL, sub)
         if os.path.isdir(src):
