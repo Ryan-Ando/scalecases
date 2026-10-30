@@ -1,20 +1,29 @@
 // AdManage launcher for the Relaunch tab: one new ad set per ad, copied from the newest
 // active ad set of the chosen campaign, with that state's AdManage ad copy template.
-// Writes go through AdManage's own key (ADMANAGE_API_KEY), not the read-only FB token, and
-// every route here needs the app login token because these calls create live Meta objects.
+// Writes go through AdManage's own key (ADMANAGE_API_KEY), not the read-only FB token. The site
+// itself has no login, so every route here needs ADMANAGE_LAUNCH_PASSWORD in the X-Launch-Password
+// header: these calls create live Meta objects. Unset password = nobody passes.
 
 import { Router } from 'express';
 import fetch from 'node-fetch';
 import crypto from 'crypto';
-import { hasAppToken } from './auth.js';
 import { extractState, extractBrand } from './sheets.js';
 
 const router = Router();
 const API = 'https://api.admanage.ai';
 
+function launchPasswordOk(req) {
+  const expected = process.env.ADMANAGE_LAUNCH_PASSWORD;
+  if (!expected) return false;
+  const a = crypto.createHash('sha256').update(String(req.headers['x-launch-password'] || '')).digest();
+  const b = crypto.createHash('sha256').update(expected).digest();
+  return crypto.timingSafeEqual(a, b);
+}
+
 router.use((req, res, next) => {
   if (!process.env.ADMANAGE_API_KEY) return res.status(503).json({ error: 'ADMANAGE_API_KEY is not set on the server' });
-  if (!hasAppToken(req)) return res.status(401).json({ error: 'Log in again: AdManage actions need the app password (APP_PASSWORD must be set on the server)' });
+  if (!process.env.ADMANAGE_LAUNCH_PASSWORD) return res.status(503).json({ error: 'ADMANAGE_LAUNCH_PASSWORD is not set on the server' });
+  if (!launchPasswordOk(req)) return res.status(401).json({ error: 'Wrong or missing launch password', needPassword: true });
   next();
 });
 
