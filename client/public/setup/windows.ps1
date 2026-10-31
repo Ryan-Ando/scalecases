@@ -80,7 +80,7 @@ Start-Process -FilePath (Join-Path $env:WINDIR 'System32\wscript.exe') -Argument
 # 7. Check it
 Say 'Starting...'
 $h = $null
-for ($i = 0; $i -lt 30 -and -not $h; $i++) {
+for ($i = 0; $i -lt 90 -and -not $h; $i++) {
   try { $h = Invoke-RestMethod -UseBasicParsing 'http://127.0.0.1:43128/health' -TimeoutSec 2 } catch { Start-Sleep -Seconds 1 }
 }
 if (-not $h) { throw "The helper did not start. Try running it visibly to see the error:  `"$VPy`" `"$Worker`"" }

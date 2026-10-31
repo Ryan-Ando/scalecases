@@ -620,12 +620,15 @@ def creative_root():
     chosen = resolve_path(state["local"].get("creative_root"))
     if chosen:
         return chosen
-    root = library_root()
-    try:
-        found = sorted((e.name for e in os.scandir(root) if e.is_dir() and e.name[:2] == "20" and e.name.upper().endswith("B2C")), reverse=True)
-    except OSError:
-        found = []
-    return os.path.join(root, found[0]) if found else ""
+    # The library root first, then every other Drive folder (the folders may be mid-move)
+    for root in [library_root()] + drive_roots():
+        try:
+            found = sorted((e.name for e in os.scandir(root) if e.is_dir() and e.name[:2] == "20" and e.name.upper().endswith("B2C")), reverse=True)
+        except OSError:
+            continue
+        if found:
+            return os.path.join(root, found[0])
+    return ""
 
 
 creative_library = library_helper.Library(creative_root, ORIGINS, port=LIBRARY_PORT)

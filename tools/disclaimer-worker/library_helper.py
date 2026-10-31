@@ -85,7 +85,6 @@ class Library:
             self.scan()
 
     def start(self):
-        self.scan()
         lib = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -170,5 +169,6 @@ class Library:
             return None
         server.daemon_threads = True
         threading.Thread(target=server.serve_forever, daemon=True).start()
-        threading.Thread(target=self._loop, daemon=True).start()
+        # First scan in the background: a big library on Drive takes a while and must not hold up the worker
+        threading.Thread(target=lambda: (self.scan(), self._loop()), daemon=True).start()
         return server

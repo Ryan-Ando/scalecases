@@ -39,6 +39,7 @@ class LibraryHelperTest(unittest.TestCase):
         sock = socket.socket(); sock.bind(("127.0.0.1", 0)); port = sock.getsockname()[1]; sock.close()   # a free port
         lib = library_helper.Library(lambda: root, [ORIGIN], port=port, interval=600)
         server = lib.start(); self.addCleanup(server.shutdown)
+        lib.scan()   # the first scan runs in the background; don't race it
         base = f"http://127.0.0.1:{lib.port}"
         self.assertEqual(get(base + "/manifest")[0], 403)
         self.assertEqual(get(base + "/manifest", "https://other.example")[0], 403)

@@ -71,7 +71,7 @@ launchctl bootstrap "gui/$(id -u)" "$PLIST" 2>/dev/null || launchctl load "$PLIS
 # 7. Check it
 say "Starting..."
 HEALTH=""
-for _ in $(seq 1 30); do
+for _ in $(seq 1 90); do
   HEALTH="$(curl -fs http://127.0.0.1:43128/health 2>/dev/null || true)"; [ -n "$HEALTH" ] && break; sleep 1
 done
 if [ -z "$HEALTH" ]; then
