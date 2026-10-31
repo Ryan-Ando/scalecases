@@ -5,6 +5,7 @@ import { groupLibrary, prependUntested } from './creativeMatching.js';
 import { useState, useEffect, useMemo } from 'react';
 import { dbGetAll, dbGetMeta } from './db.js';
 import { lsSet } from './sync.js';
+import { countLiveAdsetsByType } from './liveAdsets.js';
 
 const BASE = import.meta.env.VITE_API_URL || 'http://localhost:3001';
 
@@ -112,6 +113,7 @@ export default function Relaunch() {
   const [sheetCases, setSheetCases]   = useState([]);
   const [ghlContacts, setGhlContacts] = useState([]);
   const [budgetByGroup, setBudgetByGroup] = useState({});
+  const [adsetsByGroup, setAdsetsByGroup] = useState({}); // '<brand> <state>' → { cbo, normal } live ad sets
   const [pacingSpend, setPacingSpend]     = useState({});
   const [loading, setLoading]   = useState(false);
   const [error, setError]       = useState('');
@@ -160,7 +162,7 @@ export default function Relaunch() {
       // usually costs ZERO new FB calls.
       const [winAds, adsets] = await Promise.all([
         apiFetch(`/api/facebook/ads?start=${LEAD_CUTOFF}&end=${today}`),
-        apiFetch('/api/facebook/adsets?metadata_only=true'),
+        apiFetch('/api/facebook/adsets?metadata_only=true&include_ad_delivery=true'), // same cache as the Spend Sheet
       ]);
       setWindowAds(winAds || []);
 
@@ -183,6 +185,10 @@ export default function Relaunch() {
         }
       }
       setBudgetByGroup(budget);
+      setAdsetsByGroup(countLiveAdsetsByType(adsets || [], name => {
+        const st = extractState(name);
+        return st ? `${extractBrand(name)} ${st}` : null;
+      }));
 
       // Spent-to-date per group — one campaign-spend call per unique start date
       const cfg = loadPacing();
@@ -470,6 +476,7 @@ export default function Relaunch() {
               : <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-muted)' }}>no pacing set</span>}
             <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
               {rec.activeAds} active ad{rec.activeAds === 1 ? '' : 's'} ·{' '}
+              active ad sets: {adsetsByGroup[rec.group]?.cbo || 0} CBO · {adsetsByGroup[rec.group]?.normal || 0} normal ·{' '}
               {rec.paced
                 ? <>needs {fmt(rec.dailyNeeded)}/day · live {fmt(rec.liveBudget)}/day · {fmt(rec.remaining)} left over {rec.daysLeft.toFixed(1)} days</>
                 : <>live {fmt(rec.liveBudget)}/day</>}
