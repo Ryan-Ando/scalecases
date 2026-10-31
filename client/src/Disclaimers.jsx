@@ -1,8 +1,8 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import './disclaimers.css';
 import { w, WORKER_URL } from './disclaimerWorker.js';
+import HelperSetup from './HelperSetup.jsx';
 
-const START_CMD = 'python tools/disclaimer-worker/worker.py';
 
 
 async function upload(file) {
@@ -273,7 +273,7 @@ export default function Disclaimers() {
         </div>
         <div className={`dz-worker ${online ? 'dz-worker--on' : 'dz-worker--off'}`}>
           <span className="s-dot" /> {online ? `Worker online${health?.ffmpeg ? '' : ' · ffmpeg missing'}${active ? ' · rendering' : ''}${health && !health.library_root_ok ? ' · library root not set' : health?.shared ? ' · synced via Drive' : health ? ' · not synced (Drive folder not found)' : ''}` : 'Worker offline'}
-          {!online && <div className="dz-muted dz-small">Start it on this PC: <code>{START_CMD}</code> then <button className="dz-link" onClick={() => void refreshState()}>retry</button></div>}
+          {!online && <div className="dz-muted dz-small" style={{ maxWidth: 520 }}><HelperSetup what="Disclaimers" /> Then <button className="dz-link" onClick={() => void refreshState()}>retry</button>.</div>}
         </div>
       </div>
       <div className="dz-subnav">{SUBS.map(([k, l]) => <button key={k} className={`status-btn${sub === k ? ' status-btn--active' : ''}`} onClick={() => go(k)}>{l}</button>)}</div>

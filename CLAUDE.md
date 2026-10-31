@@ -37,12 +37,16 @@ leads.json, fb-cache and snapshots vanish on each deploy.
 Replaces burned-in disclaimers on image/video ads. The browser talks to a FastAPI worker on
 `127.0.0.1:43128` on the user's own machine (origin allowlist: Render client + Vite dev). Render
 plays no part; the ads live on the user's disk and rendering needs ffmpeg.
-- Start: `python tools/disclaimer-worker/worker.py` (Windows: `install.ps1`; macOS: `install.sh`
-  registers a launchd agent). All worker data (library, settings, history, jobs, staging,
-  previews, inbox) lives in the SHARED Drive folder `My Drive/ScaleCases/Disclaimers` and syncs
-  between the PC and the Mac; workers re-read files Drive changed on every request. Only
-  `local.json` (library root) is per machine: `%LOCALAPPDATA%\ScaleCasesDisclaimers` on Windows,
-  `~/Library/Application Support/ScaleCasesDisclaimers` on macOS (override with `SC_DISCLAIMER_DATA`).
+- Install/update on any Mac or PC with the site's setup downloads (`client/public/setup/`: Mac zip →
+  "Scale Cases Setup.command" → `mac.sh`; Windows `.cmd` → `windows.ps1`). One helper process serves
+  the worker (43128) AND the local creative library (43127, `library_helper.py`; the old Node
+  helper is gone). Dev: `python tools/disclaimer-worker/worker.py`. All worker data (library,
+  settings, history, jobs, staging, previews, inbox) lives in the Drive folder
+  `ScaleCases/Disclaimers` (found in a Shared Drive first, else My Drive; the worker follows it if
+  it moves). Several people use it at once: each machine writes only
+  `sync/<store>/<machine id>.json` and reads merge all of them (newest `_u` per record, per item
+  for jobs). Only `local.json` (library root, machine id) is per machine:
+  `%LOCALAPPDATA%\ScaleCasesDisclaimers` / `~/Library/Application Support/ScaleCasesDisclaimers`.
   Paths are stored as `{root}/…` (library) or `{data}/…` (shared data folder).
 - Ad library: Google Drive, folder `My Drive/2026 B2C` (per-state folders `CA`, `CO`; outputs go to
   `<state>/new disclaimer/<mmdd>/`). Windows path `G:\My Drive\2026 B2C`; macOS

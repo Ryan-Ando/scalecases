@@ -1,26 +1,32 @@
-# Local disclaimer worker
+# Scale Cases Helper (local disclaimer worker + creative library)
 
-Powers the **Disclaimers** tab. It runs only on this computer (`127.0.0.1:43128`) because the
-ads live on a local drive and the rendering needs ffmpeg. Nothing is uploaded anywhere; the
-browser talks to the worker directly and the worker reads and writes the folders you choose.
+Powers the **Disclaimers** tab (`127.0.0.1:43128`) and the **local creative library** that Ads
+Tracking and Relaunch read (`127.0.0.1:43127`, `library_helper.py`, a port of the old Node helper).
+It runs on each person's own computer because the ads live in Google Drive for desktop and the
+rendering needs ffmpeg. Nothing is uploaded anywhere; the browser talks to the helper directly.
 
-## Run
+## Install or update (Mac and Windows, anyone)
 
-Windows:
+Download the setup from the site (the Disclaimers tab and the creative library show the links
+when the helper is not running), or:
 
-```powershell
-python tools/disclaimer-worker/worker.py
-# or install it to start hidden at sign-in:
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/disclaimer-worker/install.ps1
-```
+- **Mac:** `client/public/setup/ScaleCases-Setup-Mac.zip` → unzip → double-click
+  "Scale Cases Setup". Or in Terminal:
+  `/bin/bash -c "$(curl -fsSL https://scalecases-client.onrender.com/setup/mac.sh)"`
+  Installs Homebrew (asks for the Mac password once), Python 3.12, ffmpeg, the helper in
+  `~/Library/Application Support/ScaleCasesHelper`, and a launchd agent `com.scalecases.helper`
+  (logs in `~/Library/Logs/ScaleCasesHelper`).
+- **Windows:** `client/public/setup/ScaleCases-Setup-Windows.cmd` → double-click. Installs
+  Python 3.12 and ffmpeg with winget (per user, no admin), the helper in
+  `%LOCALAPPDATA%\ScaleCasesHelper`, and a hidden `Scale Cases Helper` startup shortcut.
 
-macOS (Python 3 and Homebrew ffmpeg required: `brew install python ffmpeg`):
+Both download the code from this repository's `main` branch, replace the older separate installs
+(`com.scalecases.disclaimer-worker`, `com.scalecases.creative-library`, the Node helper and their
+startup shortcuts), start the helper and print a checklist. Running setup again updates it.
+`tools/setup/make-mac-zip.sh` rebuilds the Mac zip after editing `Scale Cases Setup.command`.
 
-```bash
-bash tools/disclaimer-worker/install.sh     # installs deps, registers a launchd agent, starts it
-# or run it in a terminal:
-python3 tools/disclaimer-worker/worker.py
-```
+For development: `python tools/disclaimer-worker/worker.py` (set `SC_LIBRARY_PORT=0` to skip the
+creative library).
 
 Requires Python 3.11+ with `numpy`, `pillow`, `fastapi`, `uvicorn` and `ffmpeg` + `ffprobe` on
 PATH. Text is set in Segoe UI on Windows and in the bundled Selawik (`fonts/`, an open-licensed
@@ -28,8 +34,19 @@ font with Segoe UI's metrics) everywhere else, so outputs from either machine lo
 
 Everything the tab shows — the disclaimer library with versions, settings, output history,
 jobs, the drag-and-drop inbox, staged renders awaiting review and review previews — lives in
-the **shared folder `My Drive/ScaleCases/Disclaimers`**, so it syncs through Google Drive and
-both machines see the same thing. The only machine-local file is `local.json` (this machine's
+the **shared folder `ScaleCases/Disclaimers`** in Google Drive, so everyone sees the same thing.
+The helper looks for it in every Shared Drive first, then My Drive, and follows it if it moves
+(e.g. from My Drive into a Shared Drive). The creative library is the newest `20xx B2C` folder
+next to it (override with `creative_root` in `local.json`).
+
+**Several people at once:** each computer writes only its own files,
+`ScaleCases/Disclaimers/sync/<store>/<machine id>.json`, with the latest copy of every record it
+changed (stamped `_u`) and tombstones for deletions. Reading merges all computers' files plus
+the older single files (`disclaimers.json`, `jobs.json`, …, dated by their modification time):
+the newest copy of each record wins, and for jobs each item separately, so two people reviewing
+different items of one job never overwrite each other and Drive never makes conflict copies.
+Every computer must run version 4 or later; older workers only read the single files and will
+not see changes made by newer ones. The only machine-local file is `local.json` (this machine's
 library root) in `%LOCALAPPDATA%\ScaleCasesDisclaimers` (Windows) or
 `~/Library/Application Support/ScaleCasesDisclaimers` (macOS); override that folder with the
 `SC_DISCLAIMER_DATA` environment variable. When Drive is not available the worker falls back to
@@ -52,8 +69,6 @@ How the sync behaves:
   items as stale.
 - Approving on the other machine needs the staged render to have synced; until then the tab
   says so and you can wait or re-render locally.
-- Work on one machine at a time. Both workers may run, but editing the library on both at the
-  same moment can leave a Drive "conflict" copy of a JSON file in the shared folder.
 - **Export library** / **Import library** in Settings remain as a backup / restore.
 
 Testing knobs: `SC_DISCLAIMER_PORT` and `SC_DISCLAIMER_MACHINE` let two workers run on one

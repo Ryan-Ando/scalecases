@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { groupLibrary } from './creativeMatching.js';
 import { useCreativeLibrary, refreshLibrary, enableLocalPreviews, LOCAL_LIBRARY_URL } from './useCreativeLibrary.js';
+import HelperSetup from './HelperSetup.jsx';
 
 export function CreativePreview({ file, enabled }) {
   if (!file || !enabled) return <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{file?.kind === 'video' ? 'Video' : 'Image'}</span>;
@@ -27,6 +28,7 @@ export default function CreativeLibrary({ ads = [], merges = [], deleted = new S
     </div>
     <p style={{ fontSize: 12, color: 'var(--text-muted)' }}>Automatically checks this computer every minute. Files and previews stay on this computer. New files are grouped using your existing ad combinations.</p>
     {library.error && <p role="status" style={{ fontSize: 12, color: '#f2bd65' }}>{library.error}</p>}
+    {!library.connected && !library.loading && <div style={{ color: 'var(--text-muted)', marginBottom: 8 }}><HelperSetup what="the local creative library" /></div>}
     {library.evidenceError && <p role="status" style={{ fontSize: 12, color: '#f2bd65' }}>Facebook check: {library.evidenceError}</p>}
     {library.connected && !complete && <p role="status">Facebook inventory is incomplete or still loading. New-ad recommendations are withheld until all connected accounts are checked.</p>}
     {library.files.length > 0 && <details>

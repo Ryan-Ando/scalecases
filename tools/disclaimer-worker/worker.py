@@ -4,11 +4,12 @@ Runs on this machine only (127.0.0.1:43128) and does the heavy lifting for the D
 disclaimer library, folder browsing, date sorting, rendering jobs (image + video), review
 previews, approve/reject into the chosen destination, and output history.
 
-Start:   python worker.py            (Windows: install.ps1 startup shortcut; macOS: install.sh launchd agent)
+Start:   python worker.py   (installed for everyday use by the site's setup downloads, client/public/setup/;
+         this process also serves the local creative library on 127.0.0.1:43127, see library_helper.py)
 
 Data:    everything the tab shows (library, settings, history, jobs, staged renders, previews,
-         drag-and-drop inbox) lives in the SHARED folder  <My Drive>/ScaleCases/Disclaimers
-         so it syncs through Google Drive and the PC and the Mac see the same thing.
+         drag-and-drop inbox) lives in the SHARED Drive folder  ScaleCases/Disclaimers  (a Shared
+         Drive or My Drive) so everyone who uses it sees the same thing; see "per-machine sync" below.
          The only machine-local file is local.json (this machine's library root) in
          %LOCALAPPDATA%\\ScaleCasesDisclaimers (Windows) / ~/Library/Application Support/ScaleCasesDisclaimers (macOS).
          Until Drive is available the worker falls back to that local folder and moves the data
@@ -24,18 +25,21 @@ import uvicorn
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import disclaimer_image as dimg
 import disclaimer_video as dvid
+import library_helper
 
-VERSION = 3
+VERSION = 4
 PORT = int(os.environ.get("SC_DISCLAIMER_PORT") or 43128)
+LIBRARY_PORT = int(os.environ.get("SC_LIBRARY_PORT") or 43127)     # creative library for Ads Tracking / Relaunch; 0 = off
 ORIGINS = ["https://scalecases-client.onrender.com", "http://localhost:5173", "http://127.0.0.1:5173"]
 IS_WIN = sys.platform.startswith("win")
 IS_MAC = sys.platform == "darwin"
 MACHINE = os.environ.get("SC_DISCLAIMER_MACHINE") or platform.node() or ("pc" if IS_WIN else "mac")
+SYNC_DIR = "sync"           # inside the shared data folder: sync/<store>/<machine id>.json, one writer per file
 _default_local = (os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "ScaleCasesDisclaimers") if IS_WIN
                   else os.path.expanduser("~/Library/Application Support/ScaleCasesDisclaimers") if IS_MAC
                   else os.path.expanduser("~/.scalecases-disclaimers"))
 LOCAL = os.environ.get("SC_DISCLAIMER_DATA") or _default_local      # machine-local: local.json + fallback data
-SHARED_REL = os.path.join("ScaleCases", "Disclaimers")                # inside the library root (Google Drive "My Drive")
+SHARED_REL = os.path.join("ScaleCases", "Disclaimers")                # inside the library root (a Google Shared Drive or "My Drive")
 os.makedirs(LOCAL, exist_ok=True)
 IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp"}
 VIDEO_EXT = {".mp4", ".mov", ".m4v"}
@@ -46,24 +50,42 @@ DEFAULT_SETTINGS = {                 # shared (synced) settings
     "recent_parents": [],
 }
 DEFAULT_LOCAL = {                    # machine-local settings
-    "library_root": "",      # this machine's path to the synced ad library (Google Drive "My Drive"); "{root}" in paths expands to it
+    "library_root": "",      # this machine's path to the synced ad library (a Shared Drive or "My Drive"); "{root}" in paths expands to it
+    "machine_id": "",        # stable id for this machine's sync files (host names can change)
+    "creative_root": "",     # the creative library folder; blank = the newest "20xx B2C" folder in the library root
 }
 
 
-def guess_library_root():
-    """Best guess for the Google Drive mirror folder on this machine."""
-    cands = []
+def drive_roots():
+    """Google Drive for desktop folders on this machine: every Shared Drive first, then My Drive."""
+    import glob
+    shared, mine = [], []
     if IS_WIN:
-        cands += [f"{c}:\\My Drive" for c in string.ascii_uppercase]
-        cands += [os.path.join(os.path.expanduser("~"), "Google Drive", "My Drive"), os.path.join(os.path.expanduser("~"), "My Drive")]
+        for c in string.ascii_uppercase:
+            shared += sorted(glob.glob(f"{c}:\\Shared drives\\*")); mine.append(f"{c}:\\My Drive")
+        home = os.path.expanduser("~")
+        mine += [os.path.join(home, "Google Drive", "My Drive"), os.path.join(home, "My Drive")]
     else:
-        import glob
-        cands += sorted(glob.glob(os.path.expanduser("~/Library/CloudStorage/GoogleDrive-*/My Drive")))
-        cands += [os.path.expanduser("~/Google Drive/My Drive"), os.path.expanduser("~/Google Drive")]
-    for c in cands:
-        if os.path.isdir(c):
-            return c
-    return ""
+        for acct in sorted(glob.glob(os.path.expanduser("~/Library/CloudStorage/GoogleDrive-*"))):
+            shared += sorted(glob.glob(os.path.join(acct, "Shared drives", "*"))); mine.append(os.path.join(acct, "My Drive"))
+        mine += [os.path.expanduser("~/Google Drive/My Drive"), os.path.expanduser("~/Google Drive")]
+    return [r for r in shared + mine if os.path.isdir(r)]
+
+
+def guess_library_root():
+    """The Drive folder that holds ScaleCases/Disclaimers (a Shared Drive both partners use, or
+    My Drive), else one holding the ad library ("2026 B2C"), else the first Drive folder."""
+    roots = drive_roots()
+    for r in roots:
+        if os.path.isdir(os.path.join(r, SHARED_REL)):
+            return r
+    for r in roots:
+        try:
+            if any(e.is_dir() and e.name[:2] == "20" and e.name.upper().endswith("B2C") for e in os.scandir(r)):
+                return r
+        except OSError:
+            pass
+    return roots[0] if roots else ""
 
 
 def library_root():
@@ -113,8 +135,19 @@ def now():
 
 FILES = {"disclaimers": "disclaimers.json", "settings": "settings.json", "history": "history.json", "jobs": "jobs.json"}
 DATA = STAGING = PREVIEWS = INBOX = None
-_seen = {}          # file name -> (mtime_ns, size) of the copy we last read or wrote
+_seen = {}          # store -> stats of every file it was last merged from
+_base = {}          # store -> {record id: json} as last merged or written, to tell which records this machine changed
+_own = {}           # store -> {record id: record} this machine's sync file
 state = {"local": {**DEFAULT_LOCAL}, "disclaimers": [], "settings": {**DEFAULT_SETTINGS}, "history": [], "jobs": []}
+
+# Several people (and machines) share the data folder through Drive. Every machine writes ONLY its
+# own file per store, sync/<store>/<machine id>.json, holding the latest copy of each record it
+# changed (stamped "_u") plus tombstones for records it deleted. Reading merges every machine's
+# file and the pre-sync <store>.json (dated by its mtime): newest "_u" wins per record, and for
+# jobs per item, so two people approving different items of one job at once both stick. With one
+# writer per file Drive never has to resolve a conflict.
+ORDER = {"jobs": ("created", True), "history": ("ts", True), "disclaimers": ("created", False)}
+JOBS_KEEP = 60
 
 
 def _stat(p):
@@ -143,24 +176,135 @@ def save_local():
     _write_json(os.path.join(LOCAL, "local.json"), state["local"])
 
 
-def load(name):
-    p = os.path.join(DATA, FILES[name])
-    default = {} if name == "settings" else []
-    data = _read_json(p, default) if os.path.exists(p) else default
-    before = json.dumps(data, sort_keys=True)
+def machine_id():
+    if not state["local"].get("machine_id"):
+        safe = "".join(c if c.isalnum() else "-" for c in MACHINE)[:30].strip("-") or "machine"
+        state["local"]["machine_id"] = f"{safe}-{uuid.uuid4().hex[:6]}"
+        save_local()
+    return state["local"]["machine_id"]
+
+
+def _store_dir(name):
+    return os.path.join(DATA, SYNC_DIR, name)
+
+
+def _sources(name):
+    """(path, is_legacy) of every file that feeds a store."""
+    out = [(os.path.join(DATA, FILES[name]), True)]
+    d = _store_dir(name)
+    if os.path.isdir(d):
+        out += [(os.path.join(d, f), False) for f in sorted(os.listdir(d)) if f.endswith(".json")]
+    return out
+
+
+def _records(name, data):
+    """A store's data as {id: record}. Settings become one record per key."""
     if name == "settings":
-        data = {**DEFAULT_SETTINGS, **{k: v for k, v in data.items() if k in DEFAULT_SETTINGS}}
+        return {k: {"id": k, "value": v} for k, v in (data or {}).items()}
+    return {r["id"]: r for r in (data or []) if isinstance(r, dict) and r.get("id")}
+
+
+def _newer(a, b):
+    return (a.get("_u") or "") > (b.get("_u") or "")
+
+
+def _merge_items(versions):
+    """One job seen in several machines' files: newest copy of the job, with each item taken
+    from whichever copy changed it last."""
+    best = max(versions, key=lambda r: r.get("_u") or "")
+    if best.get("_deleted"):
+        return best
+    items = {}
+    for v in versions:
+        for it in v.get("items") or []:
+            cur = items.get(it.get("idx"))
+            if cur is None or (it.get("_u") or "") > (cur.get("_u") or ""):
+                items[it.get("idx")] = it
+    return {**best, "items": [items[k] for k in sorted(items, key=lambda k: (k is None, k))]}
+
+
+def _merged(name):
+    versions = {}
+    stats = {}
+    for p, legacy in _sources(name):
+        stats[p] = _stat(p)
+        if legacy and not os.path.exists(p):
+            continue
+        data = _read_json(p, {} if name == "settings" else [])
+        if legacy:
+            # Written before per-machine sync: date its records by the file, so an older worker
+            # still writing it is not drowned out by stale copies in the sync files
+            stamp = datetime.fromtimestamp(os.path.getmtime(p), timezone.utc).isoformat(timespec="seconds")
+            recs = {k: {**r, "_u": r.get("_u") or stamp} for k, r in _records(name, data).items()}
+            if name == "jobs":
+                for r in recs.values():
+                    r["items"] = [{**it, "_u": it.get("_u") or stamp} for it in r.get("items") or []]
+        else:
+            recs = {r["id"]: r for r in (data.get("records") or {}).values()} if isinstance(data, dict) else {}
+        for rid, r in recs.items():
+            versions.setdefault(rid, []).append(r)
+    out = {}
+    for rid, vs in versions.items():
+        r = _merge_items(vs) if name == "jobs" else max(vs, key=lambda r: r.get("_u") or "")
+        if not r.get("_deleted"):
+            out[rid] = r
+    return out, stats
+
+
+def _to_state(name, recs):
+    if name == "settings":
+        return {**DEFAULT_SETTINGS, **{k: r["value"] for k, r in recs.items() if k in DEFAULT_SETTINGS}}
+    key, desc = ORDER[name]
+    rows = sorted(recs.values(), key=lambda r: r.get(key) or "", reverse=desc)
+    return rows[:JOBS_KEEP] if name == "jobs" else rows
+
+
+def _snapshot(name):
+    return {rid: json.dumps(r, sort_keys=True) for rid, r in _records(name, state[name]).items()}
+
+
+def load(name):
+    recs, stats = _merged(name)
+    data = _to_state(name, recs)
+    if name == "settings":
         data["recent_parents"] = [portable_path(x) for x in data.get("recent_parents") or []]
     if name == "jobs":
         data = [normalize_job(j) for j in data]
-    state[name] = data; _seen[name] = _stat(p)
-    if os.path.exists(p) and json.dumps(data, sort_keys=True) != before:
-        save(name)        # older absolute paths were made portable; write them back so the other machine can use them
+    state[name] = data
+    _seen[name] = stats
+    # The base is what the files said, so normalising old absolute paths counts as a change to write back
+    _base[name] = {rid: json.dumps(r, sort_keys=True) for rid, r in _records(name, _to_state(name, recs)).items()}
+    _own[name] = (_read_json(os.path.join(_store_dir(name), machine_id() + ".json"), {}) or {}).get("records") or {}
+    if _snapshot(name) != _base[name]:
+        save(name)
 
 
 def save(name):
-    p = os.path.join(DATA, FILES[name])
-    _write_json(p, state[name]); _seen[name] = _stat(p)
+    """Write the records this machine changed since the last merge into its own sync file."""
+    stamp = datetime.now(timezone.utc).isoformat(timespec="microseconds")
+    cur = _records(name, state[name])
+    base = _base.get(name, {})
+    own = _own.setdefault(name, {})
+    changed = False
+    for rid, r in cur.items():
+        if base.get(rid) == json.dumps(r, sort_keys=True):
+            continue
+        if name == "jobs":
+            old = {it.get("idx"): json.dumps(it, sort_keys=True) for it in json.loads(base[rid]).get("items", [])} if rid in base else {}
+            for it in r.get("items") or []:
+                if old.get(it.get("idx")) != json.dumps(it, sort_keys=True):
+                    it["_u"] = stamp
+        r["_u"] = stamp
+        own[rid] = json.loads(json.dumps(r)); changed = True
+    for rid in base:
+        if rid not in cur:
+            own[rid] = {"id": rid, "_deleted": True, "_u": stamp}; changed = True
+    if changed:
+        d = _store_dir(name); os.makedirs(d, exist_ok=True)
+        p = os.path.join(d, machine_id() + ".json")
+        _write_json(p, {"machine": MACHINE, "records": own})
+        _seen.setdefault(name, {})[p] = _stat(p)
+    _base[name] = _snapshot(name)
 
 
 def normalize_job(j):
@@ -228,16 +372,40 @@ def migrate_local_into_shared():
     print(f"moved local disclaimer data into the shared folder {DATA}", file=sys.stderr)
 
 
+_root_checked = [0.0]
+
+
+def follow_moved_root():
+    """If the shared folder is gone from this machine's library root (e.g. moved from My Drive
+    into a Shared Drive) but exists in another Drive folder, switch the library root there.
+    Checked at most every 30 s."""
+    if time.time() - _root_checked[0] < 30:
+        return False
+    _root_checked[0] = time.time()
+    root = library_root()
+    if root and os.path.isdir(os.path.join(root, SHARED_REL)):
+        return False
+    g = guess_library_root()
+    if g and g != root and os.path.isdir(os.path.join(g, SHARED_REL)):
+        print(f"library root moved: {root} -> {g}", file=sys.stderr)
+        state["local"]["library_root"] = g; save_local()
+        if "creative_library" in globals():
+            threading.Thread(target=creative_library.scan, daemon=True).start()
+        return True
+    return False
+
+
 def refresh():
-    """Pick up changes the other machine synced through Drive: re-read any data file whose
-    mtime/size differs from the copy we last read or wrote. Cheap (four stats), called per request."""
+    """Pick up changes other machines synced through Drive: re-merge a store whenever any of its
+    files changed since the last merge. Cheap (a few stats), called per request."""
     with lock:
+        follow_moved_root()
         if choose_data_dir():
             return
-        for n, fn in FILES.items():
-            p = os.path.join(DATA, fn)
-            st = _stat(p)
-            if st != _seen.get(n):
+        for n in FILES:
+            stats = _seen.get(n) or {}
+            paths = [p for p, _ in _sources(n)]
+            if set(paths) != set(stats) or any(_stat(p) != stats.get(p) for p in paths):
                 load(n)
 
 
@@ -446,12 +614,30 @@ threading.Thread(target=runner, daemon=True).start()
 
 # ───────────────────────────── routes: status, library, settings ─────────────────────────────
 
+def creative_root():
+    """The ad library the Ads Tracking / Relaunch tabs list: the chosen folder, else the newest
+    "20xx B2C" folder in the library root."""
+    chosen = resolve_path(state["local"].get("creative_root"))
+    if chosen:
+        return chosen
+    root = library_root()
+    try:
+        found = sorted((e.name for e in os.scandir(root) if e.is_dir() and e.name[:2] == "20" and e.name.upper().endswith("B2C")), reverse=True)
+    except OSError:
+        found = []
+    return os.path.join(root, found[0]) if found else ""
+
+
+creative_library = library_helper.Library(creative_root, ORIGINS, port=LIBRARY_PORT)
+
+
 @app.get("/health")
 def health():
     root = library_root()
     return {"version": VERSION, "ok": True, "ffmpeg": ffmpeg_ok(), "data": DATA, "shared": DATA != LOCAL, "local": LOCAL,
             "machine": MACHINE, "platform": sys.platform, "sep": os.sep,
             "library_root": root, "library_root_ok": bool(root) and os.path.isdir(root), "library_root_guess": guess_library_root(),
+            "creative_root": creative_library.root, "creative_files": len(creative_library.files), "creative_error": creative_library.error,
             "queued": sum(1 for j in state["jobs"] for i in j["items"] if i["status"] in ("queued", "running"))}
 
 
@@ -840,5 +1026,7 @@ def delete_history(hid: str):
 
 
 if __name__ == "__main__":
+    if LIBRARY_PORT:
+        creative_library.start()
     print(f"Scale Cases disclaimer worker on http://127.0.0.1:{PORT}  (data: {DATA}{'' if DATA != LOCAL else ' — local only, Drive folder not found'})")
     uvicorn.run(app, host="127.0.0.1", port=PORT, log_level="warning")
