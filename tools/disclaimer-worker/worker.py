@@ -104,12 +104,16 @@ def resolve_path(p):
             p = os.path.join(base, *rest.split("/")) if rest else base
             if key == "{root}" and rest and not os.path.exists(p):
                 # Folders can sit in different Drive folders (mid-move, or another person's layout):
-                # use the first Drive folder that has this path
-                for other in drive_roots():
-                    alt = os.path.join(other, *rest.split("/"))
-                    if os.path.exists(alt):
-                        p = alt
-                        break
+                # use the Drive folder holding the most of this path, so new files (outputs) land
+                # next to their existing parent folders rather than in a fresh copy of them
+                parts = rest.split("/")
+                def depth(r):
+                    for n in range(len(parts), 0, -1):
+                        if os.path.exists(os.path.join(r, *parts[:n])):
+                            return n
+                    return 0
+                best = max([base] + drive_roots(), key=depth)   # max keeps the first on ties: the library root
+                p = os.path.join(best, *parts)
             break
     return os.path.abspath(p) if p else ""
 
