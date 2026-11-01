@@ -102,6 +102,14 @@ def resolve_path(p):
         if p.startswith(key):
             rest = p[len(key):].replace("\\", "/").lstrip("/")
             p = os.path.join(base, *rest.split("/")) if rest else base
+            if key == "{root}" and rest and not os.path.exists(p):
+                # Folders can sit in different Drive folders (mid-move, or another person's layout):
+                # use the first Drive folder that has this path
+                for other in drive_roots():
+                    alt = os.path.join(other, *rest.split("/"))
+                    if os.path.exists(alt):
+                        p = alt
+                        break
             break
     return os.path.abspath(p) if p else ""
 
@@ -119,7 +127,7 @@ def portable_path(p):
     p = (p or "").strip()
     if not p or p.startswith("{root}") or p.startswith("{data}"):
         return p
-    for key, base in (("{data}", DATA), ("{root}", library_root())):
+    for key, base in [("{data}", DATA), ("{root}", library_root())] + [("{root}", r) for r in drive_roots()]:
         if _under(p, base):
             rest = os.path.abspath(p)[len(os.path.abspath(base).rstrip("\\/")):].replace("\\", "/").lstrip("/")
             return f"{key}/{rest}" if rest else key
