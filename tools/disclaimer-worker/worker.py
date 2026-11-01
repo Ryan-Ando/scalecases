@@ -15,7 +15,7 @@ Data:    everything the tab shows (library, settings, history, jobs, staged rend
          Until Drive is available the worker falls back to that local folder and moves the data
          into the shared folder the first time it appears.
 """
-import os, sys, json, uuid, time, shutil, threading, subprocess, queue, string, platform
+import os, re, sys, json, uuid, time, shutil, threading, subprocess, queue, string, platform
 from datetime import datetime, timezone
 from fastapi import FastAPI, HTTPException, Request, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
@@ -497,6 +497,22 @@ def output_name(src_name, disc_name, tags):
     return f"{stem} - {disc_name}{ext}"
 
 
+def default_name(src_name, tags, disc_names):
+    """The default (no-state) version's name: the source name without any state tag or
+    ' - <disclaimer name>' suffix, e.g. '0424-Car PR-2-ai - lss ca.mp4' -> '0424-Car PR-2-ai.mp4'
+    and '0704-Notes PR-2-CA LSS-img.png' -> '0704-Notes PR-2-img.png'."""
+    stem, ext = os.path.splitext(src_name)
+    for n in sorted({(n or "").strip() for n in disc_names if (n or "").strip()}, key=len, reverse=True):
+        stem = re.sub(r"\s+-\s+" + re.escape(n) + r"\s*$", "", stem, flags=re.I)
+    pats = [re.escape(t.strip()).replace(r"\ ", r"[ _-]+") for t in tags if (t or "").strip()]
+    pats += [r"LSS[ _-]*[A-Z]{2}", r"[A-Z]{2}[ _-]+LSS"]
+    for pat in pats:
+        stem = re.sub(r"[ _]*(?<![A-Za-z0-9])" + pat + r"(?![A-Za-z0-9])", "", stem, flags=re.I)
+    stem = re.sub(r"\s*-\s*(?:-\s*)+", "-", stem)          # collapse the dashes a removed tag leaves
+    stem = re.sub(r"\s{2,}", " ", stem).strip(" -_")
+    return (stem or os.path.splitext(src_name)[0]) + ext
+
+
 def find_disclaimer(did):
     for d in state["disclaimers"]:
         if d["id"] == did:
@@ -704,6 +720,8 @@ async def add_disclaimer(req: Request):
         raise HTTPException(400, "a disclaimer with that name already exists")
     d = {"id": uuid.uuid4().hex[:12], "name": name, "text": text, "version": 1, "parent": portable_path(b.get("parent")),
          "versions": [{"version": 1, "text": text, "ts": now()}], "created": now(), "updated": now()}
+    if b.get("default"):
+        d["default"] = True   # the no-state version: output keeps the bare ad name
     with lock:
         state["disclaimers"].append(d); persist("disclaimers")
     return d
@@ -717,6 +735,8 @@ async def edit_disclaimer(did: str, req: Request):
             d["name"] = b["name"].strip()
         if "parent" in b:
             d["parent"] = portable_path(b["parent"])
+        if "default" in b:
+            d["default"] = bool(b["default"])
         if "text" in b:
             text = " ".join((b["text"] or "").split())
             if text and text != d["text"]:
@@ -870,7 +890,9 @@ async def sort_by_date(req: Request):
 def build_item(job_id, idx, src, parent, disc, overrides, out_name=None):
     name = os.path.basename(src)
     tags = state["settings"]["tags"]
-    out_name = out_name or output_name(name, disc["name"], tags)
+    if not out_name:
+        out_name = default_name(name, tags, [d["name"] for d in state["disclaimers"]]) if disc.get("default") \
+            else output_name(name, disc["name"], tags)
     code = date_code(name) or "unsorted"
     out_path = os.path.join(parent, state["settings"]["out_folder"], code, out_name)
     return {"job_id": job_id, "idx": idx, "src": portable_path(src), "name": name, "kind": kind_of(src), "parent": portable_path(parent),

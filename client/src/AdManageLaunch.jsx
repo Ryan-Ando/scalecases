@@ -72,9 +72,14 @@ export default function AdManageLaunch({ brand, state, picked, onUnpick, onPick,
     const stateVersion = !!file && fileState(file) === state;
     // A state with its own disclaimer can't run the default version; the default is what gets converted
     const needsVersion = !!file && ownDisclaimer && !stateVersion;
+    // Only other states' versions: any of them can be turned into the default version (the worker
+    // replaces the burned-in disclaimer), the newest disclaimer-tool output first
+    const others = g && !file ? [...g.files].sort((a, b) =>
+      Number(/\/new disclaimer\//i.test(b.relativePath)) - Number(/\/new disclaimer\//i.test(a.relativePath)) ||
+      b.relativePath.localeCompare(a.relativePath)) : [];
     const problem = !g ? 'no local file found' : !file ? `only other states' versions exist — no default or ${state} version`
       : needsVersion ? `no ${state} version yet` : '';
-    return { name, files, file, stateVersion, needsVersion, problem };
+    return { name, files, file, stateVersion, needsVersion, needsDefault: others.length > 0, source: file || others[0] || null, problem };
   }), [picked, byKey, state, fileChoice, ownDisclaimer]);
 
   // ── State versions through the local disclaimer worker (same render → review → approve flow
@@ -84,20 +89,29 @@ export default function AdManageLaunch({ brand, state, picked, onUnpick, onPick,
   const [makeErr, setMakeErr] = useState('');
   const [making, setMaking] = useState(false);
   const missing = rows.filter(r => r.needsVersion && !made[r.name]);
+  const missingDefault = rows.filter(r => r.needsDefault && !made[r.name]);
 
-  async function makeVersions(list) {
+  // kind 'state': this state's version from the default one; kind 'default': the default version
+  // (no state tag in its name) from another state's version
+  async function makeVersions(list, kind = 'state') {
     setMaking(true); setMakeErr('');
     try {
       const { disclaimers } = await w('/state');
-      const disc = disclaimers.filter(d => (d.parent || '').split(/[\\/]/).filter(Boolean).pop()?.toUpperCase() === state);
-      if (!disc.length) throw new Error(`No ${state} disclaimer saved in the Disclaimers tab library (its destination folder must end in /${state})`);
-      if (disc.length > 1) throw new Error(`More than one ${state} disclaimer in the library (${disc.map(d => d.name).join(', ')}) — use the Disclaimers tab to pick one`);
-      // The library folder that holds the state folders, e.g. {root}/2026 B2C
-      const base = disc[0].parent.replace(/[\\/]+[^\\/]+[\\/]*$/, '');
+      const lastFolder = d => (d.parent || '').split(/[\\/]/).filter(Boolean).pop() || '';
+      const disc = kind === 'default' ? disclaimers.filter(d => d.default)
+        : disclaimers.filter(d => !d.default && lastFolder(d).toUpperCase() === state);
+      const label = kind === 'default' ? 'default' : state;
+      if (!disc.length) throw new Error(kind === 'default'
+        ? 'No default disclaimer saved in the Disclaimers tab library'
+        : `No ${state} disclaimer saved in the Disclaimers tab library (its destination folder must end in /${state})`);
+      if (disc.length > 1) throw new Error(`More than one ${label} disclaimer in the library (${disc.map(d => d.name).join(', ')}) — use the Disclaimers tab to pick one`);
+      // The library folder, e.g. {root}/2026 B2C: a state disclaimer's destination is a state folder
+      // inside it; the default disclaimer's destination is the library folder itself
+      const base = kind === 'default' ? disc[0].parent.replace(/[\\/]+$/, '') : disc[0].parent.replace(/[\\/]+[^\\/]+[\\/]*$/, '');
       const job = await w('/jobs', { method: 'POST', timeout: 60000,
-        body: { files: list.map(r => `${base}/${r.file.relativePath}`), targets: [{ parent: disc[0].parent, disclaimer_id: disc[0].id }] } });
+        body: { files: list.map(r => `${base}/${r.source.relativePath}`), targets: [{ parent: disc[0].parent, disclaimer_id: disc[0].id }] } });
       setWorkerJobs(j => ({ ...j, [job.id]: job }));
-      setMade(m => ({ ...m, ...Object.fromEntries(list.map((r, idx) => [r.name, { jobId: job.id, idx }])) }));
+      setMade(m => ({ ...m, ...Object.fromEntries(list.map((r, idx) => [r.name, { jobId: job.id, idx, kind }])) }));
     } catch (e) {
       setMakeErr(/fetch|network|load failed/i.test(e.message) ? 'The disclaimer worker is not running on this computer' : e.message);
     } finally { setMaking(false); }
@@ -122,7 +136,10 @@ export default function AdManageLaunch({ brand, state, picked, onUnpick, onPick,
     return () => clearInterval(t);
   }, [approved.length]);
   useEffect(() => {   // once the library has the state version, the row is fixed: stop tracking it
-    const done = Object.keys(made).filter(n => rows.find(r => r.name === n)?.stateVersion);
+    const done = Object.keys(made).filter(n => {
+      const r = rows.find(x => x.name === n);
+      return made[n].kind === 'default' ? !!r?.file : r?.stateVersion;
+    });
     if (done.length) setMade(m => Object.fromEntries(Object.entries(m).filter(([n]) => !done.includes(n))));
   }, [rows]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -210,6 +227,11 @@ export default function AdManageLaunch({ brand, state, picked, onUnpick, onPick,
           {making ? 'Starting…' : `Make all ${missing.length} missing ${state} versions`}
         </button>
       )}
+      {missingDefault.length > 1 && (
+        <button className="btn btn--sm" style={{ marginBottom: 6, marginLeft: 6 }} disabled={making || busy} onClick={() => void makeVersions(missingDefault, 'default')}>
+          {making ? 'Starting…' : `Make all ${missingDefault.length} missing default versions`}
+        </button>
+      )}
       {makeErr && <div style={{ color: '#fb9292', marginBottom: 6 }}>{makeErr}</div>}
       {rows.map(r => {
         const item = itemFor(r.name);
@@ -226,6 +248,10 @@ export default function AdManageLaunch({ brand, state, picked, onUnpick, onPick,
                 : <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>{r.stateVersion ? `${state} disclaimer` : 'default disclaimer'}</span>}
               {r.needsVersion && !made[r.name] && (
                 <button className="btn btn--sm" disabled={making || busy} onClick={() => void makeVersions([r])}>Make {state} version</button>
+              )}
+              {r.needsDefault && !made[r.name] && (
+                <button className="btn btn--sm" disabled={making || busy} onClick={() => void makeVersions([r], 'default')}
+                  title={`From ${r.source.relativePath}: replaces its disclaimer with the default one, saved without a state tag in the name`}>Make default version</button>
               )}
               {item?.status === 'approved' && <span style={{ color: '#15803d', fontSize: 11 }}>approved — appears here within ~2 minutes</span>}
             </div>
