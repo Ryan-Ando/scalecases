@@ -31,7 +31,7 @@ Commands: `ve where` · `ve list` · `ve new <name> --title "..." [--width 1080 
    `video` (sequential clips/stills, in/out/speed/fit/volume), `overlays` (images/clips placed with x/y/w),
    `captions` (text + style; styles `caption`, `disclaimer`, `title`, or your own in `styles`), `audio`
    (VO, music beds with volume and fades). Give every item an `id` and a short `label` (shows in the timeline).
-3. `ve render <name> --note "v1: first cut"`. Look at frames yourself before telling the user
+3. `ve render <name> --note "first cut"`. Look at frames yourself before telling the user
    (`ffmpeg -ss <t> -i drafts/vN.mp4 -frames:v 1 /tmp/x.jpg`, then view): captions readable and not over faces,
    disclaimer legible, no black gaps, audio levels sane.
 4. Tell the user it's ready in the Video Edits tab with a one-line summary per version. Don't paste file paths
@@ -41,7 +41,7 @@ Commands: `ve where` · `ve list` · `ve new <name> --title "..." [--width 1080 
 When the user says they left notes / "check my notes" / at the start of any follow-up on a project:
 1. `ve notes <name>` lists open notes with id, version, timestamp and kind.
 2. **FIX** notes: change `timeline.json` (or sources) to address each one, render ONE new version covering all
-   of them (`--note "v5: moved caption off face at 0:12, music -4 dB after 0:40"`), check the frames at the noted
+   of them (`--note "moved caption off face at 0:12, music -4 dB after 0:40"`; the version number is added for you), check the frames at the noted
    times, then `ve resolve <name> <id> --reply "<what you changed, in vN>"` for each.
 3. **LESSON** notes: turn the user's words into one general, testable rule that applies to future edits (not
    just this video), e.g. "Captions never sit over a face: check the frame under each caption and move it."

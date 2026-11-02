@@ -167,7 +167,7 @@ function Project({ name, onChanged }) {
             </select>
             <span style={muted}>{fmtT(time)} / {fmtT(d.duration)}</span>
           </div>
-          {shownV?.note && <div style={{ ...muted, marginTop: 4, maxWidth: portrait ? 360 : undefined }}>v{shownV.v}: {shownV.note}</div>}
+          {shownV?.note && <div style={{ ...muted, marginTop: 4, maxWidth: portrait ? 360 : undefined }}>v{shownV.v}: {shownV.note.replace(/^v\d+:\s*/, '')}</div>}
         </div>
 
         {/* Notes */}
@@ -278,6 +278,18 @@ function Timeline({ name, tl, duration, sources, time, zoom, setZoom, notes, onS
     onSeek(Math.min(duration, Math.max(0, (e.clientX - r.left) / zoom)));
   };
   const H = 46;
+  // Items that overlap in time go on separate lines within their row
+  const laid = rows.map(([k, label, items]) => {
+    const ends = [];
+    const placed = items.map(it => {
+      const [s, e] = span(k, it);
+      let lane = ends.findIndex(end => end <= s + 1e-6);
+      if (lane < 0) { lane = ends.length; ends.push(e); } else ends[lane] = e;
+      return { it, s, e, lane };
+    });
+    const lanes = Math.max(1, ends.length);
+    return { k, label, placed, lanes, h: lanes === 1 ? H : lanes * 26 };
+  });
 
   return (
     <div style={{ ...box, marginTop: 14, padding: '8px 0 10px' }}>
@@ -290,7 +302,7 @@ function Timeline({ name, tl, duration, sources, time, zoom, setZoom, notes, onS
       </div>
       <div style={{ display: 'flex' }}>
         <div style={{ flex: '0 0 76px', paddingTop: 20 }}>
-          {rows.map(([k, label]) => <div key={k} style={{ height: H, marginBottom: 4, display: 'flex', alignItems: 'center', paddingLeft: 12, fontSize: 11, fontWeight: 700, color: ROW_COLORS[k] }}>{label}</div>)}
+          {laid.map(r => <div key={r.k} style={{ height: r.h, marginTop: 4, display: 'flex', alignItems: 'center', paddingLeft: 12, fontSize: 11, fontWeight: 700, color: ROW_COLORS[r.k] }}>{r.label}</div>)}
         </div>
         <div ref={scroller} style={{ overflowX: 'auto', flex: 1 }}>
           <div style={{ position: 'relative', width, cursor: 'pointer' }} onClick={click}>
@@ -299,20 +311,20 @@ function Timeline({ name, tl, duration, sources, time, zoom, setZoom, notes, onS
               {ticks.map(t => <span key={t} style={{ position: 'absolute', left: t * zoom, fontSize: 10, color: 'var(--text-muted)', paddingLeft: 3, borderLeft: '1px solid var(--border)', height: 20 }}>{fmtT(t).replace(/\.0$/, '')}</span>)}
               {notes.map(n => <span key={n.id} title={`${n.kind}: ${n.text}`} style={{ position: 'absolute', left: n.t * zoom - 5, top: 6, width: 10, height: 10, borderRadius: 5, background: n.kind === 'lesson' ? '#a855f7' : n.status === 'open' ? '#ef4444' : '#9ca3af' }} />)}
             </div>
-            {rows.map(([k, , items]) => (
-              <div key={k} style={{ position: 'relative', height: H, marginTop: 4 }}>
-                {items.map((it, i) => {
-                  const [s, e] = span(k, it);
+            {laid.map(({ k, placed, lanes, h }) => (
+              <div key={k} style={{ position: 'relative', height: h, marginTop: 4 }}>
+                {placed.map(({ it, s, e, lane }, i) => {
                   const left = s * zoom, wpx = Math.max(3, (e - s) * zoom);
+                  const laneH = h / lanes;
                   const thumb = (k === 'video' || k === 'overlays') && it.src
                     ? `${WORKER_URL}/edits/${enc(name)}/thumb?src=${enc(it.src)}&t=${(it.in || 0) + 0.1}` : null;
                   const missing = it.src && sources[it.src] && !sources[it.src].exists;
                   return (
                     <div key={it.id || i} title={`${it.label || it.text || it.src || ''}\n${fmtT(s)} → ${fmtT(e)}${missing ? '\nFILE MISSING' : ''}`}
-                      style={{ position: 'absolute', left, width: wpx, top: 0, bottom: 0, borderRadius: 5, overflow: 'hidden',
+                      style={{ position: 'absolute', left, width: wpx, top: lane * laneH, height: laneH - (lanes > 1 ? 2 : 0), borderRadius: 5, overflow: 'hidden',
                         background: missing ? '#7f1d1d' : `${ROW_COLORS[k]}33`, border: `1px solid ${ROW_COLORS[k]}`, boxSizing: 'border-box' }}>
                       {thumb && <img src={thumb} alt="" loading="lazy" style={{ height: '100%', float: 'left', marginRight: 4, opacity: 0.9 }} />}
-                      {k === 'audio' && it.src && <Wave name={name} src={it.src} start={it.in || 0} seconds={e - s} width={wpx} height={H - 2} color={ROW_COLORS.audio} />}
+                      {k === 'audio' && it.src && <Wave name={name} src={it.src} start={it.in || 0} seconds={e - s} width={wpx} height={laneH - 2} color={ROW_COLORS.audio} />}
                       <span style={{ position: 'relative', fontSize: 10, padding: '2px 4px', whiteSpace: 'nowrap', color: 'var(--text)', textShadow: '0 0 3px var(--surface)' }}>
                         {it.label || it.text || (it.src || '').split('/').pop()}
                       </span>
