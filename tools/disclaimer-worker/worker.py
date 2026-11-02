@@ -26,8 +26,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import disclaimer_image as dimg
 import disclaimer_video as dvid
 import library_helper
+import edits_routes
 
-VERSION = 4
+VERSION = 5   # 5: Video Edits routes
 PORT = int(os.environ.get("SC_DISCLAIMER_PORT") or 43128)
 LIBRARY_PORT = int(os.environ.get("SC_LIBRARY_PORT") or 43127)     # creative library for Ads Tracking / Relaunch; 0 = off
 ORIGINS = ["https://scalecases-client.onrender.com", "http://localhost:5173", "http://127.0.0.1:5173"]
@@ -660,6 +661,7 @@ def creative_root():
 
 
 creative_library = library_helper.Library(creative_root, ORIGINS, port=LIBRARY_PORT)
+app.include_router(edits_routes.make_router(os.path.join(LOCAL, "edit-cache")))
 
 
 @app.get("/health")

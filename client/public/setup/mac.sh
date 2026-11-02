@@ -34,10 +34,15 @@ BREW_BIN="$(brew --prefix)/bin"
 say "Downloading the latest helper..."
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 curl -fsSL "$REPO_ZIP" -o "$TMP/sc.zip"
-unzip -q "$TMP/sc.zip" "scalecases-main/tools/disclaimer-worker/*" -d "$TMP"
+unzip -q "$TMP/sc.zip" "scalecases-main/tools/disclaimer-worker/*" "scalecases-main/tools/video-editor-skill/*" -d "$TMP"
 mkdir -p "$APP" "$LOGS" "$HOME/Library/LaunchAgents"
 rm -rf "$APP/app.new"; mv "$TMP/scalecases-main/tools/disclaimer-worker" "$APP/app.new"
 rm -rf "$APP/app.old"; [ -d "$APP/app" ] && mv "$APP/app" "$APP/app.old"; mv "$APP/app.new" "$APP/app"; rm -rf "$APP/app.old"
+# Claude Code's video-editor skill (Video Edits tab), when Claude Code is used on this Mac
+if [ -d "$HOME/.claude" ]; then
+  mkdir -p "$HOME/.claude/skills/video-editor"
+  cp "$TMP/scalecases-main/tools/video-editor-skill/SKILL.md" "$HOME/.claude/skills/video-editor/SKILL.md"
+fi
 
 # 4. Python packages in the helper's own environment
 say "Installing Python packages..."

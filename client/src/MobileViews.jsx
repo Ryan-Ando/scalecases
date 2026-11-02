@@ -200,13 +200,13 @@ export function MobileRelaunch({ recommendations, adsetsByGroup, loading, onRefr
   );
 }
 
-export function MobileDisclaimers() {
+export function MobileDisclaimers({ what = 'Disclaimers' }) {
   return (
     <div style={page}>
-      <div style={title}>Disclaimers</div>
+      <div style={title}>{what}</div>
       <div style={{ ...card, padding: 14, marginTop: 10, fontSize: 13, lineHeight: 1.5 }}>
-        Disclaimer versions are rendered and reviewed on a computer running the Scale Cases Helper (it reads the ad files
-        from Google Drive and runs the video tools). Open this page on your Mac or PC to make or review versions.
+        {what} runs on a computer with the Scale Cases Helper (it reads the files from Google Drive and runs the video
+        tools). Open this page on your Mac or PC.
       </div>
     </div>
   );

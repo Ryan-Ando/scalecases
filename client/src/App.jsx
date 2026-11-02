@@ -8,6 +8,7 @@ import AdsTracking from './AdsTracking.jsx';
 import SpendSheet from './SpendSheet.jsx';
 import Relaunch from './Relaunch.jsx';
 import Disclaimers from './Disclaimers.jsx';
+import VideoEdits from './VideoEdits.jsx';
 import NicheTracking from './NicheTracking.jsx';
 import NicheSpend from './NicheSpend.jsx';
 import { isLaw, NICHE_LABEL } from './niche.js';
@@ -18,6 +19,7 @@ const AdsTrackingTab = memo(AdsTracking);
 const SpendSheetTab  = memo(SpendSheet);
 const RelaunchTab    = memo(Relaunch);
 const DisclaimersTab = memo(Disclaimers);
+const VideoEditsTab = memo(VideoEdits);
 const NicheTrackingTab = memo(NicheTracking);
 const NicheSpendTab    = memo(NicheSpend);
 
@@ -28,7 +30,7 @@ function Logo() {
 // Only the tabs in active use — Kill Analysis, Angle Matrix, State Variations,
 // CPL Tracker and Lead Reports are hidden (components still exist in the repo)
 // The insurance niche sites (term, fex) are barebones: their own Ads Tracking and Spend Sheet
-const TABS = isLaw ? ['Ads Tracking', 'Spend Sheet', 'Relaunch', 'Disclaimers'] : ['Ads Tracking', 'Spend Sheet'];
+const TABS = isLaw ? ['Ads Tracking', 'Spend Sheet', 'Relaunch', 'Disclaimers', 'Video Edits'] : ['Ads Tracking', 'Spend Sheet'];
 
 // The active tab lives in the URL hash (#spend-sheet) so each browser tab keeps its own
 // page across refreshes; localStorage only supplies a default for a fresh window.
@@ -113,6 +115,7 @@ export default function App() {
         {ready && mounted.has('Spend Sheet')  && <div style={show('Spend Sheet')}>{isLaw ? <SpendSheetTab /> : <NicheSpendTab />}</div>}
         {ready && mounted.has('Relaunch')     && <div style={show('Relaunch')}><RelaunchTab /></div>}
         {ready && mounted.has('Disclaimers')  && <div style={show('Disclaimers')}>{mobile ? <MobileDisclaimers /> : <DisclaimersTab />}</div>}
+        {ready && mounted.has('Video Edits')  && <div style={show('Video Edits')}>{mobile ? <MobileDisclaimers what="Video Edits" /> : <VideoEditsTab />}</div>}
       </main>
       <footer style={{ textAlign: 'center', padding: '12px 0', fontSize: 11, color: 'var(--text-muted)', borderTop: '1px solid var(--border)' }}>
         <a href="/privacy-policy.html" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--text-muted)', textDecoration: 'underline' }}>

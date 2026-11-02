@@ -51,6 +51,13 @@ Start-Sleep -Seconds 1
 $AppDir = Join-Path $App 'app'
 if (Test-Path $AppDir) { Remove-Item -Recurse -Force $AppDir }
 Move-Item (Join-Path $Tmp 'scalecases-main\tools\disclaimer-worker') $AppDir
+# Claude Code's video-editor skill (Video Edits tab), when Claude Code is used on this PC
+$ClaudeDir = Join-Path $env:USERPROFILE '.claude'
+if (Test-Path $ClaudeDir) {
+  $SkillDir = Join-Path $ClaudeDir 'skills\video-editor'
+  New-Item -ItemType Directory -Force -Path $SkillDir | Out-Null
+  Copy-Item (Join-Path $Tmp 'scalecases-main\tools\video-editor-skill\SKILL.md') (Join-Path $SkillDir 'SKILL.md') -Force
+}
 Remove-Item -Recurse -Force $Tmp -ErrorAction SilentlyContinue
 
 # 5. Python packages in the helper's own environment
