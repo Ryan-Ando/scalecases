@@ -1,4 +1,5 @@
 import { useState, useEffect, memo } from 'react';
+import { LAUNCH_EVENT } from './launchBus.js';
 import './App.css';
 import { initialSync, useSyncStatus } from './sync.js';
 import AdsTracking from './AdsTracking.jsx';
@@ -51,6 +52,13 @@ export default function App() {
     localStorage.setItem('activeTab', t);
     if (pushHistory && window.location.hash !== `#${slugOf(t)}`) window.history.pushState(null, '', `#${slugOf(t)}`);
   }
+  // "Launch…" on an Ads Tracking row opens the Relaunch tab's Launch any ad panel
+  useEffect(() => {
+    if (!TABS.includes('Relaunch')) return;
+    const open = () => switchTab('Relaunch');
+    window.addEventListener(LAUNCH_EVENT, open);
+    return () => window.removeEventListener(LAUNCH_EVENT, open);
+  }, []);
   // Make sure the URL carries the tab from the first paint, and follow back/forward navigation
   useEffect(() => {
     if (!window.location.hash) window.history.replaceState(null, '', `#${slugOf(initialTab)}`);

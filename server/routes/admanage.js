@@ -81,6 +81,22 @@ function templateKey(name) {
   return st ? `${extractBrand(name)} ${st}` : null;
 }
 
+// GET /api/admanage/groups — every brand + state AdManage can launch into: those with a copy
+// template, with how many of their campaigns are live (the "Launch any ad" panel's choices)
+router.get('/groups', async (req, res) => {
+  try {
+    const d = await directory(req.query.refresh === '1');
+    const groups = new Map();
+    const at = key => groups.get(key) || groups.set(key, { brand: key.split(' ')[0], state: key.split(' ').slice(-1)[0], templates: 0, liveCampaigns: 0 }).get(key);
+    for (const t of d.templates) { const k = templateKey(t.name); if (k) at(k).templates++; }
+    for (const c of d.campaigns) {
+      const k = templateKey(c.campaignName);
+      if (k && groups.has(k) && c.status === 'ACTIVE') at(k).liveCampaigns++;
+    }
+    res.json([...groups.values()].sort((a, b) => a.brand.localeCompare(b.brand) || a.state.localeCompare(b.state)));
+  } catch (e) { res.status(502).json({ error: e.message }); }
+});
+
 // GET /api/admanage/setup?brand=LSS&state=CO — campaigns and copy templates for one group
 router.get('/setup', async (req, res) => {
   try {

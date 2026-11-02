@@ -1,7 +1,8 @@
 import CreativeLibrary, { CreativePreview } from './CreativeLibrary.jsx';
 import AdManageLaunch from './AdManageLaunch.jsx';
+import LaunchAnywhere from './LaunchAnywhere.jsx';
 import { useCreativeLibrary } from './useCreativeLibrary.js';
-import { groupLibrary, prependUntested } from './creativeMatching.js';
+import { groupLibrary, prependUntested, creativeKey } from './creativeMatching.js';
 import { useState, useEffect, useMemo } from 'react';
 import { dbGetAll, dbGetMeta } from './db.js';
 import { lsSet } from './sync.js';
@@ -256,6 +257,19 @@ export default function Relaunch() {
     return map;
   }, [windowAds, deletedAds, memberToCanonical]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // The same evidence keyed by creative (brand|creativeKey|state), for the Launch any ad panel
+  const statsByCreative = useMemo(() => {
+    const map = new Map();
+    for (const [key, v] of windowAgg) {
+      const [brand, name, st] = key.split('|');
+      const k = `${brand}|${creativeKey(name)}|${st}`;
+      const cell = map.get(k) || { leads: 0, spend: 0 };
+      cell.leads += v.leads; cell.spend += v.spend;
+      map.set(k, cell);
+    }
+    return map;
+  }, [windowAgg]);
+
   // Cases per ad|state (sheet cases attributed by utm_content; LSS business only)
   const caseAgg = useMemo(() => {
     const ghlByPhone = {};
@@ -443,6 +457,8 @@ export default function Relaunch() {
         <strong> NEW</strong> = never run in that state (proven elsewhere) · <strong>RELAUNCH</strong> = did well there, dormant ≥{reuseMonths} mo ·
         "Last used" shows <strong>Never – 0</strong> or <strong>date – leads it got in that state</strong>
       </div>
+
+      <LaunchAnywhere library={library} groups={localGroups} stats={statsByCreative} since={LEAD_CUTOFF} />
 
       {error && <div style={{ fontSize: 12, color: '#fb9292', padding: '10px 14px', background: 'rgba(220,38,38,0.06)', border: '1px solid #dc2626', borderRadius: 8, marginBottom: 14 }}>{error}</div>}
 

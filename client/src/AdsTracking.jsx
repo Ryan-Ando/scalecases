@@ -1,4 +1,5 @@
 import CreativeLibrary from './CreativeLibrary.jsx';
+import { requestLaunch } from './launchBus.js';
 import { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import {
@@ -2488,6 +2489,13 @@ export default function AdsTracking() {
                               title="Sync all-time daily data for this ad"
                             >
                               ↻
+                            </button>
+                            <button
+                              className="ad-row-sync-btn"
+                              onClick={e => { e.stopPropagation(); requestLaunch(adName); }}
+                              title="Launch this ad in any state (opens Launch any ad on the Relaunch tab)"
+                            >
+                              🚀
                             </button>
                             <button
                               className="ad-row-delete-btn"
