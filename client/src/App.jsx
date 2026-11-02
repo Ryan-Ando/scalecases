@@ -1,5 +1,7 @@
 import { useState, useEffect, memo } from 'react';
 import { LAUNCH_EVENT } from './launchBus.js';
+import { useIsMobile } from './useIsMobile.js';
+import { MobileDisclaimers } from './MobileViews.jsx';
 import './App.css';
 import { initialSync, useSyncStatus } from './sync.js';
 import AdsTracking from './AdsTracking.jsx';
@@ -40,6 +42,7 @@ export default function App() {
     return tabFromHash() || (TABS.includes(saved) ? saved : 'Ads Tracking');
   })();
   const [tab, setTab] = useState(initialTab);
+  const mobile = useIsMobile();
   const [mounted, setMounted] = useState(new Set([initialTab]));
   // Pull shared state from the server before any tab mounts (tabs read local storage at mount)
   const [ready, setReady] = useState(false);
@@ -93,6 +96,7 @@ export default function App() {
             : sync.persistent ? '● Shared across devices' : '● Shared (server disk not persistent!)'}
         </span>
         <span
+          className="meta-badge"
           title="Meta Marketing API · ads_read · authenticated via System User Token stored encrypted server-side. No end-user Facebook Login is used."
           style={{
             marginLeft: 16, fontSize: 11, padding: '4px 10px',
@@ -108,7 +112,7 @@ export default function App() {
         {ready && mounted.has('Ads Tracking') && <div style={show('Ads Tracking')}>{isLaw ? <AdsTrackingTab /> : <NicheTrackingTab />}</div>}
         {ready && mounted.has('Spend Sheet')  && <div style={show('Spend Sheet')}>{isLaw ? <SpendSheetTab /> : <NicheSpendTab />}</div>}
         {ready && mounted.has('Relaunch')     && <div style={show('Relaunch')}><RelaunchTab /></div>}
-        {ready && mounted.has('Disclaimers')  && <div style={show('Disclaimers')}><DisclaimersTab /></div>}
+        {ready && mounted.has('Disclaimers')  && <div style={show('Disclaimers')}>{mobile ? <MobileDisclaimers /> : <DisclaimersTab />}</div>}
       </main>
       <footer style={{ textAlign: 'center', padding: '12px 0', fontSize: 11, color: 'var(--text-muted)', borderTop: '1px solid var(--border)' }}>
         <a href="/privacy-policy.html" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--text-muted)', textDecoration: 'underline' }}>

@@ -1,6 +1,8 @@
 import CreativeLibrary, { CreativePreview } from './CreativeLibrary.jsx';
 import AdManageLaunch from './AdManageLaunch.jsx';
 import LaunchAnywhere from './LaunchAnywhere.jsx';
+import { MobileRelaunch } from './MobileViews.jsx';
+import { useIsMobile } from './useIsMobile.js';
 import { useCreativeLibrary } from './useCreativeLibrary.js';
 import { groupLibrary, prependUntested, creativeKey } from './creativeMatching.js';
 import { useState, useEffect, useMemo } from 'react';
@@ -107,6 +109,7 @@ function scoreCandidate({ leads, cpl, cases }) {
 
 export default function Relaunch() {
   const library = useCreativeLibrary();
+  const mobile = useIsMobile();
   const [allAds, setAllAds]           = useState([]);
   const [windowAds, setWindowAds]     = useState([]);
   const [deletedAds, setDeletedAds]   = useState(new Set());
@@ -427,6 +430,8 @@ export default function Relaunch() {
   const thL = { ...th, textAlign: 'left' };
   const td = { padding: '7px 10px', fontSize: 12, textAlign: 'right', borderBottom: '1px solid var(--border)', whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' };
   const tdL = { ...td, textAlign: 'left', whiteSpace: 'normal' };
+
+  if (mobile) return <MobileRelaunch recommendations={recommendations} adsetsByGroup={adsetsByGroup} loading={loading} onRefresh={load} error={error} />;
 
   return (
     <div style={{ padding: '24px 28px' }}>

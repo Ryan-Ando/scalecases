@@ -1,4 +1,6 @@
 import { countLiveAdsetsByType } from './liveAdsets.js';
+import { MobileSpendTop } from './MobileViews.jsx';
+import { useIsMobile } from './useIsMobile.js';
 import { pacingWindows } from './pacingWindows.js';
 import { useState, useEffect, useMemo, useRef, Fragment } from 'react';
 import { dbGetAll, dbUpsert } from './db.js';
@@ -154,6 +156,7 @@ export default function SpendSheet() {
   const [insights, setInsights]     = useState([]);
   const [adsetsLoaded, setAdsetsLoaded] = useState(false);
   const [adsets, setAdsets]         = useState([]);
+  const mobile = useIsMobile();
   const [loadingBudget, setLoadingBudget] = useState(false);
   const [budgetError, setBudgetError] = useState('');
   const [loading, setLoading]       = useState(true);
@@ -581,7 +584,15 @@ export default function SpendSheet() {
   const pTdEdit = { ...pTd, padding: '4px 8px', minWidth: 110 };
 
   return (
-    <div style={{ padding: '24px 28px' }}>
+    <div style={{ padding: mobile ? '0 0 16px' : '24px 28px' }}>
+      {mobile ? (
+        <MobileSpendTop monthLabel={`${MONTH_NAMES[viewMonth].slice(0, 3)} ${viewYear}`} onPrev={prevMonth} onNext={nextMonth}
+          onRefresh={() => { loadFromDB(); fetchAdsets(true); }}
+          budgetGroups={groupByBrand(budgetStates)} budgetByState={budgetByState} totalDaily={totalDailyBudget}
+          budgetLoading={loadingBudget} budgetError={budgetError}
+          pacingGroups={groupByBrand(pacingRows.map(r => r.st)).map(([brand]) => [brand, pacingRows.filter(r => brandOf(r.st) === brand)])}
+          liveAdsets={liveAdsets} countsReady={countsReady} pacingLoading={pacingLoading} onFetchSpend={fetchPacingSpend} stateLabel={stateLabel} />
+      ) : (<>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 20, flexWrap: 'wrap' }}>
         <div style={{ fontSize: 20, fontWeight: 700, color: 'var(--text)' }}>Spend Sheet</div>
 
@@ -922,7 +933,10 @@ export default function SpendSheet() {
         </div>
 
 
+      </>)}
+
       {/* ── Daily spend grid ─────────────────────────────────────────────── */}
+      <div style={mobile ? { padding: '0 12px' } : undefined}>
       {loading ? (
         <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>Loading…</div>
       ) : states.length === 0 ? (
@@ -932,7 +946,7 @@ export default function SpendSheet() {
       ) : (
         <>
           <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 8 }}>
-            Drag column headers to reorder · order saves automatically
+            {mobile ? <strong style={{ fontSize: 13, color: 'var(--text)' }}>Daily spend</strong> : 'Drag column headers to reorder · order saves automatically'}
           </div>
           <div style={{ overflowX: 'auto', overflowY: 'auto', maxHeight: 'calc(100vh - 200px)', border: '1px solid var(--border)', borderRadius: 10 }}>
             <table style={{ borderCollapse: 'collapse', width: '100%' }}>
@@ -1014,6 +1028,8 @@ export default function SpendSheet() {
           </div>
         </>
       )}
+      </div>
+
       {/* ── Spend detail modal ───────────────────────────────────────────── */}
       {spendDetailModal && (() => {
         const st       = spendDetailModal;

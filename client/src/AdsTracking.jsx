@@ -1,5 +1,7 @@
 import CreativeLibrary from './CreativeLibrary.jsx';
 import { requestLaunch } from './launchBus.js';
+import { MobileTracking } from './MobileViews.jsx';
+import { useIsMobile } from './useIsMobile.js';
 import { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import {
@@ -849,6 +851,7 @@ function AdDetailModal({ adName, state, allAds, sheetByName, accountLabel, merge
 // ── Main Component ────────────────────────────────────────────────────────────
 export default function AdsTracking() {
   // Persistent data
+  const mobile = useIsMobile();
   const [allDailyInsights, setAllDailyInsights] = useState([]);
   const [allAds, setAllAds]                     = useState([]);
   const [lastSync, setLastSync]                 = useState(null);
@@ -2011,6 +2014,13 @@ export default function AdsTracking() {
   }, [activeAds, adNames, states, leadsMap, spendGrid, caseGrid, rangeStart, rangeEnd, chartPeriod]);
 
   // ── Render ──────────────────────────────────────────────────────────────────
+  if (mobile) return (
+    <MobileTracking adNames={visibleAdNames} grid={grid} states={states} stateLabel={accountLabel}
+      createdOf={name => firstCreated[memberToCanonical[name] || name]}
+      leadsSince={rangeAds ? `${rangeStart} to ${rangeEnd}` : leadCutoffEnabled ? leadCutoffDate : 'all time'}
+      lastSync={lastSync ? timeAgo(lastSync) : null} syncing={syncing} onSync={() => sync(false)} loading={leadCutoffLoading} />
+  );
+
   return (
     <div style={{ padding: '0 24px', boxSizing: 'border-box' }}>
       {/* Header */}
