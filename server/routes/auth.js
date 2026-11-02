@@ -23,6 +23,12 @@ function tokenOk(req) {
   return crypto.timingSafeEqual(got, crypto.createHash('sha256').update(makeToken(expected)).digest());
 }
 
+// For the server's calls to its own /api (the Telegram digest reads /api/facebook/* this way)
+export function internalAuthHeaders() {
+  const pw = process.env.APP_PASSWORD;
+  return pw ? { Authorization: `Bearer ${makeToken(pw)}` } : {};
+}
+
 // Calls from outside a browser can't log in; they keep working without the token
 const PUBLIC = ['/auth/', '/digest/telegram', '/hyros/webhook'];
 

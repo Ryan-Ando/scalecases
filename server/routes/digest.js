@@ -12,6 +12,7 @@ import {
   runPrefetch, getPrefetchStatus,
 } from './facebook.js';
 import { runIncrementalNextSteps, getAuthClient, SHEET_ID, EVENTS_TAB } from './hyros.js';
+import { internalAuthHeaders } from './auth.js';
 
 const router = Router();
 const FB_API = 'https://graph.facebook.com/v19.0';
@@ -77,7 +78,7 @@ function accountRank(name) {
 // Adset metadata (names, status, budgets). force bypasses the 2h server cache
 // so a digest never judges "active" from stale statuses.
 async function getAdsetMeta(force = false, strict = false) {
-  const r = await fetch(`http://127.0.0.1:${process.env.PORT || 3001}/api/facebook/adsets?metadata_only=true${force ? '&force=true' : ''}`);
+  const r = await fetch(`http://127.0.0.1:${process.env.PORT || 3001}/api/facebook/adsets?metadata_only=true${force ? '&force=true' : ''}`, { headers: internalAuthHeaders() });
   if (!r.ok) throw new Error(`adsets meta: ${r.status}`);
   if (strict && (r.headers.get('X-FB-Failed-Accounts') || r.headers.get('X-Stale-Minutes'))) throw new Error('Facebook adset metadata incomplete or stale');
   return r.json();
@@ -526,7 +527,7 @@ async function buildSpendView() {
     }
   }
   for (const { since, until, groups } of windows.values()) {
-    const r = await fetch(`http://127.0.0.1:${process.env.PORT || 3001}/api/facebook/campaign-spend?since=${since}&until=${until}`);
+    const r = await fetch(`http://127.0.0.1:${process.env.PORT || 3001}/api/facebook/campaign-spend?since=${since}&until=${until}`, { headers: internalAuthHeaders() });
     if (!r.ok) throw new Error(`campaign-spend ${since}: ${r.status}`);
     if (r.headers.get('X-FB-Failed-Accounts') || r.headers.has('X-Stale-Minutes')) throw new Error('Pacing spend is incomplete or stale');
     for (const c of await r.json()) {
