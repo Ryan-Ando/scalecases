@@ -9,6 +9,7 @@ import { Router } from 'express';
 import fetch from 'node-fetch';
 import crypto from 'crypto';
 import { extractState, extractBrand } from './sheets.js';
+import { libraryFile } from './drive.js';
 
 const router = Router();
 const API = 'https://api.admanage.ai';
@@ -113,25 +114,39 @@ router.get('/setup', async (req, res) => {
 
 // POST /api/admanage/upload?fileName=x.mp4 — raw file body, relayed to AdManage's media
 // storage (the browser can't: the storage refuses cross-origin uploads and the proxy needs the key)
+async function storeMedia(name, body, size, contentType) {
+  const dot = name.lastIndexOf('.');
+  // AdManage stores by file name; a suffix keeps a re-upload from replacing a live ad's media
+  const stored = `${dot > 0 ? name.slice(0, dot) : name}_${crypto.randomBytes(4).toString('hex')}${dot > 0 ? name.slice(dot) : ''}`;
+  const slot = await am('/v1/media/get-upload-url', { method: 'POST', body: { fileName: stored } });
+  const put = await fetch(slot.url, {
+    method: 'PUT', body,
+    headers: { 'Content-Type': contentType || 'application/octet-stream', 'Content-Length': String(size) },
+  });
+  if (!put.ok) throw new Error(`storage upload failed (${put.status})`);
+  await am('/v1/media/confirm-upload', { method: 'POST', body: { url: slot.publicUrl, fileName: stored } });
+  if (/\.(mp4|mov|m4v|webm)$/i.test(stored)) {
+    am('/v1/media/generate-thumbnail', { method: 'POST', body: { url: slot.publicUrl } }).catch(() => {});
+  }
+  return slot.publicUrl;
+}
+
 router.post('/upload', async (req, res) => {
   try {
     const name = String(req.query.fileName || '').trim();
     const size = parseInt(req.headers['content-length'], 10);
     if (!name || !size) return res.status(400).json({ error: 'fileName and a file body are required' });
-    const dot = name.lastIndexOf('.');
-    // AdManage stores by file name; a suffix keeps a re-upload from replacing a live ad's media
-    const stored = `${dot > 0 ? name.slice(0, dot) : name}_${crypto.randomBytes(4).toString('hex')}${dot > 0 ? name.slice(dot) : ''}`;
-    const slot = await am('/v1/media/get-upload-url', { method: 'POST', body: { fileName: stored } });
-    const put = await fetch(slot.url, {
-      method: 'PUT', body: req,
-      headers: { 'Content-Type': req.headers['content-type'] || 'application/octet-stream', 'Content-Length': String(size) },
-    });
-    if (!put.ok) throw new Error(`storage upload failed (${put.status})`);
-    await am('/v1/media/confirm-upload', { method: 'POST', body: { url: slot.publicUrl, fileName: stored } });
-    if (/\.(mp4|mov|m4v|webm)$/i.test(stored)) {
-      am('/v1/media/generate-thumbnail', { method: 'POST', body: { url: slot.publicUrl } }).catch(() => {});
-    }
-    res.json({ url: slot.publicUrl });
+    res.json({ url: await storeMedia(name, req, size, req.headers['content-type']) });
+  } catch (e) { res.status(502).json({ error: e.message }); }
+});
+
+// POST /api/admanage/upload-drive?id=<library file id> — the same, straight from the Drive
+// library (server to server), for browsers without the local helper
+router.post('/upload-drive', async (req, res) => {
+  try {
+    const f = await libraryFile(String(req.query.id || ''));
+    if (!f.size) throw new Error('Drive did not report the file size');
+    res.json({ url: await storeMedia(f.name, f.stream, f.size, f.type) });
   } catch (e) { res.status(502).json({ error: e.message }); }
 });
 

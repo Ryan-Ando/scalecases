@@ -170,10 +170,15 @@ export default function AdManageLaunch({ brand, state, picked, onUnpick, onPick,
     try {
       for (const a of ads) {
         note(`Uploading ${fileName(a.file)}…`);
-        const blob = await (await fetch(`${LOCAL_LIBRARY_URL}/preview/${a.file.id}`, { targetAddressSpace: 'loopback' })).blob();
-        const up = await api(`/upload?fileName=${encodeURIComponent(fileName(a.file))}`, {
-          method: 'POST', body: blob, headers: { 'Content-Type': blob.type || 'application/octet-stream' },
-        });
+        // From this computer's helper through the browser, or server to server from Google Drive
+        const up = library.source === 'local'
+          ? await (async () => {
+            const blob = await (await fetch(`${LOCAL_LIBRARY_URL}/preview/${a.file.id}`, { targetAddressSpace: 'loopback' })).blob();
+            return api(`/upload?fileName=${encodeURIComponent(fileName(a.file))}`, {
+              method: 'POST', body: blob, headers: { 'Content-Type': blob.type || 'application/octet-stream' },
+            });
+          })()
+          : await api(`/upload-drive?id=${encodeURIComponent(a.file.id)}`, { method: 'POST' });
         a.mediaUrl = up.url;
       }
       note('Creating ad sets and the draft…');
@@ -244,7 +249,7 @@ export default function AdManageLaunch({ brand, state, picked, onUnpick, onPick,
                 {r.files.map(f => <option key={f.id} value={f.id}>{f.relativePath}{fileState(f) ? '' : ' (default)'}</option>)}
               </select>}
               {r.problem
-                ? <span style={{ color: '#fb9292' }}>{r.problem}{r.problem === 'no local file found' && !library.connected ? ' (connect the local creative library)' : ''}</span>
+                ? <span style={{ color: '#fb9292' }}>{r.problem}{r.problem === 'no local file found' && !library.connected ? ' (creative library not connected)' : ''}</span>
                 : <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>{r.stateVersion ? `${state} disclaimer` : 'default disclaimer'}</span>}
               {r.needsVersion && !made[r.name] && (
                 <button className="btn btn--sm" disabled={making || busy} onClick={() => void makeVersions([r])}>Make {state} version</button>
@@ -272,7 +277,7 @@ export default function AdManageLaunch({ brand, state, picked, onUnpick, onPick,
           {busy ? 'Saving…' : `Save ${rows.length || ''} as AdManage draft`}
         </button>
         <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>
-          {!campaign ? 'Check a campaign. ' : ''}{!template ? 'No copy template. ' : ''}{!library.connected ? 'Local creative library not connected. ' : ''}{rows.some(r => r.problem) ? 'Fix or remove the ads marked in red. ' : ''}
+          {!campaign ? 'Check a campaign. ' : ''}{!template ? 'No copy template. ' : ''}{!library.connected ? 'Creative library not connected. ' : ''}{rows.some(r => r.problem) ? 'Fix or remove the ads marked in red. ' : ''}
         </span>
       </div>
       {log.length > 0 && <div style={{ marginTop: 8, lineHeight: 1.5 }}>{log.map((l, i) => <div key={i}>{l}</div>)}</div>}

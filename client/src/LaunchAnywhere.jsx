@@ -157,7 +157,7 @@ export default function LaunchAnywhere({ library, groups, stats, since }) {
             <div key={g.key}><button className="btn btn--sm" style={{ marginTop: 2 }} onClick={() => { addAds([g.name]); setQuery(''); }}>+ {g.name}</button></div>
           ))}
         </div>
-        {!library.connected && <span style={{ color: '#fb9292' }}>Local creative library not connected.</span>}
+        {!library.connected && <span style={{ color: '#fb9292' }}>Creative library not connected.</span>}
       </div>
       {note && <div style={{ color: '#f2bd65', marginBottom: 6 }}>{note}</div>}
 

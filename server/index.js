@@ -25,10 +25,10 @@ app.use('/api/state', stateRoutes);
 // on import (digest.js claims the Telegram bot's webhook), and none apply to those accounts.
 let startSchedules = () => {};
 if (isLaw) {
-  const [sheets, ghl, chat, reports, launcher, variations, hyros, snapshots, digest, admanage] = await Promise.all([
+  const [sheets, ghl, chat, reports, launcher, variations, hyros, snapshots, digest, admanage, drive] = await Promise.all([
     import('./routes/sheets.js'), import('./routes/ghl.js'), import('./routes/chat.js'), import('./routes/reports.js'),
     import('./routes/launcher.js'), import('./routes/variations.js'), import('./routes/hyros.js'),
-    import('./routes/snapshots.js'), import('./routes/digest.js'), import('./routes/admanage.js'),
+    import('./routes/snapshots.js'), import('./routes/digest.js'), import('./routes/admanage.js'), import('./routes/drive.js'),
   ]);
   app.use('/api/sheets', sheets.default);
   app.use('/api/ghl', ghl.default);
@@ -40,6 +40,7 @@ if (isLaw) {
   app.use('/api/snapshots', snapshots.default);
   app.use('/api/digest', digest.default);
   app.use('/api/admanage', admanage.default);
+  app.use('/api/drive', drive.default);
   startSchedules = () => { sheets.startSpendSchedule(); digest.startCampaignCplSchedule(); };
 }
 

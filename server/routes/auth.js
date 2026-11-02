@@ -16,7 +16,10 @@ function makeToken(password) {
 function tokenOk(req) {
   const expected = process.env.APP_PASSWORD;
   if (!expected) return true; // no password set = open access
-  const got = crypto.createHash('sha256').update((req.headers.authorization || '').replace('Bearer ', '')).digest();
+  // <img>/<video> can't send headers: Drive library previews may carry the token in the URL
+  const supplied = (req.headers.authorization || '').replace('Bearer ', '')
+    || ((req.baseUrl + req.path).startsWith('/api/drive/preview/') ? String(req.query.token || '') : '');
+  const got = crypto.createHash('sha256').update(supplied).digest();
   return crypto.timingSafeEqual(got, crypto.createHash('sha256').update(makeToken(expected)).digest());
 }
 

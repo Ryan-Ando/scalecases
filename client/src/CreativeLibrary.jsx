@@ -1,11 +1,13 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { groupLibrary } from './creativeMatching.js';
-import { useCreativeLibrary, refreshLibrary, enableLocalPreviews, LOCAL_LIBRARY_URL } from './useCreativeLibrary.js';
+import { useCreativeLibrary, refreshLibrary, enableLocalPreviews, previewUrl } from './useCreativeLibrary.js';
 import HelperSetup from './HelperSetup.jsx';
+
+const BASE = import.meta.env.VITE_API_URL || 'http://localhost:3001';
 
 export function CreativePreview({ file, enabled }) {
   if (!file || !enabled) return <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{file?.kind === 'video' ? 'Video' : 'Image'}</span>;
-  const src = `${LOCAL_LIBRARY_URL}/preview/${file.id}`;
+  const src = previewUrl(file);
   return file.kind === 'video'
     ? <video key={src} crossOrigin="anonymous" src={src} controls preload="none" style={{ width: 110, height: 70, objectFit: 'contain' }} />
     : <img key={src} crossOrigin="anonymous" src={src} loading="lazy" alt={file.name} style={{ width: 110, height: 70, objectFit: 'contain' }} />;
@@ -14,6 +16,13 @@ export function CreativePreview({ file, enabled }) {
 export default function CreativeLibrary({ ads = [], merges = [], deleted = new Set() }) {
   const library = useCreativeLibrary();
   const [query, setQuery] = useState('');
+  // The server's own copy of the Drive library (used when this computer has no helper)
+  const [cloud, setCloud] = useState(null);
+  useEffect(() => {
+    let live = true;
+    fetch(`${BASE}/api/drive/status`).then(r => r.json()).then(d => live && setCloud(d)).catch(() => {});
+    return () => { live = false; };
+  }, []);
   const [limit, setLimit] = useState(30);
   const groups = useMemo(() => groupLibrary(library.files, [...ads, ...(library.evidence?.inventory.ads || [])], merges, deleted), [library.files, library.evidence, ads, merges, deleted]);
   const complete = library.connected && library.evidence?.inventory.complete && library.evidence?.inventory.historyComplete && !library.evidenceError;
@@ -21,14 +30,18 @@ export default function CreativeLibrary({ ads = [], merges = [], deleted = new S
   const filtered = fresh.filter(g => `${g.name} ${g.files.map(f => f.relativePath).join(' ')}`.toLowerCase().includes(query.toLowerCase()));
   return <section style={{ margin: '16px 0 24px', padding: 16, border: '1px solid var(--border)', borderRadius: 10 }}>
     <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-      <strong>Local creative library</strong>
-      <span style={{ fontSize: 12 }}>{library.connected ? `${library.files.length} files / ${groups.length} combined creatives` : 'Not connected'}</span>
+      <strong>Creative library</strong>
+      <span style={{ fontSize: 12 }}>{library.connected ? `${library.files.length} files / ${groups.length} combined creatives · ${library.source === 'local' ? 'from this computer' : 'from Google Drive'}` : 'Not connected'}</span>
       <button className="btn btn--sm" onClick={refreshLibrary} disabled={library.loading}>{library.loading ? 'Connecting...' : 'Connect / Refresh'}</button>
-      <label style={{ fontSize: 12 }}><input type="checkbox" checked={library.previews} onChange={enableLocalPreviews} /> Local previews</label>
+      <label style={{ fontSize: 12 }}><input type="checkbox" checked={library.previews} onChange={enableLocalPreviews} /> Previews</label>
     </div>
-    <p style={{ fontSize: 12, color: 'var(--text-muted)' }}>Automatically checks this computer every minute. Files and previews stay on this computer. New files are grouped using your existing ad combinations.</p>
+    <p style={{ fontSize: 12, color: 'var(--text-muted)' }}>The ad library in Google Drive ("ScaleCases Cloud"), read through the Scale Cases Helper when it runs on this computer, otherwise through the server. Checked every minute. New files are grouped using your existing ad combinations.</p>
     {library.error && <p role="status" style={{ fontSize: 12, color: '#f2bd65' }}>{library.error}</p>}
-    {!library.connected && !library.loading && <div style={{ color: 'var(--text-muted)', marginBottom: 8 }}><HelperSetup what="the local creative library" /></div>}
+    {cloud && <p style={{ fontSize: 12, color: cloud.ok ? 'var(--text-muted)' : '#f2bd65' }}>
+      Google Drive (for browsers without the helper): {cloud.ok ? `${cloud.files} files in "${cloud.sharedDrive}/${cloud.library}"` : cloud.error}
+      {!cloud.ok && cloud.email && <> Service account: <code style={{ userSelect: 'all' }}>{cloud.email}</code></>}
+    </p>}
+    {!library.connected && !library.loading && <div style={{ color: 'var(--text-muted)', marginBottom: 8 }}><HelperSetup what="the creative library on this computer" /></div>}
     {library.evidenceError && <p role="status" style={{ fontSize: 12, color: '#f2bd65' }}>Facebook check: {library.evidenceError}</p>}
     {library.connected && !complete && <p role="status">Facebook inventory is incomplete or still loading. New-ad recommendations are withheld until all connected accounts are checked.</p>}
     {library.files.length > 0 && <details>
