@@ -821,8 +821,10 @@ async function runDigest({ send = true, sync = true } = {}) {
   _digest.running = true;
   try {
     if (sync) {
+      // Look back as far as the digest window so a lead who converted days after
+      // opting in is still picked up (and duplicate rows inside the window get healed)
       console.log('[digest] running incremental stage-lead sync…');
-      await runIncrementalNextSteps(2);
+      await runIncrementalNextSteps(WINDOW_DAYS_BACK);
     }
     const text = await buildDigest();
     _digest.lastText = text;

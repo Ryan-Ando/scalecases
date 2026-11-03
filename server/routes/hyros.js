@@ -1886,7 +1886,7 @@ async function runBackfillFbclid(ghlContacts, append = false) {
           continue;
         }
 
-        if (append && existingKeys.has(matchedFbclid)) continue;
+        if (append && (existingKeys.has(matchedFbclid) || existingKeys.has(`email:${lead.email}`))) continue;
 
         // Attribution priority: Hyros firstSource > GHL fbc_id
         const adsetId = lead.adsetId || matchedGhl.adsetId;
@@ -1967,12 +1967,24 @@ async function runBackfillNextSteps(append = false, fromDate = START_DATE) {
     const sheets = google.sheets({ version: 'v4', auth });
     await ensureEventsTab(sheets);
 
-    // Load existing dedup keys in append mode
-    let existingKeys = new Set();
+    // Load existing rows in append mode: dedup keys (col I) → sheet row indices.
+    // A lead is identified by ANY of its fbclids or its email, not just the first fbclid:
+    // a person who clicks a second ad gets a new fbclid at the front of their click list,
+    // and keying on that alone wrote the same lead twice (seen 2026-10-30/31, LSS CO).
+    const existingKeys = new Set();
+    const keyRows = new Map();          // dedup key → [0-based sheet row index, ...]
+    const rowStamp = new Map();         // sheet row index → timestamp (col A), to keep the oldest copy
     if (append) {
       try {
-        const r = await sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: `${EVENTS_TAB}!I:I` });
-        existingKeys = new Set((r.data.values || []).flat().filter(Boolean));
+        const r = await sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: `${EVENTS_TAB}!A:J` });
+        (r.data.values || []).slice(1).forEach((row, i) => {
+          const key = (row[8] || '').trim();
+          if (!key) return;
+          existingKeys.add(key);
+          if (!keyRows.has(key)) keyRows.set(key, []);
+          keyRows.get(key).push(i + 1);
+          rowStamp.set(i + 1, row[0] || '');
+        });
       } catch { /* tab may not exist */ }
     }
 
@@ -1981,6 +1993,7 @@ async function runBackfillNextSteps(append = false, fromDate = START_DATE) {
 
     const CONCURRENCY = 10;
     const toInsert = [];
+    const doomedRows = new Set();       // duplicate rows of one lead: all but the oldest
     let nextStepsCount = 0, skippedCount = 0, noAdsetCount = 0;
 
     for (let i = 0; i < hyrosLeads.length; i += CONCURRENCY) {
@@ -2003,8 +2016,23 @@ async function runBackfillNextSteps(append = false, fromDate = START_DATE) {
         const adsetId = lead.adsetId || clickData.conversionAdsetId || clickData.adsetId || webhookAdset;
         if (!adsetId) { noAdsetCount++; continue; }
 
-        const dedupKey = clickData.fbclids[0] || `email:${lead.email}`;
-        if (append && existingKeys.has(dedupKey)) { skippedCount++; continue; }
+        // Every key this person can be known by; the row is written under the email so the
+        // identity is stable however their click list changes
+        const identityKeys = [`email:${lead.email}`, ...clickData.fbclids];
+        if (append) {
+          const matched = [...new Set(identityKeys.flatMap(k => keyRows.get(k) || []))];
+          if (matched.length) {
+            skippedCount++;
+            if (matched.length > 1) {
+              // the same lead is already in the ledger more than once: keep the oldest row
+              const keep = matched.slice().sort((a, b) => (rowStamp.get(a) || '').localeCompare(rowStamp.get(b) || ''))[0];
+              for (const idx of matched) if (idx !== keep) doomedRows.add(idx);
+            }
+            continue;
+          }
+        }
+        if (identityKeys.some(k => existingKeys.has(k))) { skippedCount++; continue; }   // inserted earlier in this run
+        const dedupKey = `email:${lead.email}`;
 
         // Date: last /next-steps click date → first /next-steps → Hyros clickDate
         const conversionDate = clickData.lastConversionDate || clickData.firstConversionDate || lead.date;
@@ -2017,7 +2045,7 @@ async function runBackfillNextSteps(append = false, fromDate = START_DATE) {
           dedupKey,
           'YES',
         ]);
-        existingKeys.add(dedupKey);
+        for (const k of identityKeys) existingKeys.add(k);
       }
 
       if ((i + CONCURRENCY) % 100 === 0) console.log(`  /next-steps backfill: checked ${Math.min(i + CONCURRENCY, hyrosLeads.length)}/${hyrosLeads.length} leads, ${nextStepsCount} real so far`);
@@ -2026,6 +2054,18 @@ async function runBackfillNextSteps(append = false, fromDate = START_DATE) {
 
     if (!append) {
       await sheets.spreadsheets.values.clear({ spreadsheetId: SHEET_ID, range: `${EVENTS_TAB}!A2:Z` });
+    }
+    // Remove duplicate rows (row-by-row deletes, highest index first, so nothing is rewritten)
+    if (doomedRows.size) {
+      const meta = await sheets.spreadsheets.get({ spreadsheetId: SHEET_ID });
+      const tab  = meta.data.sheets.find(s => s.properties.title === EVENTS_TAB);
+      if (tab) {
+        const requests = [...doomedRows].sort((a, b) => b - a).map(rowIdx => ({
+          deleteDimension: { range: { sheetId: tab.properties.sheetId, dimension: 'ROWS', startIndex: rowIdx, endIndex: rowIdx + 1 } },
+        }));
+        await sheets.spreadsheets.batchUpdate({ spreadsheetId: SHEET_ID, requestBody: { requests } });
+        console.log(`Backfill next-steps: removed ${doomedRows.size} duplicate ledger row(s)`);
+      }
     }
     if (toInsert.length) {
       await sheets.spreadsheets.values.append({
@@ -2037,15 +2077,16 @@ async function runBackfillNextSteps(append = false, fromDate = START_DATE) {
     _backfill = {
       running: false, done: true, error: null,
       result: {
-        ok:               true,
-        hyrosLeads:       hyrosLeads.length,
-        realLeads:        nextStepsCount,
-        inserted:         toInsert.length,
-        skippedDuplicate: skippedCount,
-        noAdset:          noAdsetCount,
+        ok:                true,
+        hyrosLeads:        hyrosLeads.length,
+        realLeads:         nextStepsCount,
+        inserted:          toInsert.length,
+        skippedDuplicate:  skippedCount,
+        removedDuplicates: doomedRows.size,
+        noAdset:           noAdsetCount,
       },
     };
-    console.log(`Backfill next-steps done: ${toInsert.length} inserted (${nextStepsCount} real leads found out of ${hyrosLeads.length} total)`);
+    console.log(`Backfill next-steps done: ${toInsert.length} inserted, ${doomedRows.size} duplicate(s) removed (${nextStepsCount} real leads found out of ${hyrosLeads.length} total)`);
   } catch (e) {
     console.error('runBackfillNextSteps error:', e.message);
     _backfill = { running: false, done: true, result: null, error: String(e) };
@@ -2978,7 +3019,7 @@ router.get('/backfill', async (req, res) => {
       const adsetId = emailToAdset[c.email];
       const dedupKey = c.fbclid || `email:${c.email}`;
 
-      if (existingKeys.has(dedupKey)) { duplicates.push(c.email); continue; }
+      if (existingKeys.has(dedupKey) || existingKeys.has(`email:${c.email}`)) { duplicates.push(c.email); continue; }
       if (!adsetId)                   { noAdset.push(c.email);    continue; }
 
       toInsert.push([
