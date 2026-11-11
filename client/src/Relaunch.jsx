@@ -125,6 +125,15 @@ export default function Relaunch() {
   const [reuseMonths, setReuseMonths] = useState(() => parseInt(localStorage.getItem('reuseThresholdMonths'), 10) || 2);
   const [minLeads, setMinLeads]       = useState(() => parseInt(localStorage.getItem('relaunchMinLeads'), 10) || 3);
   const [picked, setPicked]           = useState({}); // '<brand> <state>' → Set of ad names to launch
+  const [openGroups, setOpenGroups]   = useState(() => new Set()); // states expanded (all collapsed by default)
+  function setGroupOpen(group, open) {
+    setOpenGroups(prev => {
+      if (prev.has(group) === open) return prev;
+      const next = new Set(prev);
+      if (open) next.add(group); else next.delete(group);
+      return next;
+    });
+  }
   function togglePick(group, name, on) {
     setPicked(p => {
       const next = new Set(p[group] || []);
@@ -487,8 +496,10 @@ export default function Relaunch() {
       </p>}
 
       {recommendations.map(rec => (
-        <div key={rec.group} style={{ marginBottom: 30 }}>
-          <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, marginBottom: 8, flexWrap: 'wrap' }}>
+        <details key={rec.group} open={openGroups.has(rec.group)} onToggle={e => setGroupOpen(rec.group, e.currentTarget.open)}
+          style={{ marginBottom: 10, border: '1px solid var(--border)', borderRadius: 10, background: 'var(--surface)' }}>
+          <summary style={{ display: 'flex', alignItems: 'baseline', gap: 12, padding: '10px 14px', flexWrap: 'wrap', cursor: 'pointer', listStyle: 'none', userSelect: 'none' }}>
+            <span style={{ fontSize: 12, color: 'var(--text-muted)', display: 'inline-block', width: 10, transform: openGroups.has(rec.group) ? 'rotate(90deg)' : 'none', transition: 'transform .15s' }}>▶</span>
             <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--text)' }}>{rec.group}</div>
             {rec.under
               ? <span style={{ fontSize: 13, fontWeight: 700, color: '#fb9292' }}>underspending {fmt(rec.shortfall)}/day</span>
@@ -502,7 +513,9 @@ export default function Relaunch() {
                 ? <>needs {fmt(rec.dailyNeeded)}/day · live {fmt(rec.liveBudget)}/day · {fmt(rec.remaining)} left over {rec.daysLeft.toFixed(1)} days</>
                 : <>live {fmt(rec.liveBudget)}/day</>}
             </span>
-          </div>
+            {picked[rec.group]?.size > 0 && <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--accent, #2563eb)' }}>{picked[rec.group].size} picked</span>}
+          </summary>
+          <div style={{ padding: '0 14px 14px' }}>
           <AdManageLaunch brand={rec.brand} state={rec.state} groups={localGroups} library={library}
             picked={picked[rec.group] || new Set()}
             onPick={name => togglePick(rec.group, name, true)} onUnpick={name => togglePick(rec.group, name, false)} />
@@ -583,7 +596,8 @@ export default function Relaunch() {
               </table>
             </div>
           )}
-        </div>
+          </div>
+        </details>
       ))}
 
       {!loading && recommendations.length > 0 && allAds.length === 0 && (

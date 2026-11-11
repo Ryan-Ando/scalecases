@@ -1280,3 +1280,6 @@ tfoot .td-name { font-family: var(--sans); font-weight: 700; font-size: 13px; }
   .nav::-webkit-scrollbar { display: none; }
   .nav-tab { padding: 0 12px; font-size: 14px; }
 }
+
+/* Relaunch state dropdowns: hide the default disclosure marker (custom ▶ is drawn) */
+summary::-webkit-details-marker { display: none; }
