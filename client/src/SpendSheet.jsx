@@ -4,7 +4,7 @@ import { useIsMobile } from './useIsMobile.js';
 import { pacingWindows } from './pacingWindows.js';
 import { useState, useEffect, useMemo, useRef, Fragment } from 'react';
 import { dbGetAll, dbUpsert } from './db.js';
-import { lsSet } from './sync.js';
+import { lsSet, lsRemove, SETTINGS_EVENT } from './sync.js';
 
 const BASE = import.meta.env.VITE_API_URL || 'http://localhost:3001';
 
@@ -101,10 +101,29 @@ function loadPacing() {
       next[newKey] = v;
     }
     if (changed) {
-      try { lsSet(PACING_KEY, JSON.stringify(next)); } catch {}
+      try { lsSet(PACING_KEY, JSON.stringify(next)); } catch { /* storage full */ }
     }
     return next;
   } catch { return {}; }
+}
+
+const VIEW_KEY = 'spendSheetView';
+function thisMonth() { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`; }
+function loadView() {
+  const d = new Date();
+  try {
+    const v = JSON.parse(localStorage.getItem(VIEW_KEY) || 'null');
+    if (v && v.savedIn === thisMonth() && Number.isInteger(v.year) && v.month >= 0 && v.month <= 11) return { year: v.year, month: v.month };
+  } catch { /* fall through */ }
+  return { year: d.getFullYear(), month: d.getMonth() };
+}
+function saveView(v) {
+  const out = { year: v.year, month: v.month };
+  lsSet(VIEW_KEY, JSON.stringify({ ...out, savedIn: thisMonth() }));
+  return out;
+}
+function loadExpanded() {
+  try { return new Set(JSON.parse(localStorage.getItem('spendSheetExpanded') || '[]')); } catch { return new Set(); }
 }
 
 const TZ_OPTIONS = [
@@ -162,8 +181,11 @@ export default function SpendSheet() {
   const [loading, setLoading]       = useState(true);
   const [syncing, setSyncing]       = useState(false);
   const [syncError, setSyncError]   = useState('');
-  const [viewYear, setViewYear]     = useState(new Date().getFullYear());
-  const [viewMonth, setViewMonth]   = useState(new Date().getMonth());
+  // Month being viewed: shared across devices; a view saved in an earlier calendar month
+  // falls back to the current month so a new month opens on itself
+  const [{ year: viewYear, month: viewMonth }, setView] = useState(loadView);
+  const setViewYear  = fn => setView(v => saveView({ ...v, year: typeof fn === 'function' ? fn(v.year) : fn }));
+  const setViewMonth = fn => setView(v => saveView({ ...v, month: typeof fn === 'function' ? fn(v.month) : fn }));
 
   // Pacing state
   const [pacing, setPacing]             = useState(() => loadPacing());
@@ -190,7 +212,22 @@ export default function SpendSheet() {
   const [pacingLoading, setPacingLoading] = useState(false);
   const [pacingError, setPacingError]   = useState('');
   const pacingRequest = useRef(0);
-  const [expandedRows, setExpandedRows] = useState(new Set());
+  const [expandedRows, setExpandedRows] = useState(loadExpanded);
+
+  // Another device changed a shared setting: take it now, without a reload
+  useEffect(() => {
+    const onRemote = e => {
+      const keys = e.detail?.keys || [];
+      if (keys.includes(PACING_KEY)) setPacing(loadPacing());
+      if (keys.includes('spendSheetColOrder')) {
+        try { const v = localStorage.getItem('spendSheetColOrder'); setColOrder(v ? JSON.parse(v) : null); } catch { setColOrder(null); }
+      }
+      if (keys.includes('spendSheetView')) setView(loadView());
+      if (keys.includes('spendSheetExpanded')) setExpandedRows(loadExpanded());
+    };
+    window.addEventListener(SETTINGS_EVENT, onRemote);
+    return () => window.removeEventListener(SETTINGS_EVENT, onRemote);
+  }, []);
 
   // Push-to-Sheet state
   const [pushing, setPushing]       = useState(false);
@@ -241,7 +278,8 @@ export default function SpendSheet() {
 
   // ── Pacing functions ────────────────────────────────────────────────────────
   function updatePacing(st, field, value) {
-    setPacing(prev => {
+    setPacing(() => {
+      const prev = loadPacing();
       const next = { ...prev, [st]: { ...prev[st], [field]: value } };
       lsSet(PACING_KEY, JSON.stringify(next));
       return next;
@@ -259,7 +297,8 @@ export default function SpendSheet() {
   }
 
   function updateMonthBudget(st, ym, value) {
-    setPacing(prev => {
+    setPacing(() => {
+      const prev = loadPacing();
       const next = {
         ...prev,
         [st]: {
@@ -276,14 +315,15 @@ export default function SpendSheet() {
     setExpandedRows(prev => {
       const next = new Set(prev);
       if (next.has(st)) next.delete(st); else next.add(st);
+      lsSet('spendSheetExpanded', JSON.stringify([...next]));
       return next;
     });
   }
 
   function copyDatesToAll(st) {
     const { startDate, endDate } = pacing[st] || {};
-    setPacing(prev => {
-      const next = { ...prev };
+    setPacing(() => {
+      const next = { ...loadPacing() };
       for (const s of pacingStates) {
         next[s] = { ...next[s], startDate: startDate || '', endDate: endDate || '' };
       }
@@ -542,7 +582,7 @@ export default function SpendSheet() {
   }
   function resetOrder() {
     setColOrder(null);
-    localStorage.removeItem('spendSheetColOrder');
+    lsRemove('spendSheetColOrder');
   }
   function prevMonth() {
     if (viewMonth === 0) { setViewMonth(11); setViewYear(y => y - 1); }

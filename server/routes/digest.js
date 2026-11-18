@@ -448,7 +448,14 @@ async function buildCampaignView(query) {
 // from the budgets configured in the Spend Sheet tab (synced to the server).
 const PACING_FILE = path.join(DATA_DIR, 'pacing.json');
 
+// The shared settings store (server/routes/state.js) is the source of truth: it's what every
+// device's Spend Sheet syncs to. pacing.json is the older one-way mirror, used as a fallback.
 function loadPacingConfig() {
+  try {
+    const shared = JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'state', 'settings.json'), 'utf8'));
+    const rec = shared.records?.spend_pacing_v2;
+    if (rec && !rec._deleted && rec.value) return JSON.parse(rec.value);
+  } catch { /* fall back */ }
   try { return JSON.parse(fs.readFileSync(PACING_FILE, 'utf8')); } catch { return null; }
 }
 

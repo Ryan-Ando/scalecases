@@ -16,7 +16,9 @@ const BASE = import.meta.env.VITE_API_URL || 'http://localhost:3001';
 const IDB_STORES = ['ghlContacts', 'fbDailyInsights', 'fbAds', 'adDailyInsights', 'campaignTraining', 'campaignKpis', 'killSnapshots', 'meta'];
 export const SETTINGS_KEYS = ['spend_pacing_v2', 'spendSheetColOrder', 'trackingColOrder', 'trackingAccountNames', 'hideCityAds',
   'reuseThresholdMonths', 'relaunchMinLeads', 'angleMatrix_angles', 'cpl_row_order', 'variations_saved_ads',
-  'niche_budgets'];
+  'niche_budgets', 'spendSheetView', 'spendSheetExpanded'];
+// Fired on window when another device's settings land here: detail = { keys: [changed keys] }
+export const SETTINGS_EVENT = 'sc-settings-changed';
 const ALL_STORES = [...IDB_STORES, 'settings'];
 const PUSH_DELAY = 1500;
 const BATCH_BYTES = 4_000_000;
@@ -54,8 +56,12 @@ async function applyRemote(store, records, reset) {
   const live = records.filter(r => !r._deleted).map(r => { const c = { ...r }; delete c._rev; delete c._deleted; return c; });
   const dead = records.filter(r => r._deleted).map(r => r.id);
   if (store === 'settings') {
-    for (const r of live) localStorage.setItem(r.id, r.value);
-    for (const id of dead) localStorage.removeItem(id);
+    const keys = [];
+    for (const r of live) { if (localStorage.getItem(r.id) !== r.value) keys.push(r.id); localStorage.setItem(r.id, r.value); }
+    for (const id of dead) { if (localStorage.getItem(id) != null) keys.push(id); localStorage.removeItem(id); }
+    if (reset) keys.push(...SETTINGS_KEYS);
+    // Open tabs that read these settings update in place instead of waiting for a reload
+    if (keys.length) window.dispatchEvent(new CustomEvent(SETTINGS_EVENT, { detail: { keys: [...new Set(keys)] } }));
   } else if (store === 'meta') {
     for (const r of live) await raw.setMeta(r.id, r.value);
     for (const id of dead) await raw.setMeta(id, null);
@@ -156,6 +162,11 @@ export async function pullAll({ initial = false } = {}) {
 }
 
 let pollTimer = null;
+async function pullNow() {
+  if (pushing) return;
+  try { const n = await pullAll(); if (n > 0) publish({ updates: true }); publish({ state: countPending() ? status.state : 'synced', error: '' }); }
+  catch (e) { publish({ state: 'offline', error: e.message }); }
+}
 export async function initialSync(timeoutMs = 8000) {
   publish({ state: 'syncing' });
   let timedOut = false;
@@ -170,17 +181,20 @@ export async function initialSync(timeoutMs = 8000) {
   await Promise.race([work, new Promise(r => setTimeout(() => { timedOut = true; r(); }, timeoutMs))]);
   if (countPending()) schedulePush();
   clearInterval(pollTimer);
-  pollTimer = setInterval(async () => {
-    if (document.visibilityState !== 'visible' || pushing) return;
-    try { const n = await pullAll(); if (n > 0) publish({ updates: true }); publish({ state: countPending() ? status.state : 'synced', error: '' }); }
-    catch (e) { publish({ state: 'offline', error: e.message }); }
-  }, POLL_MS);
+  pollTimer = setInterval(() => { if (document.visibilityState === 'visible') void pullNow(); }, POLL_MS);
 }
+// Coming back to the tab (phone unlocked, window refocused): catch up right away, not in up to a minute
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && pollTimer) void pullNow(); });
 
 // localStorage setter for synced settings; drop-in for localStorage.setItem(key, string)
 export function lsSet(key, value) {
   try { localStorage.setItem(key, value); } catch { /* quota */ }
   if (SETTINGS_KEYS.includes(key)) queueUpsert('settings', [{ id: key, value }]);
+}
+// localStorage remover for synced settings (removes it on every device)
+export function lsRemove(key) {
+  try { localStorage.removeItem(key); } catch { /* storage blocked */ }
+  if (SETTINGS_KEYS.includes(key)) queueDelete('settings', [key]);
 }
 
 registerSyncHooks({
