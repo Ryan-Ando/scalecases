@@ -62,6 +62,7 @@ async function applyRemote(store, records, reset) {
     if (reset) keys.push(...SETTINGS_KEYS);
     // Open tabs that read these settings update in place instead of waiting for a reload
     if (keys.length) window.dispatchEvent(new CustomEvent(SETTINGS_EVENT, { detail: { keys: [...new Set(keys)] } }));
+    return keys.length;   // only real changes count (a full re-read of identical settings is not "new data")
   } else if (store === 'meta') {
     for (const r of live) await raw.setMeta(r.id, r.value);
     for (const id of dead) await raw.setMeta(id, null);
@@ -101,10 +102,13 @@ async function pushStore(store) {
   const ups = [...s.up.values()]; const dels = [...s.del]; s.up.clear(); s.del.clear();
   try {
     let batch = [], bytes = 0;
-    const send = async () => { if (!batch.length) return; const r = await api(`/${store}`, { method: 'POST', body: { epoch: cur.epoch, records: batch } }); setCursor(store, { epoch: r.epoch, rev: r.rev }); batch = []; bytes = 0; };
+    // Only move the cursor past our own writes. If another device wrote in between, the server's
+    // rev jumped further: leave the cursor so the next pull still fetches that device's changes.
+    const advance = (r, n) => { const c = getCursor(store) || cur; if (r.epoch === c.epoch && r.rev - n <= c.rev) setCursor(store, { epoch: r.epoch, rev: r.rev }); };
+    const send = async () => { if (!batch.length) return; const r = await api(`/${store}`, { method: 'POST', body: { epoch: cur.epoch, records: batch } }); advance(r, batch.length); batch = []; bytes = 0; };
     for (const r of ups) { const sz = JSON.stringify(r).length; if (bytes + sz > BATCH_BYTES && batch.length) await send(); batch.push(r); bytes += sz; }
     await send();
-    if (dels.length) { const r = await api(`/${store}/delete`, { method: 'POST', body: { epoch: cur.epoch, ids: dels } }); setCursor(store, { epoch: r.epoch, rev: r.rev }); }
+    if (dels.length) { const r = await api(`/${store}/delete`, { method: 'POST', body: { epoch: cur.epoch, ids: dels } }); advance(r, r.deleted || 0); }
   } catch (e) {
     if (e.status === 409) {
       // another device cleared this store: drop our stale copy and take the server's
@@ -127,10 +131,12 @@ async function pushAll() {
 }
 
 // ── pull ─────────────────────────────────────────────────────────────────────
-async function pullStore(store, force = false, serverInfo = null) {
+async function pullStore(store, force = false, serverInfo = null, full = false) {
   const cur = getCursor(store);
-  if (!force && serverInfo && cur && serverInfo.epoch === cur.epoch && serverInfo.rev <= cur.rev) return 0;
-  const since = cur ? cur.rev : 0;
+  // A cursor ahead of the server (server data restored or rebuilt) can never catch up: re-read everything
+  if (cur && serverInfo && serverInfo.epoch === cur.epoch && serverInfo.rev < cur.rev) full = true;
+  if (!force && !full && serverInfo && cur && serverInfo.epoch === cur.epoch && serverInfo.rev <= cur.rev) return 0;
+  const since = cur && !full ? cur.rev : 0;
   const r = await api(`/${store}?since=${since}${cur ? `&epoch=${cur.epoch}` : ''}`);
   const reset = r.reset || (cur && cur.epoch !== r.epoch);
   const n = await applyRemote(store, r.records, !!reset && !!cur);
@@ -156,7 +162,9 @@ export async function pullAll({ initial = false } = {}) {
     const info = idx.stores[store] || null;
     if (initial) await seedIfServerEmpty(store, info);
     if (!info) { if (!getCursor(store)) setCursor(store, { epoch: 1, rev: 0 }); continue; }
-    changed += await pullStore(store, false, info);
+    // Settings are tiny: on app start re-read all of them, so every device matches the server
+    // even if its cursor drifted; changes in between use the cursor as usual
+    changed += await pullStore(store, false, info, initial && store === 'settings');
   }
   return changed;
 }
