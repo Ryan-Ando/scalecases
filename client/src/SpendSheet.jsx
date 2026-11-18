@@ -4,7 +4,7 @@ import { useIsMobile } from './useIsMobile.js';
 import { pacingWindows } from './pacingWindows.js';
 import { useState, useEffect, useMemo, useRef, Fragment } from 'react';
 import { dbGetAll, dbUpsert } from './db.js';
-import { lsSet, lsRemove, SETTINGS_EVENT } from './sync.js';
+import { lsSet, lsRemove, SETTINGS_EVENT, conflictKey } from './sync.js';
 
 const BASE = import.meta.env.VITE_API_URL || 'http://localhost:3001';
 
@@ -122,6 +122,28 @@ function saveView(v) {
   lsSet(VIEW_KEY, JSON.stringify({ ...out, savedIn: thisMonth() }));
   return out;
 }
+// { value, at, diffs: ['TX dates Oct 1–Nov 15 → …', …] } or null
+function loadPacingConflict() {
+  try {
+    const c = JSON.parse(localStorage.getItem(conflictKey(PACING_KEY)) || 'null');
+    if (!c?.value) return null;
+    const mine = JSON.parse(c.value), shared = JSON.parse(localStorage.getItem(PACING_KEY) || '{}');
+    const total = cfg => Object.values(cfg?.monthlyBudgets || {}).reduce((t, v) => t + (parseFloat(v) || 0), 0);
+    const diffs = [];
+    for (const g of [...new Set([...Object.keys(mine), ...Object.keys(shared)])].sort()) {
+      const a = mine[g], b = shared[g];
+      if (JSON.stringify(a) === JSON.stringify(b)) continue;
+      const parts = [];
+      if ((a?.startDate || '') !== (b?.startDate || '') || (a?.endDate || '') !== (b?.endDate || ''))
+        parts.push(`dates ${a?.startDate || '—'} → ${a?.endDate || '—'} here, ${b?.startDate || '—'} → ${b?.endDate || '—'} shared`);
+      if (total(a) !== total(b)) parts.push(`budgets $${total(a).toLocaleString()} here, $${total(b).toLocaleString()} shared`);
+      if (!a) parts.push('only in the shared copy'); else if (!b) parts.push('only on this device');
+      diffs.push(`${g}: ${parts.join('; ') || 'other settings differ'}`);
+    }
+    if (!diffs.length) { localStorage.removeItem(conflictKey(PACING_KEY)); return null; }
+    return { ...c, diffs };
+  } catch { return null; }
+}
 function loadExpanded() {
   try { return new Set(JSON.parse(localStorage.getItem('spendSheetExpanded') || '[]')); } catch { return new Set(); }
 }
@@ -213,12 +235,22 @@ export default function SpendSheet() {
   const [pacingError, setPacingError]   = useState('');
   const pacingRequest = useRef(0);
   const [expandedRows, setExpandedRows] = useState(loadExpanded);
+  // This device's budgets differed from the shared copy when it synced: offer to use them everywhere
+  const [pacingConflict, setPacingConflict] = useState(loadPacingConflict);
+  function resolveConflict(useMine) {
+    if (useMine && pacingConflict) {
+      lsSet(PACING_KEY, pacingConflict.value);
+      setPacing(loadPacing());
+    }
+    try { localStorage.removeItem(conflictKey(PACING_KEY)); } catch { /* storage blocked */ }
+    setPacingConflict(null);
+  }
 
   // Another device changed a shared setting: take it now, without a reload
   useEffect(() => {
     const onRemote = e => {
       const keys = e.detail?.keys || [];
-      if (keys.includes(PACING_KEY)) setPacing(loadPacing());
+      if (keys.includes(PACING_KEY)) { setPacing(loadPacing()); setPacingConflict(loadPacingConflict()); }
       if (keys.includes('spendSheetColOrder')) {
         try { const v = localStorage.getItem('spendSheetColOrder'); setColOrder(v ? JSON.parse(v) : null); } catch { setColOrder(null); }
       }
@@ -625,6 +657,19 @@ export default function SpendSheet() {
 
   return (
     <div style={{ padding: mobile ? '0 0 16px' : '24px 28px' }}>
+      {pacingConflict && (
+        <div style={{ margin: mobile ? '8px 12px' : '0 0 16px', padding: '12px 14px', border: '1px solid #f59e0b', borderRadius: 10, background: 'rgba(245,158,11,.08)', fontSize: 13 }}>
+          <div style={{ fontWeight: 700, marginBottom: 6 }}>This device had different pacing budgets than the other devices</div>
+          <div style={{ color: 'var(--text-muted)', marginBottom: 8 }}>
+            The page now shows the shared copy. This device's own numbers were kept aside. Differences:
+            <ul style={{ margin: '6px 0 0 18px', padding: 0, maxHeight: 160, overflowY: 'auto' }}>{pacingConflict.diffs.map(d => <li key={d}>{d}</li>)}</ul>
+          </div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button className="btn btn--sm" style={{ fontWeight: 700 }} onClick={() => resolveConflict(true)}>Use this device's numbers on every device</button>
+            <button className="btn btn--sm" onClick={() => resolveConflict(false)}>Keep the shared numbers</button>
+          </div>
+        </div>
+      )}
       {mobile ? (
         <MobileSpendTop monthLabel={`${MONTH_NAMES[viewMonth].slice(0, 3)} ${viewYear}`} onPrev={prevMonth} onNext={nextMonth}
           onRefresh={() => { loadFromDB(); fetchAdsets(true); }}

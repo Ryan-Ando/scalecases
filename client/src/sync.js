@@ -19,6 +19,19 @@ export const SETTINGS_KEYS = ['spend_pacing_v2', 'spendSheetColOrder', 'tracking
   'niche_budgets', 'spendSheetView', 'spendSheetExpanded'];
 // Fired on window when another device's settings land here: detail = { keys: [changed keys] }
 export const SETTINGS_EVENT = 'sc-settings-changed';
+// Settings edited on this device that the server hasn't confirmed yet. Kept in localStorage so
+// they survive a reload: a startup re-read never overwrites them, it pushes them instead.
+const DIRTY_KEY = 'sync_dirty_settings';
+function dirtySettings() { try { return new Set(JSON.parse(localStorage.getItem(DIRTY_KEY) || '[]')); } catch { return new Set(); } }
+function setDirty(keys, on) {
+  const d = dirtySettings();
+  for (const k of keys) { if (on) d.add(k); else d.delete(k); }
+  try { localStorage.setItem(DIRTY_KEY, JSON.stringify([...d])); } catch { /* storage full */ }
+}
+// When the startup re-read finds this device's copy of a setting different from the shared one, the
+// local copy is saved here (the shared copy is applied) so the page can offer to use it everywhere.
+export const conflictKey = key => `sync_conflict:${key}`;
+const GUARDED = new Set(['spend_pacing_v2', 'niche_budgets']);
 const ALL_STORES = [...IDB_STORES, 'settings'];
 const PUSH_DELAY = 1500;
 const BATCH_BYTES = 4_000_000;
@@ -48,7 +61,7 @@ async function readLocal(store) {
   if (store === 'meta') return (await raw.getAllMeta()).map(([id, value]) => ({ id, value }));
   return raw.getAll(store);
 }
-async function applyRemote(store, records, reset) {
+async function applyRemote(store, records, reset, full = false) {
   if (reset) {
     if (store === 'settings') SETTINGS_KEYS.forEach(k => localStorage.removeItem(k));
     else await raw.clearStore(store);
@@ -56,8 +69,16 @@ async function applyRemote(store, records, reset) {
   const live = records.filter(r => !r._deleted).map(r => { const c = { ...r }; delete c._rev; delete c._deleted; return c; });
   const dead = records.filter(r => r._deleted).map(r => r.id);
   if (store === 'settings') {
-    const keys = [];
-    for (const r of live) { if (localStorage.getItem(r.id) !== r.value) keys.push(r.id); localStorage.setItem(r.id, r.value); }
+    const keys = [], dirty = dirtySettings();
+    for (const r of live) {
+      const mine = localStorage.getItem(r.id);
+      if (mine === r.value) { dirty.delete(r.id); continue; }
+      if (dirty.has(r.id)) continue;                 // our unsaved edit: it gets pushed, not replaced
+      if (full && GUARDED.has(r.id) && mine != null) {
+        try { localStorage.setItem(conflictKey(r.id), JSON.stringify({ value: mine, at: new Date().toISOString() })); } catch { /* storage full */ }
+      }
+      keys.push(r.id); localStorage.setItem(r.id, r.value);
+    }
     for (const id of dead) { if (localStorage.getItem(id) != null) keys.push(id); localStorage.removeItem(id); }
     if (reset) keys.push(...SETTINGS_KEYS);
     // Open tabs that read these settings update in place instead of waiting for a reload
@@ -108,6 +129,7 @@ async function pushStore(store) {
     const send = async () => { if (!batch.length) return; const r = await api(`/${store}`, { method: 'POST', body: { epoch: cur.epoch, records: batch } }); advance(r, batch.length); batch = []; bytes = 0; };
     for (const r of ups) { const sz = JSON.stringify(r).length; if (bytes + sz > BATCH_BYTES && batch.length) await send(); batch.push(r); bytes += sz; }
     await send();
+    if (store === 'settings') setDirty(ups.filter(r => localStorage.getItem(r.id) === r.value).map(r => r.id), false);
     if (dels.length) { const r = await api(`/${store}/delete`, { method: 'POST', body: { epoch: cur.epoch, ids: dels } }); advance(r, r.deleted || 0); }
   } catch (e) {
     if (e.status === 409) {
@@ -139,7 +161,7 @@ async function pullStore(store, force = false, serverInfo = null, full = false) 
   const since = cur && !full ? cur.rev : 0;
   const r = await api(`/${store}?since=${since}${cur ? `&epoch=${cur.epoch}` : ''}`);
   const reset = r.reset || (cur && cur.epoch !== r.epoch);
-  const n = await applyRemote(store, r.records, !!reset && !!cur);
+  const n = await applyRemote(store, r.records, !!reset && !!cur, full);
   setCursor(store, { epoch: r.epoch, rev: r.rev });
   return n;
 }
@@ -161,6 +183,10 @@ export async function pullAll({ initial = false } = {}) {
   for (const store of ALL_STORES) {
     const info = idx.stores[store] || null;
     if (initial) await seedIfServerEmpty(store, info);
+    if (initial && store === 'settings') {
+      const d = [...dirtySettings()].filter(k => SETTINGS_KEYS.includes(k) && localStorage.getItem(k) != null);
+      if (d.length) queueUpsert('settings', d.map(k => ({ id: k, value: localStorage.getItem(k) })));
+    }
     if (!info) { if (!getCursor(store)) setCursor(store, { epoch: 1, rev: 0 }); continue; }
     // Settings are tiny: on app start re-read all of them, so every device matches the server
     // even if its cursor drifted; changes in between use the cursor as usual
@@ -197,7 +223,7 @@ document.addEventListener('visibilitychange', () => { if (document.visibilitySta
 // localStorage setter for synced settings; drop-in for localStorage.setItem(key, string)
 export function lsSet(key, value) {
   try { localStorage.setItem(key, value); } catch { /* quota */ }
-  if (SETTINGS_KEYS.includes(key)) queueUpsert('settings', [{ id: key, value }]);
+  if (SETTINGS_KEYS.includes(key)) { setDirty([key], true); queueUpsert('settings', [{ id: key, value }]); }
 }
 // localStorage remover for synced settings (removes it on every device)
 export function lsRemove(key) {
