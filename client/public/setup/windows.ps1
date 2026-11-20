@@ -90,7 +90,7 @@ $h = $null
 for ($i = 0; $i -lt 90 -and -not $h; $i++) {
   try { $h = Invoke-RestMethod -UseBasicParsing 'http://127.0.0.1:43128/health' -TimeoutSec 2 } catch { Start-Sleep -Seconds 1 }
 }
-if (-not $h) { throw "The helper did not start. Try running it visibly to see the error:  `"$VPy`" `"$Worker`"" }
+if (-not $h) { throw "The helper did not start. Check $env:LOCALAPPDATA\ScaleCasesDisclaimers\helper.log, or run it visibly to see the error:  `"$VPy`" `"$Worker`"" }
 function Line($ok, $text) { Write-Host (($(if ($ok) { 'OK ' } else { '!! ' })) + $text) -ForegroundColor $(if ($ok) { 'Green' } else { 'Yellow' }) }
 Line $true "Helper running (version $($h.version))"
 Line $h.ffmpeg $(if ($h.ffmpeg) { 'ffmpeg' } else { 'ffmpeg missing: sign out and back in, then run this setup again' })

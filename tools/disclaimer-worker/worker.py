@@ -1065,6 +1065,15 @@ def delete_history(hid: str):
 
 
 if __name__ == "__main__":
+    # Started hidden (pythonw / launchd) there is no console: sys.stdout and sys.stderr are None
+    # and uvicorn crashes on sys.stdout.isatty() before it ever listens. Send output to a log
+    # file instead; it doubles as the place to look when the helper does not come up.
+    if sys.stdout is None or sys.stderr is None:
+        os.makedirs(LOCAL, exist_ok=True)
+        _log = open(os.path.join(LOCAL, "helper.log"), "a", buffering=1, encoding="utf-8", errors="replace")
+        sys.stdout = sys.stdout or _log
+        sys.stderr = sys.stderr or _log
+        print(f"--- started {datetime.now(timezone.utc).isoformat(timespec='seconds')} ---")
     if LIBRARY_PORT:
         creative_library.start()
     print(f"Scale Cases disclaimer worker on http://127.0.0.1:{PORT}  (data: {DATA}{'' if DATA != LOCAL else ' — local only, Drive folder not found'})")
