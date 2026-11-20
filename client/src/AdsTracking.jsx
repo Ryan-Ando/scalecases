@@ -1,5 +1,5 @@
 import CreativeLibrary from './CreativeLibrary.jsx';
-import { requestLaunch } from './launchBus.js';
+import { queueLaunch, unqueueLaunch, openLauncher, useLaunchQueue } from './launchBus.js';
 import { MobileTracking } from './MobileViews.jsx';
 import { useIsMobile } from './useIsMobile.js';
 import { useState, useMemo, useEffect, useRef, useCallback } from 'react';
@@ -933,6 +933,7 @@ export default function AdsTracking() {
 
   // Row selection / merge
   const [selecting, setSelecting]     = useState(false);
+  const launchQueue = useLaunchQueue();   // ads queued for the Relaunch tab's launcher (rocket buttons)
   const [selectedRows, setSelectedRows] = useState(new Set());
   const [mergeDialog, setMergeDialog]   = useState(null); // { names, canonical }
 
@@ -2034,6 +2035,16 @@ export default function AdsTracking() {
             <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
               Last synced: {lastSync ? timeAgo(lastSync) : 'never'}
             </span>
+            {launchQueue.length > 0 && (
+              <button
+                className="btn btn--sm"
+                style={{ borderColor: 'var(--green)', color: 'var(--green-dark)' }}
+                onClick={openLauncher}
+                title={`Open the Relaunch tab with these ads: ${launchQueue.join(', ')}`}
+              >
+                🚀 Open launcher ({launchQueue.length})
+              </button>
+            )}
             <button
               className="btn btn--sm btn--primary"
               onClick={() => sync(false)}
@@ -2502,8 +2513,11 @@ export default function AdsTracking() {
                             </button>
                             <button
                               className="ad-row-sync-btn"
-                              onClick={e => { e.stopPropagation(); requestLaunch(adName); }}
-                              title="Launch this ad in any state (opens Launch any ad on the Relaunch tab)"
+                              onClick={e => { e.stopPropagation(); launchQueue.includes(adName) ? unqueueLaunch(adName) : queueLaunch(adName); }}
+                              title={launchQueue.includes(adName)
+                                ? 'Queued for the launcher — click to remove'
+                                : 'Add to the launcher (pick as many ads as you like, then "Open launcher" at the top)'}
+                              style={launchQueue.includes(adName) ? { background: 'var(--green-light)', borderColor: 'var(--green)' } : undefined}
                             >
                               🚀
                             </button>
@@ -2646,6 +2660,13 @@ export default function AdsTracking() {
             title="Fetch all-time daily data for these ads only (efficient — no full account scan)"
           >
             {syncingAdMax ? 'Syncing…' : 'Sync Max'}
+          </button>
+          <button
+            className="btn btn--sm"
+            onClick={() => { queueLaunch([...selectedRows]); setSelectedRows(new Set()); setSelecting(false); }}
+            title="Queue these ads for the launcher (stay on this tab; use 'Open launcher' when ready)"
+          >
+            🚀 Add to launcher
           </button>
           {selectedRows.size >= 2 && (
             <button className="btn btn--sm" onClick={openMergeDialog}>
